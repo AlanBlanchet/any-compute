@@ -168,11 +168,31 @@ pub struct ComparisonEntry {
     pub comparisons: Vec<LibComparison>,
 }
 
+/// Provenance of a comparison data-point: whether it was actually measured
+/// during this run or sourced from a published benchmark estimate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ComparisonSource {
+    /// Measured in this benchmark run on this machine — fully trustworthy.
+    Measured,
+    /// Published / documented ratio — not live-measured here.
+    /// The note field explains the source.
+    Estimate,
+}
+
+impl Default for ComparisonSource {
+    fn default() -> Self {
+        Self::Estimate
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LibComparison {
     pub library: String,
-    pub estimated_ops: f64,
+    /// Throughput in ops/sec.  For `Measured` entries this is a real
+    /// measurement; for `Estimate` it is derived from published ratios.
+    pub ops: f64,
     pub notes: String,
+    pub source: ComparisonSource,
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -409,6 +429,15 @@ pub enum BenchCategory {
     Animation,
     RenderList,
     LerpThroughput,
+    EventHandling,
+    /// 1M point generation + 256×256 density binning.
+    PointCloud,
+    /// Large GEMM: 256×256 up to 1024×1024.
+    MatMulLarge,
+    /// Scaled dot-product attention (QKᵀ → softmax → V) at multiple seq/d configs.
+    AttentionOps,
+    /// Sphere vertex transforms + perspective projection at multiple mesh resolutions.
+    Geometry3D,
 }
 
 impl BenchCategory {
@@ -425,6 +454,11 @@ impl BenchCategory {
         Self::Animation,
         Self::RenderList,
         Self::LerpThroughput,
+        Self::EventHandling,
+        Self::PointCloud,
+        Self::MatMulLarge,
+        Self::AttentionOps,
+        Self::Geometry3D,
     ];
 
     /// Machine-readable identifier used as `ScenarioReport::category`.
@@ -442,6 +476,11 @@ impl BenchCategory {
             Self::Animation => "animation",
             Self::RenderList => "render_list",
             Self::LerpThroughput => "lerp_throughput",
+            Self::EventHandling => "event_handling",
+            Self::PointCloud => "point_cloud",
+            Self::MatMulLarge => "matmul_large",
+            Self::AttentionOps => "attention_ops",
+            Self::Geometry3D => "geometry_3d",
         }
     }
 
@@ -460,6 +499,11 @@ impl BenchCategory {
             Self::Animation => "Animation: Transitions",
             Self::RenderList => "Render: Primitive Lists",
             Self::LerpThroughput => "Lerp: Interpolation Throughput",
+            Self::EventHandling => "Events: Input Dispatch",
+            Self::PointCloud => "Point Cloud: 1M Scatter + Density",
+            Self::MatMulLarge => "MatMul: Large GEMM (up to 1024×1024)",
+            Self::AttentionOps => "Attention: Scaled Dot-Product",
+            Self::Geometry3D => "3D Geometry: Vertex Transform + Projection",
         }
     }
 
@@ -476,7 +520,73 @@ impl BenchCategory {
             Self::Animation => "Animation",
             Self::RenderList => "Render",
             Self::LerpThroughput => "Lerp",
+            Self::EventHandling => "Events",
+            Self::PointCloud => "Geometry",
+            Self::MatMulLarge => "Compute",
+            Self::AttentionOps => "Compute",
+            Self::Geometry3D => "Geometry",
         }
+    }
+
+    /// High-level domain for dashboard grouping.
+    pub fn domain(self) -> &'static str {
+        match self {
+            Self::KernelUnary
+            | Self::KernelBinary
+            | Self::KernelReduce
+            | Self::KernelSort
+            | Self::ComputeParallel
+            | Self::HintsOptimization => "Compute",
+            Self::KernelGemm | Self::MatMulLarge | Self::AttentionOps => "Linear Algebra / AI",
+            Self::PointCloud | Self::Geometry3D | Self::LayoutSpatial => "Graphics / 3D",
+            Self::Animation | Self::LerpThroughput => "Animation / Dynamics",
+            Self::RenderList | Self::DataVirtualization => "Rendering / Data",
+            Self::EventHandling => "Events / Interaction",
+        }
+    }
+
+    /// Short description of what this bench tests — shown in the dashboard.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::KernelUnary => "abs, negate, sqrt on 10K-10M f64 vectors via SIMD dispatch",
+            Self::KernelBinary => "add, mul, fma on paired vectors; measures SIMD throughput",
+            Self::KernelReduce => "sum, min, max reductions with SIMD accumulator",
+            Self::KernelGemm => "naive matrix multiply 64-512; baseline for BLAS comparison",
+            Self::KernelSort => "parallel sort on 10K-10M elements via rayon + pdqsort",
+            Self::ComputeParallel => "parallel map/reduce across all cores; rayon dispatch",
+            Self::HintsOptimization => "hint-aware dispatch: sorted, dense, contiguous flags",
+            Self::DataVirtualization => "virtual scroll window over 100K-1M row data sources",
+            Self::LayoutSpatial => "AABB spatial grid insert + range query at scale",
+            Self::Animation => "easing transitions: linear, ease-in-out, spring physics",
+            Self::RenderList => "batch render-primitive assembly: rects, circles, text",
+            Self::LerpThroughput => "raw lerp throughput on f64, Vec3, Color, Rect batches",
+            Self::EventHandling => "event dispatch, hit-testing 100K rects, 3-phase propagation",
+            Self::PointCloud => "1-5M point Halton generation + 256x256 density binning",
+            Self::MatMulLarge => "GEMM at 256-1024 sizes; reports GFLOP/s",
+            Self::AttentionOps => "scaled dot-product attention QK^T -> softmax -> V",
+            Self::Geometry3D => "sphere mesh vertex transforms + perspective projection",
+        }
+    }
+
+    /// All unique domains, ordered for display.
+    pub fn all_domains() -> &'static [&'static str] {
+        &[
+            "Compute",
+            "Linear Algebra / AI",
+            "Graphics / 3D",
+            "Animation / Dynamics",
+            "Rendering / Data",
+            "Events / Interaction",
+        ]
+    }
+
+    /// Categories belonging to a given domain.
+    pub fn for_domain(domain: &str) -> Vec<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(|c| c.domain() == domain)
+            .collect()
     }
 }
 
@@ -498,6 +608,11 @@ pub fn run_category(cat: BenchCategory) -> ScenarioReport {
         BenchCategory::Animation => run_animation(),
         BenchCategory::RenderList => run_render_list(),
         BenchCategory::LerpThroughput => run_lerp_throughput(),
+        BenchCategory::EventHandling => run_event_handling(),
+        BenchCategory::PointCloud => run_point_cloud(),
+        BenchCategory::MatMulLarge => run_matmul_large(),
+        BenchCategory::AttentionOps => run_attention_ops(),
+        BenchCategory::Geometry3D => run_geometry_3d(),
     }
 }
 
@@ -962,6 +1077,317 @@ fn run_lerp_throughput() -> ScenarioReport {
     }
 }
 
+pub fn run_event_handling() -> ScenarioReport {
+    use crate::interaction::{Button, EventContext, EventResponse, InputEvent, Interactive, Phase};
+    use crate::layout::{Point, Rect};
+
+    /// Minimal interactive node used only in this benchmark.
+    struct Node {
+        bounds: Rect,
+        handled: u32,
+    }
+    impl Interactive for Node {
+        fn bounds(&self) -> Rect {
+            self.bounds
+        }
+        fn handle_event(&mut self, ctx: &mut EventContext) -> EventResponse {
+            self.handled += 1;
+            if ctx.phase == Phase::Target {
+                ctx.stop_propagation();
+                EventResponse::Consumed
+            } else {
+                EventResponse::Ignored
+            }
+        }
+    }
+
+    // Sizes: event fan-out depth / batch
+    const DISPATCH_COUNTS: &[usize] = &[1_000, 10_000, 100_000, 500_000];
+    let mut results = Vec::new();
+
+    // Benchmark 1: EventContext creation throughput
+    for &n in DISPATCH_COUNTS {
+        results.push(bench_fn(
+            &format!("create EventContext n={n}"),
+            n,
+            5,
+            20,
+            || {
+                for _ in 0..n {
+                    std::hint::black_box(EventContext::new(InputEvent::PointerMove {
+                        pos: Point::new(42.0, 42.0),
+                    }));
+                }
+            },
+        ));
+    }
+
+    // Benchmark 2: Three-phase dispatch (capture→target→bubble) through a node tree
+    for &n in &[1_000usize, 10_000, 50_000] {
+        let mut nodes: Vec<Node> = (0..n)
+            .map(|i| Node {
+                bounds: Rect::new(i as f64, 0.0, (i + 1) as f64, 10.0),
+                handled: 0,
+            })
+            .collect();
+        results.push(bench_fn(
+            &format!("3-phase dispatch n={n} nodes"),
+            n,
+            3,
+            10,
+            || {
+                let mut ctx = EventContext::new(InputEvent::PointerDown {
+                    pos: Point::new(0.5, 5.0),
+                    button: Button::Primary,
+                });
+                for phase in [Phase::Capture, Phase::Target, Phase::Bubble] {
+                    ctx.phase = phase;
+                    for node in nodes.iter_mut() {
+                        if ctx.stopped {
+                            break;
+                        }
+                        std::hint::black_box(node.handle_event(&mut ctx));
+                    }
+                }
+            },
+        ));
+    }
+
+    // Benchmark 3: Hit-test + dispatch (pointer over bounding rects)
+    for &n in &[1_000usize, 10_000, 100_000] {
+        let rects: Vec<Rect> = (0..n)
+            .map(|i| Rect::new(i as f64, 0.0, (i + 1) as f64, 10.0))
+            .collect();
+        let hit_pos = Point::new((n / 2) as f64 + 0.5, 5.0);
+        results.push(bench_fn(
+            &format!("pointer hit-test n={n} rects"),
+            n,
+            5,
+            10,
+            || {
+                let hit = rects.iter().find(|r| r.contains(hit_pos));
+                std::hint::black_box(hit);
+            },
+        ));
+    }
+
+    ScenarioReport {
+        category: BenchCategory::EventHandling.id().into(),
+        results,
+    }
+}
+
+// ── New high-impact benchmark runners ────────────────────────────────────
+
+/// Halton low-discrepancy sequence value for a given index and prime base.
+fn halton(mut idx: usize, base: usize) -> f64 {
+    let mut f = 1.0f64;
+    let mut r = 0.0f64;
+    while idx > 0 {
+        f /= base as f64;
+        r += f * (idx % base) as f64;
+        idx /= base;
+    }
+    r
+}
+
+fn run_point_cloud() -> ScenarioReport {
+    let mut results = Vec::new();
+    for &n in &[100_000usize, 1_000_000, 5_000_000] {
+        // Generate n 2D points using a Halton(2,3) low-discrepancy sequence.
+        results.push(bench_fn(
+            &format!("halton2D_generate n={n}"),
+            n,
+            1,
+            3,
+            || {
+                let pts: Vec<(f64, f64)> = (0..n).map(|i| (halton(i, 2), halton(i, 3))).collect();
+                std::hint::black_box(pts);
+            },
+        ));
+        // Bin all points into a 256×256 density grid (scatter histogram).
+        let xs: Vec<f64> = (0..n).map(|i| halton(i, 2)).collect();
+        let ys: Vec<f64> = (0..n).map(|i| halton(i, 3)).collect();
+        const GRID: usize = 256;
+        results.push(bench_fn(
+            &format!("density_grid n={n} 256x256"),
+            n,
+            1,
+            3,
+            || {
+                let mut grid = vec![0u16; GRID * GRID];
+                for (&x, &y) in xs.iter().zip(ys.iter()) {
+                    let gx = ((x * GRID as f64) as usize).min(GRID - 1);
+                    let gy = ((y * GRID as f64) as usize).min(GRID - 1);
+                    grid[gy * GRID + gx] = grid[gy * GRID + gx].saturating_add(1);
+                }
+                std::hint::black_box(grid);
+            },
+        ));
+    }
+    ScenarioReport {
+        category: BenchCategory::PointCloud.id().into(),
+        results,
+    }
+}
+
+fn run_matmul_large() -> ScenarioReport {
+    let kernel = best_kernel();
+    let mut results = Vec::new();
+    for &size in &[256usize, 512, 1024] {
+        let a: Vec<f64> = (0..size * size).map(|i| (i as f64 * 0.001).sin()).collect();
+        let b: Vec<f64> = (0..size * size)
+            .map(|i| (i as f64 * 0.0013).cos())
+            .collect();
+        let iters = if size >= 1024 {
+            1
+        } else if size >= 512 {
+            2
+        } else {
+            5
+        };
+        // Report FLOPs = 2·N³ as the "scale" so throughput_ops_sec is FLOP/s.
+        let flops = 2 * size * size * size;
+        results.push(bench_fn(
+            &format!("gemm_f64 {size}\u{00d7}{size}"),
+            flops,
+            1,
+            iters,
+            || {
+                std::hint::black_box(kernel.gemm_f64(&a, &b, size, size, size));
+            },
+        ));
+    }
+    ScenarioReport {
+        category: BenchCategory::MatMulLarge.id().into(),
+        results,
+    }
+}
+
+fn run_attention_ops() -> ScenarioReport {
+    let kernel = best_kernel();
+    let mut results = Vec::new();
+    // (seq_len, d_model) — representative transformer attention configs
+    for &(seq, d_model) in &[(64usize, 64usize), (128, 64), (256, 64), (128, 128)] {
+        let q: Vec<f64> = (0..seq * d_model)
+            .map(|i| (i as f64 * 0.01).sin())
+            .collect();
+        let k: Vec<f64> = (0..seq * d_model)
+            .map(|i| (i as f64 * 0.013).cos())
+            .collect();
+        let v: Vec<f64> = (0..seq * d_model).map(|i| i as f64 * 0.001).collect();
+        // K^T: (d_model × seq)
+        let kt: Vec<f64> = {
+            let mut t = vec![0.0f64; seq * d_model];
+            for i in 0..seq {
+                for j in 0..d_model {
+                    t[j * seq + i] = k[i * d_model + j];
+                }
+            }
+            t
+        };
+        let scale = 1.0 / (d_model as f64).sqrt();
+        let iters = if seq >= 256 { 1 } else { 3 };
+        // FLOPs: 2·seq²·d_model (QK^T) + 2·seq²·d_model (Attn·V) ≈ 4·seq²·d_model
+        let flops = 4 * seq * seq * d_model;
+        results.push(bench_fn(
+            &format!("sdpa seq={seq} d={d_model}"),
+            flops,
+            1,
+            iters,
+            || {
+                // QK^T: (seq × d_model) × (d_model × seq) = (seq × seq)
+                // A is (m x k), B is (k x n). So m=seq, k=d_model, n=seq.
+                let qkt = kernel.gemm_f64(&q, &kt, seq, seq, d_model);
+                // scale + row-wise softmax
+                let mut attn = vec![0.0f64; seq * seq];
+                for r in 0..seq {
+                    let row = &qkt[r * seq..(r + 1) * seq];
+                    let max = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let exps: Vec<f64> = row.iter().map(|&x| ((x * scale) - max).exp()).collect();
+                    let sum: f64 = exps.iter().sum::<f64>().max(1e-30);
+                    for (j, &e) in exps.iter().enumerate() {
+                        attn[r * seq + j] = e / sum;
+                    }
+                }
+                // Attn × V: (seq × seq) × (seq × d_model) = (seq × d_model)
+                // A is (m x k), B is (k x n). So m=seq, k=seq, n=d_model.
+                let out = kernel.gemm_f64(&attn, &v, seq, d_model, seq);
+                std::hint::black_box(out);
+            },
+        ));
+    }
+    ScenarioReport {
+        category: BenchCategory::AttentionOps.id().into(),
+        results,
+    }
+}
+
+fn run_geometry_3d() -> ScenarioReport {
+    let mut results = Vec::new();
+    use std::f64::consts::PI;
+    // Precomputed rotation constants (angle = 0.1 rad)
+    let (cos_a, sin_a) = (0.1f64.cos(), 0.1f64.sin());
+    for &subdiv in &[32usize, 64, 128, 256] {
+        // Sphere vertices via latitude/longitude subdivision
+        let verts: Vec<[f64; 3]> = (0..=subdiv + 1)
+            .flat_map(|i| {
+                let theta = PI * i as f64 / subdiv as f64;
+                (0..=subdiv * 2).map(move |j| {
+                    let phi = 2.0 * PI * j as f64 / (subdiv * 2) as f64;
+                    [
+                        theta.sin() * phi.cos(),
+                        theta.cos(),
+                        theta.sin() * phi.sin(),
+                    ]
+                })
+            })
+            .collect();
+        let n = verts.len();
+        // Benchmark: rotate all vertices by Y-axis rotation matrix
+        results.push(bench_fn(
+            &format!("vertex_rotate_Y n={n} (subdiv={subdiv})"),
+            n,
+            2,
+            20,
+            || {
+                let t: Vec<[f64; 3]> = verts
+                    .iter()
+                    .map(|v| {
+                        [
+                            v[0] * cos_a + v[2] * sin_a,
+                            v[1],
+                            -v[0] * sin_a + v[2] * cos_a,
+                        ]
+                    })
+                    .collect();
+                std::hint::black_box(t);
+            },
+        ));
+        // Benchmark: perspective-project rotated vertices to 2D screen coords
+        results.push(bench_fn(
+            &format!("perspective_project n={n} (subdiv={subdiv})"),
+            n,
+            2,
+            20,
+            || {
+                let p: Vec<(f64, f64)> = verts
+                    .iter()
+                    .map(|v| {
+                        let z = v[2] + 3.0; // camera at z = 3
+                        (v[0] / z * 1.5, v[1] / z * 1.5)
+                    })
+                    .collect();
+                std::hint::black_box(p);
+            },
+        ));
+    }
+    ScenarioReport {
+        category: BenchCategory::Geometry3D.id().into(),
+        results,
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // Comparison tables
 // ══════════════════════════════════════════════════════════════════════════
@@ -971,255 +1397,422 @@ pub fn build_comparison_tables(
     compute_reports: &[ScenarioReport],
     framework_reports: &[ScenarioReport],
 ) -> Vec<ComparisonTable> {
+    use rayon::prelude::*;
+
+    // Shorthand constructors — avoids repeating the struct name everywhere.
+    let measured = |library: &str, ops: f64, notes: &str| LibComparison {
+        library: library.to_string(),
+        ops,
+        notes: notes.to_string(),
+        source: ComparisonSource::Measured,
+    };
+    let estimate = |library: &str, factor: f64, ac_ops: f64, notes: &str| LibComparison {
+        library: library.to_string(),
+        ops: ac_ops * factor,
+        notes: format!("[est.] {notes}"),
+        source: ComparisonSource::Estimate,
+    };
+
     let mut tables = Vec::new();
 
-    // Parallel map
-    let map_entries: Vec<ComparisonEntry> = compute_reports
-        .iter()
-        .flat_map(|r| &r.results)
-        .filter(|r| r.name.starts_with("map_f64"))
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "rayon (raw par_iter)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.95,
-                    notes: "any-compute uses rayon internally; overhead is trait dispatch (~5%)"
-                        .into(),
-                },
-                LibComparison {
-                    library: "std::iter (sequential)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.15,
-                    notes: "Single-threaded baseline".into(),
-                },
-            ],
-        })
-        .collect();
-    if !map_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Parallel Map (f64 element-wise)".into(),
-            entries: map_entries,
-        });
+    // ── Parallel Map ─────────────────────────────────────────────────
+    // Real alternatives: rayon par_iter direct, std::iter sequential.
+    {
+        let entries: Vec<ComparisonEntry> = compute_reports
+            .iter()
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("map_f64") && !r.name.contains("hinted"))
+            .map(|r| {
+                let n = r.scale;
+                let data = make_f64_data(n);
+                let seq = bench_fn(&format!("seq_map n={n}"), n, 2, 8, || {
+                    let out: Vec<f64> = data.iter().map(|&v| v * 2.0 + 1.0).collect();
+                    std::hint::black_box(out);
+                });
+                let ry = bench_fn(&format!("rayon_map n={n}"), n, 2, 8, || {
+                    let out: Vec<f64> = data.par_iter().map(|&v| v * 2.0 + 1.0).collect();
+                    std::hint::black_box(out);
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured("rayon::par_iter (raw, Rust)", ry.throughput_ops_sec,
+                            "Direct rayon — shows any-compute trait-dispatch overhead vs bare parallel iterator"),
+                        measured("std::iter (sequential, Rust)", seq.throughput_ops_sec,
+                            "Single-threaded iterator; no parallelism; compiler may auto-vec with AVX"),
+                        estimate("NumPy vectorized (Python)", 0.6, r.throughput_ops_sec,
+                            "C inner loop + Python dispatch + GIL; from numpy benchmark suite"),
+                        estimate("Node.js Float64Array loop", 0.08, r.throughput_ops_sec,
+                            "V8 JIT-compiled; no SIMD auto-vec for typed array loops in V8"),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Parallel Map (f64 element-wise)".into(),
+                entries,
+            });
+        }
     }
 
-    // Sort
-    let sort_entries: Vec<ComparisonEntry> = compute_reports
-        .iter()
-        .flat_map(|r| &r.results)
-        .filter(|r| r.name.starts_with("sort_f64"))
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "rayon par_sort_unstable".into(),
-                    estimated_ops: r.throughput_ops_sec * 1.0,
-                    notes: "Same implementation".into(),
-                },
-                LibComparison {
-                    library: "std::sort_unstable".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.25,
-                    notes: "Single-threaded pdqsort".into(),
-                },
-                LibComparison {
-                    library: "polars sort".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.85,
-                    notes: "Arrow columnar + rayon".into(),
-                },
-            ],
-        })
-        .collect();
-    if !sort_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Parallel Sort (f64)".into(),
-            entries: sort_entries,
-        });
+    // ── Sort ─────────────────────────────────────────────────────────
+    {
+        let entries: Vec<ComparisonEntry> = compute_reports
+            .iter()
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("sort_f64"))
+            .map(|r| {
+                let n = r.scale;
+                let original = make_f64_data(n);
+                let mut buf1 = original.clone();
+                let seq = bench_fn(&format!("std_sort n={n}"), n, 2, 5, || {
+                    buf1.copy_from_slice(&original);
+                    buf1.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                    std::hint::black_box(&buf1);
+                });
+                let mut buf2 = original.clone();
+                let ry = bench_fn(&format!("rayon_sort n={n}"), n, 2, 5, || {
+                    buf2.copy_from_slice(&original);
+                    buf2.par_sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                    std::hint::black_box(&buf2);
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured("rayon::par_sort_unstable (raw, Rust)", ry.throughput_ops_sec,
+                            "Direct rayon sort — any-compute wraps this; measures abstraction overhead"),
+                        measured("std::sort_unstable (sequential, Rust)", seq.throughput_ops_sec,
+                            "pdqsort — best single-threaded sort in Rust std"),
+                        estimate("polars sort (Rust/Arrow)", 0.85, r.throughput_ops_sec,
+                            "Apache Arrow columnar + rayon; heavier for single f64 arrays"),
+                        estimate("pandas sort_values (Python)", 0.3, r.throughput_ops_sec,
+                            "NumPy timsort; single-threaded by default; pyarrow backend ~2x faster"),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Sort (f64)".into(),
+                entries,
+            });
+        }
     }
 
-    // GEMM
-    let gemm_entries: Vec<ComparisonEntry> = kernel_reports
-        .iter()
-        .flat_map(|r| &r.results)
-        .filter(|r| r.name.starts_with("gemm"))
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "OpenBLAS dgemm".into(),
-                    estimated_ops: r.throughput_ops_sec * 15.0,
-                    notes: "Tuned BLAS; enable MKL feature for comparable perf".into(),
-                },
-                LibComparison {
-                    library: "Intel MKL dgemm".into(),
-                    estimated_ops: r.throughput_ops_sec * 20.0,
-                    notes: "Enable: --features mkl".into(),
-                },
-                LibComparison {
-                    library: "cuBLAS (NVIDIA GPU)".into(),
-                    estimated_ops: r.throughput_ops_sec * 100.0,
-                    notes: "Enable: --features cuda".into(),
-                },
-            ],
-        })
-        .collect();
-    if !gemm_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Matrix Multiply (GEMM, FP64)".into(),
-            entries: gemm_entries,
-        });
+    // ── Reduce (sum) ─────────────────────────────────────────────────
+    {
+        let entries: Vec<ComparisonEntry> = kernel_reports
+            .iter()
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("reduce_sum"))
+            .map(|r| {
+                let n = r.scale;
+                let data = make_f64_data(n);
+                let seq = bench_fn(&format!("iter_sum n={n}"), n, 3, 15, || {
+                    let s: f64 = data.iter().copied().sum();
+                    std::hint::black_box(s);
+                });
+                let ry = bench_fn(&format!("par_sum n={n}"), n, 3, 15, || {
+                    let s: f64 = data.par_iter().copied().sum();
+                    std::hint::black_box(s);
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured(
+                            "rayon::par_iter().sum() (raw)",
+                            ry.throughput_ops_sec,
+                            "Raw rayon reduction — kernel dispatches to this internally",
+                        ),
+                        measured(
+                            "std::iter().sum() (sequential)",
+                            seq.throughput_ops_sec,
+                            "Scalar accumulate; LLVM may auto-vec with AVX reduction",
+                        ),
+                        estimate(
+                            "numpy.sum() (Python)",
+                            0.7,
+                            r.throughput_ops_sec,
+                            "OpenBLAS/MKL SIMD reduction; Python overhead limits ~30%",
+                        ),
+                        estimate(
+                            "polars sum (Rust/Arrow)",
+                            0.9,
+                            r.throughput_ops_sec,
+                            "Arrow SIMD reduction; comparable, but heavier dep chain",
+                        ),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Reduction (sum, FP64)".into(),
+                entries,
+            });
+        }
     }
 
-    // Reductions
-    let reduce_entries: Vec<ComparisonEntry> = kernel_reports
-        .iter()
-        .flat_map(|r| &r.results)
-        .filter(|r| r.name.starts_with("reduce_sum"))
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "rayon par_iter().sum()".into(),
-                    estimated_ops: r.throughput_ops_sec * 1.0,
-                    notes: "Same implementation".into(),
-                },
-                LibComparison {
-                    library: "numpy.sum()".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.7,
-                    notes: "Python overhead".into(),
-                },
-            ],
-        })
-        .collect();
-    if !reduce_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Reduction (sum, FP64)".into(),
-            entries: reduce_entries,
-        });
+    // ── GEMM ─────────────────────────────────────────────────────────
+    // Measure naive triple-loop as intra-Rust baseline.
+    {
+        let entries: Vec<ComparisonEntry> = kernel_reports
+            .iter()
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("gemm"))
+            .map(|r| {
+                // r.scale = size² (set by runner as size*size)
+                let size = (r.scale as f64).sqrt() as usize;
+                let a = vec![1.0f64; size * size];
+                let b = vec![1.0f64; size * size];
+                let naive = bench_fn(&format!("naive_gemm {size}x{size}"), r.scale, 1, 2, || {
+                    let mut c = vec![0.0f64; size * size];
+                    for i in 0..size {
+                        for k in 0..size {
+                            for j in 0..size {
+                                c[i * size + j] += a[i * size + k] * b[k * size + j];
+                            }
+                        }
+                    }
+                    std::hint::black_box(c);
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured("naive ijk triple-loop (Rust)", naive.throughput_ops_sec,
+                            "Baseline: unblocked, unvectorized loop — shows our kernel's gain from blocking + rayon"),
+                        estimate("OpenBLAS dgemm", 15.0, r.throughput_ops_sec,
+                            "Hand-tuned SAGEMM; enable --features mkl for comparable"),
+                        estimate("Intel MKL dgemm", 20.0, r.throughput_ops_sec,
+                            "Intel-optimized AMX/AVX-512 kernels; enable: --features mkl"),
+                        estimate("cuBLAS (NVIDIA GPU)", 100.0, r.throughput_ops_sec,
+                            "GPU tensor cores; enable: --features cuda; varies by GPU model"),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Matrix Multiply (GEMM, FP64)".into(),
+                entries,
+            });
+        }
     }
 
-    // ── UI framework comparisons ──────────────────────────────────────
-
-    // Render list assembly vs JS UI frameworks
-    let render_entries: Vec<ComparisonEntry> = framework_reports
-        .iter()
-        .filter(|r| r.category == BenchCategory::RenderList.id())
-        .flat_map(|r| &r.results)
-        .filter(|r| r.name.starts_with("build") && r.name.contains("rect primitives"))
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "React (virtual DOM reconciliation)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.005,
-                    notes: "JS VDOM diff + fiber scheduler + createElement; ~200x slower for raw primitives".into(),
-                },
-                LibComparison {
-                    library: "Angular (change detection + Renderer2)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.004,
-                    notes: "Zone.js + incremental DOM; heavier per-element overhead than React".into(),
-                },
-                LibComparison {
-                    library: "Vanilla JS (document.createElement)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.01,
-                    notes: "Direct DOM API; no framework overhead but still JS→C++ bridge per call".into(),
-                },
-                LibComparison {
-                    library: "Dioxus (Rust VDOM)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.3,
-                    notes: "Rust virtual DOM diffing; same language but VDOM reconciliation overhead".into(),
-                },
-            ],
-        })
-        .collect();
-    if !render_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Render List Assembly vs UI Frameworks".into(),
-            entries: render_entries,
-        });
+    // ── Animation tick ───────────────────────────────────────────────
+    // Measure raw lerp math vs full Transition<f64> evaluation overhead.
+    {
+        let entries: Vec<ComparisonEntry> = framework_reports
+            .iter()
+            .filter(|r| r.category == BenchCategory::Animation.id())
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("tick_f64"))
+            .map(|r| {
+                let n = r.scale;
+                let raw = bench_fn(&format!("raw_lerp_loop n={n}"), n, 3, 50, || {
+                    let mut s = 0.0f64;
+                    for i in 0..n {
+                        let t = i as f64 / n as f64;
+                        s += 100.0 * t;
+                    }
+                    std::hint::black_box(s);
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured("raw lerp loop (no Transition struct)", raw.throughput_ops_sec,
+                            "Inline `a + (b-a)*t` — measures Transition<f64> overhead: easing eval + time delta"),
+                        estimate("React Spring (JS)", 0.02, r.throughput_ops_sec,
+                            "Spring physics; per-frame object allocation + V8 GC; ~50x slower for batches"),
+                        estimate("GSAP tweening (JS)", 0.03, r.throughput_ops_sec,
+                            "Optimized JS tweening; better than React Spring but still GC-bound"),
+                        estimate("CSS Transitions (browser compositing)", 0.1, r.throughput_ops_sec,
+                            "GPU composited for CSS props only; cannot animate arbitrary numeric values"),
+                        estimate("Bevy Transform (Rust ECS)", 0.7, r.throughput_ops_sec,
+                            "Archetype ECS iteration; no GC; comparable overhead from system scheduling"),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Animation Tick Throughput".into(),
+                entries,
+            });
+        }
     }
 
-    // Animation tick throughput vs JS animation
-    let anim_entries: Vec<ComparisonEntry> = framework_reports
-        .iter()
-        .filter(|r| r.category == BenchCategory::Animation.id())
-        .flat_map(|r| &r.results)
-        .filter(|r| r.name.starts_with("tick_f64"))
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "React Spring (JS)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.02,
-                    notes: "JS physics-based; per-frame style object allocation + GC pressure"
-                        .into(),
-                },
-                LibComparison {
-                    library: "Angular Animations (@angular/animations)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.015,
-                    notes: "AnimationBuilder + Zone.js scheduling; heavy for batch transitions"
-                        .into(),
-                },
-                LibComparison {
-                    library: "CSS Transitions (browser-native)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.1,
-                    notes: "Compositor-accelerated when applicable; limited to style properties"
-                        .into(),
-                },
-                LibComparison {
-                    library: "Web Animations API (JS)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.05,
-                    notes: "Native browser API; better than JS libs but still JS bridge overhead"
-                        .into(),
-                },
-            ],
-        })
-        .collect();
-    if !anim_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Animation Tick vs UI Frameworks".into(),
-            entries: anim_entries,
-        });
+    // ── Render list ──────────────────────────────────────────────────
+    // Compare against raw Vec push as intra-Rust baseline.
+    {
+        let entries: Vec<ComparisonEntry> = framework_reports
+            .iter()
+            .filter(|r| r.category == BenchCategory::RenderList.id())
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("build") && r.name.contains("rect primitives"))
+            .map(|r| {
+                let n = r.scale;
+                let raw = bench_fn(&format!("raw_vec_push n={n}"), n, 3, 30, || {
+                    let mut v: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(n);
+                    for i in 0..n {
+                        v.push((0.0, i as f64 * 28.0, 1920.0, 28.0));
+                    }
+                    std::hint::black_box(v.len());
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured("raw Vec<(f64,f64,f64,f64)> push", raw.throughput_ops_sec,
+                            "Minimal tuple; measures Primitive enum overhead + Color struct in RenderList"),
+                        estimate("React createElement (JS VDOM)", 0.005, r.throughput_ops_sec,
+                            "createElement + fiber scheduling + reconciliation; ~200x slower per primitive"),
+                        estimate("Svelte (compiled, no VDOM)", 0.015, r.throughput_ops_sec,
+                            "Compiled DOM mutations; lightest web framework — still JS→C++ bridge per node"),
+                        estimate("Dioxus (Rust VDOM)", 0.3, r.throughput_ops_sec,
+                            "Rust VDOM diffing; same language advantage but reconciliation overhead"),
+                        estimate("egui (immediate mode, Rust)", 0.5, r.throughput_ops_sec,
+                            "No VDOM; retained allocs; comparable path for simple rectangle lists"),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Render List Assembly".into(),
+                entries,
+            });
+        }
     }
 
-    // Lerp / interpolation vs JS math
-    let lerp_entries: Vec<ComparisonEntry> = framework_reports
-        .iter()
-        .filter(|r| r.category == BenchCategory::LerpThroughput.id())
-        .flat_map(|r| &r.results)
-        .map(|r| ComparisonEntry {
-            operation: r.name.clone(),
-            any_compute_us: r.duration_us,
-            any_compute_ops: r.throughput_ops_sec,
-            comparisons: vec![
-                LibComparison {
-                    library: "JS Math (manual lerp)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.08,
-                    notes: "V8 JIT-compiled; boxed doubles + no SIMD auto-vectorization".into(),
-                },
-                LibComparison {
-                    library: "glMatrix (JS)".into(),
-                    estimated_ops: r.throughput_ops_sec * 0.1,
-                    notes: "TypedArrays help; still no SIMD without explicit WASM".into(),
-                },
-            ],
-        })
-        .collect();
-    if !lerp_entries.is_empty() {
-        tables.push(ComparisonTable {
-            category: "Interpolation Throughput vs JS".into(),
-            entries: lerp_entries,
-        });
+    // ── Lerp throughput ──────────────────────────────────────────────
+    {
+        let entries: Vec<ComparisonEntry> = framework_reports
+            .iter()
+            .filter(|r| r.category == BenchCategory::LerpThroughput.id())
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("f64 lerp"))
+            .map(|r| {
+                let n = LERP_COUNT;
+                let manual = bench_fn("manual_inline_lerp 1M", n, 2, 5, || {
+                    for i in 0..n {
+                        let t = i as f64 / n as f64;
+                        std::hint::black_box(0.0f64 + (100.0 - 0.0) * t);
+                    }
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured(
+                            "inline `a + (b-a)*t` expression",
+                            manual.throughput_ops_sec,
+                            "No trait dispatch; measures monomorphization cost of Lerp<f64>",
+                        ),
+                        estimate(
+                            "JS Math manual lerp (V8)",
+                            0.08,
+                            r.throughput_ops_sec,
+                            "Boxed doubles in V8; no SIMD auto-vec; JIT helps but not comparable",
+                        ),
+                        estimate(
+                            "glMatrix lerp (TypedArray, JS)",
+                            0.10,
+                            r.throughput_ops_sec,
+                            "TypedArrays reduce boxing; still no WASM-level SIMD",
+                        ),
+                        estimate(
+                            "Bevy Vec3::lerp (glam SIMD, Rust)",
+                            0.95,
+                            r.throughput_ops_sec,
+                            "glam uses SIMD intrinsics; nearly identical for scalar f64",
+                        ),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Interpolation (Lerp) Throughput".into(),
+                entries,
+            });
+        }
+    }
+
+    // ── Event dispatch ───────────────────────────────────────────────
+    // Measure direct single-phase dispatch vs our 3-phase EventContext.
+    {
+        use crate::interaction::{EventContext, EventResponse, Interactive};
+
+        struct DummyNode {
+            bounds: Rect,
+            calls: u32,
+        }
+        impl Interactive for DummyNode {
+            fn bounds(&self) -> Rect {
+                self.bounds
+            }
+            fn handle_event(&mut self, _: &mut EventContext) -> EventResponse {
+                self.calls += 1;
+                EventResponse::Ignored
+            }
+        }
+
+        let entries: Vec<ComparisonEntry> = framework_reports
+            .iter()
+            .filter(|r| r.category == BenchCategory::EventHandling.id())
+            .flat_map(|r| &r.results)
+            .filter(|r| r.name.starts_with("3-phase dispatch"))
+            .map(|r| {
+                let n = r.scale;
+                let mut nodes: Vec<DummyNode> = (0..n)
+                    .map(|i| DummyNode { bounds: Rect::new(i as f64, 0.0, (i+1) as f64, 10.0), calls: 0 })
+                    .collect();
+                // Direct single-phase callback loop (no EventContext, no phase enum)
+                let direct = bench_fn(&format!("direct_dispatch n={n}"), n, 2, 5, || {
+                    for node in nodes.iter_mut() {
+                        node.calls += 1;
+                    }
+                    std::hint::black_box(nodes[0].calls);
+                });
+                ComparisonEntry {
+                    operation: r.name.clone(),
+                    any_compute_us: r.duration_us,
+                    any_compute_ops: r.throughput_ops_sec,
+                    comparisons: vec![
+                        measured("direct callback loop (no 3-phase)", direct.throughput_ops_sec,
+                            "Single-pass node iteration; measures cost of capture/bubble phase + EventContext struct"),
+                        estimate("React SyntheticEvent delegation (JS)", 0.03, r.throughput_ops_sec,
+                            "Pooled event; fiber scheduler overhead; JS bridge; ~30x slower for 10k nodes"),
+                        estimate("DOM native addEventListener (browser)", 0.05, r.throughput_ops_sec,
+                            "Browser C++ event; JS handler invocation overhead per node"),
+                        estimate("Svelte on:event (compiled JS)", 0.08, r.throughput_ops_sec,
+                            "Compiled to direct DOM event; lightest web-framework overhead"),
+                        estimate("Bevy EventReader (Rust ECS)", 0.8, r.throughput_ops_sec,
+                            "ECS event channel; no phase overhead; near-zero alloc"),
+                    ],
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            tables.push(ComparisonTable {
+                category: "Event Dispatch Throughput".into(),
+                entries,
+            });
+        }
     }
 
     tables
@@ -1299,6 +1892,14 @@ pub fn format_ops(ops: f64) -> String {
 
 pub fn format_bytes(bytes: u64) -> String {
     format!("{}", SizeFormatter::new(bytes, BINARY))
+}
+
+pub fn format_hz(mhz: u64) -> String {
+    if mhz > 1000 {
+        format!("{:.2} GHz", mhz as f64 / 1000.0)
+    } else {
+        format!("{} MHz", mhz)
+    }
 }
 
 pub fn comparison_indicator(ratio: f64) -> &'static str {
@@ -1405,93 +2006,575 @@ pub fn reference_comparisons() -> Vec<ReferenceComparison> {
     };
     vec![
         // ── Compute: Parallel map / transform ────────────────────────
-        r("Compute", "Parallel Map", "rayon par_iter (Rust)", 0.95, "Same backend; ~5% dispatch overhead"),
-        r("Compute", "Parallel Map", "std::iter (Rust, sequential)", 0.15, "Single-threaded baseline"),
-        r("Compute", "Parallel Map", "NumPy vectorized (Python)", 0.6, "C inner loop but Python dispatch + GIL"),
-        r("Compute", "Parallel Map", "Bun (JS, JIT-compiled)", 0.08, "V8-level JIT; no SIMD auto-vectorization"),
-        r("Compute", "Parallel Map", "Node.js worker_threads", 0.05, "JS overhead + serialization between workers"),
-        r("Compute", "Parallel Map", "Deno (V8 + Rust internals)", 0.07, "Similar to Bun/Node; slight Rust FFI edge"),
-
+        r(
+            "Compute",
+            "Parallel Map",
+            "rayon par_iter (Rust)",
+            0.95,
+            "Same backend; ~5% dispatch overhead",
+        ),
+        r(
+            "Compute",
+            "Parallel Map",
+            "std::iter (Rust, sequential)",
+            0.15,
+            "Single-threaded baseline",
+        ),
+        r(
+            "Compute",
+            "Parallel Map",
+            "NumPy vectorized (Python)",
+            0.6,
+            "C inner loop but Python dispatch + GIL",
+        ),
+        r(
+            "Compute",
+            "Parallel Map",
+            "Bun (JS, JIT-compiled)",
+            0.08,
+            "V8-level JIT; no SIMD auto-vectorization",
+        ),
+        r(
+            "Compute",
+            "Parallel Map",
+            "Node.js worker_threads",
+            0.05,
+            "JS overhead + serialization between workers",
+        ),
+        r(
+            "Compute",
+            "Parallel Map",
+            "Deno (V8 + Rust internals)",
+            0.07,
+            "Similar to Bun/Node; slight Rust FFI edge",
+        ),
         // ── Compute: Sort ────────────────────────────────────────────
-        r("Compute", "Sort", "rayon par_sort_unstable (Rust)", 1.0, "Same implementation"),
-        r("Compute", "Sort", "std::sort_unstable (Rust)", 0.25, "Single-threaded pdqsort"),
-        r("Compute", "Sort", "polars sort (Rust/Arrow)", 0.85, "Arrow columnar + rayon"),
-        r("Compute", "Sort", "pandas sort_values (Python)", 0.3, "NumPy/timsort; single-threaded by default"),
-        r("Compute", "Sort", "Bun Array.sort (JS)", 0.12, "V8 TimSort; no parallelism"),
-
+        r(
+            "Compute",
+            "Sort",
+            "rayon par_sort_unstable (Rust)",
+            1.0,
+            "Same implementation",
+        ),
+        r(
+            "Compute",
+            "Sort",
+            "std::sort_unstable (Rust)",
+            0.25,
+            "Single-threaded pdqsort",
+        ),
+        r(
+            "Compute",
+            "Sort",
+            "polars sort (Rust/Arrow)",
+            0.85,
+            "Arrow columnar + rayon",
+        ),
+        r(
+            "Compute",
+            "Sort",
+            "pandas sort_values (Python)",
+            0.3,
+            "NumPy/timsort; single-threaded by default",
+        ),
+        r(
+            "Compute",
+            "Sort",
+            "Bun Array.sort (JS)",
+            0.12,
+            "V8 TimSort; no parallelism",
+        ),
         // ── Compute: GEMM / Matrix Multiply ──────────────────────────
-        r("Compute", "GEMM", "OpenBLAS dgemm", 15.0, "Hand-tuned BLAS with SIMD kernels"),
-        r("Compute", "GEMM", "Intel MKL dgemm", 20.0, "Intel-optimized; --features mkl"),
-        r("Compute", "GEMM", "cuBLAS (NVIDIA GPU)", 100.0, "GPU tensor cores; --features cuda"),
-        r("Compute", "GEMM", "PyTorch matmul (CPU)", 12.0, "Uses OpenBLAS/MKL internally"),
-        r("Compute", "GEMM", "PyTorch matmul (CUDA)", 120.0, "cuBLAS + tensor cores"),
-        r("Compute", "GEMM", "TensorFlow matmul (CPU)", 11.0, "Eigen/MKL backend"),
-        r("Compute", "GEMM", "NumPy dot (Python)", 10.0, "BLAS backend (OpenBLAS/MKL)"),
-
+        r(
+            "Compute",
+            "GEMM",
+            "OpenBLAS dgemm",
+            15.0,
+            "Hand-tuned BLAS with SIMD kernels",
+        ),
+        r(
+            "Compute",
+            "GEMM",
+            "Intel MKL dgemm",
+            20.0,
+            "Intel-optimized; --features mkl",
+        ),
+        r(
+            "Compute",
+            "GEMM",
+            "cuBLAS (NVIDIA GPU)",
+            100.0,
+            "GPU tensor cores; --features cuda",
+        ),
+        r(
+            "Compute",
+            "GEMM",
+            "PyTorch matmul (CPU)",
+            12.0,
+            "Uses OpenBLAS/MKL internally",
+        ),
+        r(
+            "Compute",
+            "GEMM",
+            "PyTorch matmul (CUDA)",
+            120.0,
+            "cuBLAS + tensor cores",
+        ),
+        r(
+            "Compute",
+            "GEMM",
+            "TensorFlow matmul (CPU)",
+            11.0,
+            "Eigen/MKL backend",
+        ),
+        r(
+            "Compute",
+            "GEMM",
+            "NumPy dot (Python)",
+            10.0,
+            "BLAS backend (OpenBLAS/MKL)",
+        ),
         // ── Compute: Reduction ───────────────────────────────────────
-        r("Compute", "Reduction", "rayon par_iter().sum()", 1.0, "Same implementation"),
-        r("Compute", "Reduction", "numpy.sum() (Python)", 0.7, "C inner loop; Python overhead"),
-        r("Compute", "Reduction", "PyTorch .sum() CPU", 0.8, "Optimized AVX reduction"),
-        r("Compute", "Reduction", "polars sum (Rust/Arrow)", 0.9, "Arrow + SIMD"),
-        r("Compute", "Reduction", "Bun reduce (JS)", 0.06, "V8 JIT; no SIMD"),
-
+        r(
+            "Compute",
+            "Reduction",
+            "rayon par_iter().sum()",
+            1.0,
+            "Same implementation",
+        ),
+        r(
+            "Compute",
+            "Reduction",
+            "numpy.sum() (Python)",
+            0.7,
+            "C inner loop; Python overhead",
+        ),
+        r(
+            "Compute",
+            "Reduction",
+            "PyTorch .sum() CPU",
+            0.8,
+            "Optimized AVX reduction",
+        ),
+        r(
+            "Compute",
+            "Reduction",
+            "polars sum (Rust/Arrow)",
+            0.9,
+            "Arrow + SIMD",
+        ),
+        r(
+            "Compute",
+            "Reduction",
+            "Bun reduce (JS)",
+            0.06,
+            "V8 JIT; no SIMD",
+        ),
         // ── UI: Render list assembly ─────────────────────────────────
-        r("UI Rendering", "Render List", "React (virtual DOM reconciliation)", 0.005, "JS VDOM diff + fiber scheduler; ~200x slower"),
-        r("UI Rendering", "Render List", "Angular (Renderer2 + change detection)", 0.004, "Zone.js + incremental DOM"),
-        r("UI Rendering", "Render List", "Vue 3 (Proxy reactivity + patch)", 0.006, "Faster VDOM than React; still JS overhead"),
-        r("UI Rendering", "Render List", "Svelte (compiled output, no VDOM)", 0.015, "Compiled; less overhead than React/Vue"),
-        r("UI Rendering", "Render List", "Solid.js (fine-grained reactivity)", 0.02, "No VDOM; signals-based; still JS"),
-        r("UI Rendering", "Render List", "Vanilla JS (document.createElement)", 0.01, "No framework; JS→C++ bridge per call"),
-        r("UI Rendering", "Render List", "Dioxus (Rust VDOM)", 0.3, "Rust VDOM diffing; same language"),
-        r("UI Rendering", "Render List", "Yew (Rust VDOM + WASM)", 0.25, "WASM + VDOM; WebAssembly overhead"),
-        r("UI Rendering", "Render List", "egui (Rust immediate mode)", 0.5, "No VDOM; immediate mode; retained allocs"),
-        r("UI Rendering", "Render List", "iced (Rust Elm arch)", 0.4, "Elm architecture; message passing overhead"),
-
+        r(
+            "UI Rendering",
+            "Render List",
+            "React (virtual DOM reconciliation)",
+            0.005,
+            "JS VDOM diff + fiber scheduler; ~200x slower",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Angular (Renderer2 + change detection)",
+            0.004,
+            "Zone.js + incremental DOM",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Vue 3 (Proxy reactivity + patch)",
+            0.006,
+            "Faster VDOM than React; still JS overhead",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Svelte (compiled output, no VDOM)",
+            0.015,
+            "Compiled; less overhead than React/Vue",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Solid.js (fine-grained reactivity)",
+            0.02,
+            "No VDOM; signals-based; still JS",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Vanilla JS (document.createElement)",
+            0.01,
+            "No framework; JS→C++ bridge per call",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Dioxus (Rust VDOM)",
+            0.3,
+            "Rust VDOM diffing; same language",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "Yew (Rust VDOM + WASM)",
+            0.25,
+            "WASM + VDOM; WebAssembly overhead",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "egui (Rust immediate mode)",
+            0.5,
+            "No VDOM; immediate mode; retained allocs",
+        ),
+        r(
+            "UI Rendering",
+            "Render List",
+            "iced (Rust Elm arch)",
+            0.4,
+            "Elm architecture; message passing overhead",
+        ),
         // ── UI: Animation / transitions ──────────────────────────────
-        r("Animation", "Transition Tick", "React Spring (JS)", 0.02, "Physics-based; per-frame allocations + GC"),
-        r("Animation", "Transition Tick", "GSAP (JS)", 0.03, "Optimized JS tweening; still GC-bound for batches"),
-        r("Animation", "Transition Tick", "Framer Motion (React)", 0.015, "React + spring physics; component overhead"),
-        r("Animation", "Transition Tick", "Angular Animations", 0.015, "AnimationBuilder + Zone.js scheduling"),
-        r("Animation", "Transition Tick", "CSS Transitions (browser-native)", 0.1, "Compositor-accelerated; limited to style props"),
-        r("Animation", "Transition Tick", "Web Animations API (JS)", 0.05, "Browser-native; JS bridge overhead"),
-        r("Animation", "Transition Tick", "Bevy Transform animation (Rust/ECS)", 0.7, "ECS batch iteration; no GC"),
-        r("Animation", "Transition Tick", "Unity Animator (C#)", 0.3, "C# managed heap; state machine overhead"),
-        r("Animation", "Transition Tick", "Godot Tween (GDScript)", 0.1, "Interpreted GDScript; node tree traversal"),
-
+        r(
+            "Animation",
+            "Transition Tick",
+            "React Spring (JS)",
+            0.02,
+            "Physics-based; per-frame allocations + GC",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "GSAP (JS)",
+            0.03,
+            "Optimized JS tweening; still GC-bound for batches",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "Framer Motion (React)",
+            0.015,
+            "React + spring physics; component overhead",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "Angular Animations",
+            0.015,
+            "AnimationBuilder + Zone.js scheduling",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "CSS Transitions (browser-native)",
+            0.1,
+            "Compositor-accelerated; limited to style props",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "Web Animations API (JS)",
+            0.05,
+            "Browser-native; JS bridge overhead",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "Bevy Transform animation (Rust/ECS)",
+            0.7,
+            "ECS batch iteration; no GC",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "Unity Animator (C#)",
+            0.3,
+            "C# managed heap; state machine overhead",
+        ),
+        r(
+            "Animation",
+            "Transition Tick",
+            "Godot Tween (GDScript)",
+            0.1,
+            "Interpreted GDScript; node tree traversal",
+        ),
         // ── UI: Data virtualization ──────────────────────────────────
-        r("UI Rendering", "Data Virtualization", "react-window (JS)", 0.01, "JS row measurement + React reconciliation"),
-        r("UI Rendering", "Data Virtualization", "react-virtuoso (JS)", 0.008, "Dynamic height measurement; heavier than react-window"),
-        r("UI Rendering", "Data Virtualization", "AG Grid (JS)", 0.005, "Enterprise grid; feature-heavy DOM management"),
-        r("UI Rendering", "Data Virtualization", "Tabulator (JS)", 0.007, "Vanilla JS grid; no framework dep"),
-
+        r(
+            "UI Rendering",
+            "Data Virtualization",
+            "react-window (JS)",
+            0.01,
+            "JS row measurement + React reconciliation",
+        ),
+        r(
+            "UI Rendering",
+            "Data Virtualization",
+            "react-virtuoso (JS)",
+            0.008,
+            "Dynamic height measurement; heavier than react-window",
+        ),
+        r(
+            "UI Rendering",
+            "Data Virtualization",
+            "AG Grid (JS)",
+            0.005,
+            "Enterprise grid; feature-heavy DOM management",
+        ),
+        r(
+            "UI Rendering",
+            "Data Virtualization",
+            "Tabulator (JS)",
+            0.007,
+            "Vanilla JS grid; no framework dep",
+        ),
         // ── Interpolation ────────────────────────────────────────────
-        r("Math", "Lerp / Interpolation", "JS Math (manual lerp)", 0.08, "V8 JIT; boxed doubles, no SIMD auto-vec"),
-        r("Math", "Lerp / Interpolation", "glMatrix (JS)", 0.1, "TypedArrays; no SIMD without WASM"),
-        r("Math", "Lerp / Interpolation", "Unity Mathf.Lerp (C#)", 0.4, "JIT-compiled C#; Mono/IL2CPP"),
-        r("Math", "Lerp / Interpolation", "Godot lerp (GDScript)", 0.05, "Interpreted; per-call overhead"),
-        r("Math", "Lerp / Interpolation", "Bevy Vec3::lerp (Rust)", 0.95, "Same language; glam SIMD"),
-        r("Math", "Lerp / Interpolation", "NumPy interp (Python)", 0.3, "Vectorized C; Python dispatch"),
-
+        r(
+            "Math",
+            "Lerp / Interpolation",
+            "JS Math (manual lerp)",
+            0.08,
+            "V8 JIT; boxed doubles, no SIMD auto-vec",
+        ),
+        r(
+            "Math",
+            "Lerp / Interpolation",
+            "glMatrix (JS)",
+            0.1,
+            "TypedArrays; no SIMD without WASM",
+        ),
+        r(
+            "Math",
+            "Lerp / Interpolation",
+            "Unity Mathf.Lerp (C#)",
+            0.4,
+            "JIT-compiled C#; Mono/IL2CPP",
+        ),
+        r(
+            "Math",
+            "Lerp / Interpolation",
+            "Godot lerp (GDScript)",
+            0.05,
+            "Interpreted; per-call overhead",
+        ),
+        r(
+            "Math",
+            "Lerp / Interpolation",
+            "Bevy Vec3::lerp (Rust)",
+            0.95,
+            "Same language; glam SIMD",
+        ),
+        r(
+            "Math",
+            "Lerp / Interpolation",
+            "NumPy interp (Python)",
+            0.3,
+            "Vectorized C; Python dispatch",
+        ),
         // ── Game engines: frame time / ECS ───────────────────────────
-        r("Game Engine", "ECS Iteration (10K entities)", "Bevy ECS (Rust)", 0.9, "Archetype storage; cache-friendly"),
-        r("Game Engine", "ECS Iteration (10K entities)", "Unity DOTS/ECS (C#)", 0.6, "Burst compiler; managed GC pauses"),
-        r("Game Engine", "ECS Iteration (10K entities)", "Godot (GDScript)", 0.05, "Scene tree; interpreted; no ECS"),
-        r("Game Engine", "ECS Iteration (10K entities)", "Unreal Engine (C++)", 0.7, "UObject system; GC + reflection"),
-        r("Game Engine", "Frame Update Loop", "Bevy (Rust)", 0.85, "Pure ECS; zero GC"),
-        r("Game Engine", "Frame Update Loop", "Unity (C# Mono)", 0.3, "GC pauses; managed overhead"),
-        r("Game Engine", "Frame Update Loop", "Godot 4.x (GDScript)", 0.1, "Interpreted scripts; node tree"),
-        r("Game Engine", "Frame Update Loop", "Unreal Engine 5 (C++)", 0.5, "Nanite/Lumen overhead; heavy runtime"),
-
+        r(
+            "Game Engine",
+            "ECS Iteration (10K entities)",
+            "Bevy ECS (Rust)",
+            0.9,
+            "Archetype storage; cache-friendly",
+        ),
+        r(
+            "Game Engine",
+            "ECS Iteration (10K entities)",
+            "Unity DOTS/ECS (C#)",
+            0.6,
+            "Burst compiler; managed GC pauses",
+        ),
+        r(
+            "Game Engine",
+            "ECS Iteration (10K entities)",
+            "Godot (GDScript)",
+            0.05,
+            "Scene tree; interpreted; no ECS",
+        ),
+        r(
+            "Game Engine",
+            "ECS Iteration (10K entities)",
+            "Unreal Engine (C++)",
+            0.7,
+            "UObject system; GC + reflection",
+        ),
+        r(
+            "Game Engine",
+            "Frame Update Loop",
+            "Bevy (Rust)",
+            0.85,
+            "Pure ECS; zero GC",
+        ),
+        r(
+            "Game Engine",
+            "Frame Update Loop",
+            "Unity (C# Mono)",
+            0.3,
+            "GC pauses; managed overhead",
+        ),
+        r(
+            "Game Engine",
+            "Frame Update Loop",
+            "Godot 4.x (GDScript)",
+            0.1,
+            "Interpreted scripts; node tree",
+        ),
+        r(
+            "Game Engine",
+            "Frame Update Loop",
+            "Unreal Engine 5 (C++)",
+            0.5,
+            "Nanite/Lumen overhead; heavy runtime",
+        ),
         // ── AI / ML inference latency ────────────────────────────────
-        r("AI Inference", "Elementwise (10M f64)", "PyTorch CPU", 0.8, "ATen C++ core; operator dispatch overhead"),
-        r("AI Inference", "Elementwise (10M f64)", "TensorFlow CPU", 0.7, "Eigen backend; graph execution overhead"),
-        r("AI Inference", "Elementwise (10M f64)", "ONNX Runtime CPU", 0.85, "Optimized graph; less overhead than TF"),
-        r("AI Inference", "Elementwise (10M f64)", "JAX CPU", 0.75, "XLA compilation; great for large batches"),
-        r("AI Inference", "Batch Matmul Latency", "PyTorch CUDA", 150.0, "cuBLAS + tensor cores; GPU memory BW"),
-        r("AI Inference", "Batch Matmul Latency", "TensorRT (NVIDIA)", 200.0, "Fused kernels; INT8/FP16 quantization"),
-        r("AI Inference", "Batch Matmul Latency", "ONNX Runtime CUDA", 130.0, "cuDNN backend; graph optimization"),
-        r("AI Inference", "Token Generation (LLM)", "llama.cpp CPU (AVX2)", 0.6, "Quantized INT4/INT8; hand-tuned SIMD"),
-        r("AI Inference", "Token Generation (LLM)", "llama.cpp CUDA", 20.0, "GPU inference; depends on model size"),
-        r("AI Inference", "Token Generation (LLM)", "vLLM (Python/CUDA)", 25.0, "PagedAttention; optimized KV cache"),
+        r(
+            "AI Inference",
+            "Elementwise (10M f64)",
+            "PyTorch CPU",
+            0.8,
+            "ATen C++ core; operator dispatch overhead",
+        ),
+        r(
+            "AI Inference",
+            "Elementwise (10M f64)",
+            "TensorFlow CPU",
+            0.7,
+            "Eigen backend; graph execution overhead",
+        ),
+        r(
+            "AI Inference",
+            "Elementwise (10M f64)",
+            "ONNX Runtime CPU",
+            0.85,
+            "Optimized graph; less overhead than TF",
+        ),
+        r(
+            "AI Inference",
+            "Elementwise (10M f64)",
+            "JAX CPU",
+            0.75,
+            "XLA compilation; great for large batches",
+        ),
+        r(
+            "AI Inference",
+            "Batch Matmul Latency",
+            "PyTorch CUDA",
+            150.0,
+            "cuBLAS + tensor cores; GPU memory BW",
+        ),
+        r(
+            "AI Inference",
+            "Batch Matmul Latency",
+            "TensorRT (NVIDIA)",
+            200.0,
+            "Fused kernels; INT8/FP16 quantization",
+        ),
+        r(
+            "AI Inference",
+            "Batch Matmul Latency",
+            "ONNX Runtime CUDA",
+            130.0,
+            "cuDNN backend; graph optimization",
+        ),
+        r(
+            "AI Inference",
+            "Token Generation (LLM)",
+            "llama.cpp CPU (AVX2)",
+            0.6,
+            "Quantized INT4/INT8; hand-tuned SIMD",
+        ),
+        r(
+            "AI Inference",
+            "Token Generation (LLM)",
+            "llama.cpp CUDA",
+            20.0,
+            "GPU inference; depends on model size",
+        ),
+        r(
+            "AI Inference",
+            "Token Generation (LLM)",
+            "vLLM (Python/CUDA)",
+            25.0,
+            "PagedAttention; optimized KV cache",
+        ),
+        // ── Event handling ───────────────────────────────────────────
+        r(
+            "Events",
+            "Event Dispatch (batch 10k)",
+            "React SyntheticEvent",
+            0.03,
+            "Pooled event objects + React fiber scheduler; GC on large batches",
+        ),
+        r(
+            "Events",
+            "Event Dispatch (batch 10k)",
+            "DOM native Event (browser)",
+            0.05,
+            "C++ native; JS bridge per dispatch call",
+        ),
+        r(
+            "Events",
+            "Event Dispatch (batch 10k)",
+            "Vue 3 emit",
+            0.04,
+            "Proxy-based reactivity; lighter than React but still JS dispatch",
+        ),
+        r(
+            "Events",
+            "Event Dispatch (batch 10k)",
+            "Angular EventEmitter",
+            0.02,
+            "Zone.js + change detection trigger; heaviest framework overhead",
+        ),
+        r(
+            "Events",
+            "Event Dispatch (batch 10k)",
+            "Svelte dispatch (compiled)",
+            0.08,
+            "Compiled to direct DOM calls; lightest web framework",
+        ),
+        r(
+            "Events",
+            "Hit-Test (100k rects)",
+            "react-use-gesture",
+            0.01,
+            "JS bounding rect API per pointer event + React state update",
+        ),
+        r(
+            "Events",
+            "Hit-Test (100k rects)",
+            "Hammer.js",
+            0.02,
+            "Gesture recognizer; JS touch/pointer API overhead",
+        ),
+        r(
+            "Events",
+            "Hit-Test (100k rects)",
+            "Bevy (Rust ECS hit-test)",
+            0.7,
+            "Archetype storage; cache-friendly AABB iteration",
+        ),
+        r(
+            "Events",
+            "3-Phase Propagation",
+            "DOM capture/bubble",
+            0.04,
+            "Browser-native C++ propagation + JS listener invocation overhead",
+        ),
+        r(
+            "Events",
+            "3-Phase Propagation",
+            "React event delegation (root)",
+            0.03,
+            "Single root listener + synthetic event construction",
+        ),
     ]
 }

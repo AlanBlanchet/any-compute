@@ -10,7 +10,6 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # Internal crates
 any-compute-core = { path = "crates/core" }
-any-compute-rsx = { path = "crates/rsx" }
 any-compute-ffi = { path = "crates/ffi" }
 
 # Shared deps — pinned once, inherited everywhere
@@ -27,4 +26,14 @@ num_cpus = "1"
 sysinfo = "0.35"
 humansize = "2"
 wgpu = "24"
-naga = { version = "24", features = ["wgsl-in", "glsl-in", "spv-in", "spv-out", "glsl-out", "wgsl-out"] }
+naga = { version = "24", features = [
+    "wgsl-in",
+    "glsl-in",
+    "spv-in",
+    "spv-out",
+    "glsl-out",
+    "wgsl-out",
+] }
+winit = "0.29"
+pollster = "0.3"
+glyphon = "0.8"

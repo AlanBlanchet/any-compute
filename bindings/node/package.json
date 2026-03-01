@@ -1,0 +1,9 @@
+{
+  "name": "@any-compute/node",
+  "version": "0.1.0",
+  "description": "Node.js bindings for any-compute",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": { "build": "tsc", "test": "vitest run", "bench": "vitest bench" },
+  "devDependencies": { "vitest": "^2", "typescript": "^5", "@types/node": "^20" }
+}

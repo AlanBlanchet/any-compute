@@ -202,7 +202,7 @@ fn print_comparisons(tables: &[ComparisonTable]) {
             );
             for cmp in &entry.comparisons {
                 let ratio = if entry.any_compute_ops > 0.0 {
-                    cmp.estimated_ops / entry.any_compute_ops
+                    cmp.ops / entry.any_compute_ops
                 } else {
                     0.0
                 };
@@ -214,7 +214,14 @@ fn print_comparisons(tables: &[ComparisonTable]) {
                 } else {
                     "~same".into()
                 };
-                println!("    vs {:<30} ({}) {}", cmp.library, factor, cmp.notes);
+                let src_marker = match cmp.source {
+                    ComparisonSource::Measured => "[measured]",
+                    ComparisonSource::Estimate => "[est.]    ",
+                };
+                println!(
+                    "    vs {:<33} {} ({}) {}",
+                    cmp.library, src_marker, factor, cmp.notes
+                );
             }
         }
     }

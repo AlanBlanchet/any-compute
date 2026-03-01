@@ -30,6 +30,7 @@ pub mod animation;
 pub mod bench;
 pub mod compute;
 pub mod data;
+pub mod dom;
 pub mod hints;
 pub mod interaction;
 pub mod kernel;

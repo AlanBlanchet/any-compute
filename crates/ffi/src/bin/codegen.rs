@@ -10,43 +10,73 @@ fn main() {
         .position(|a| a == "--output-dir")
         .and_then(|i| std::env::args().nth(i + 1))
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("out/bindings"));
+        .unwrap_or_else(|| PathBuf::from("bindings"));
 
     let registry = FfiRegistry::default_any_compute();
 
     println!(
-        "Generating bindings for {} FFI functions...",
-        registry.functions.len()
+        "Generating bindings for {} FFI functions → {}",
+        registry.functions.len(),
+        out_dir.display()
     );
-    println!("Output directory: {}", out_dir.display());
 
     generate_all(&registry, &out_dir).expect("Failed to generate bindings");
 
-    println!("\nGenerated:");
-    println!("  Python:     {}/python/any_compute.py", out_dir.display());
-    println!(
-        "              {}/python/test_any_compute.py",
-        out_dir.display()
-    );
-    println!(
-        "  JavaScript: {}/javascript/any_compute.js",
-        out_dir.display()
-    );
-    println!(
-        "              {}/javascript/any_compute.d.ts",
-        out_dir.display()
-    );
-    println!(
-        "              {}/javascript/any_compute.test.js",
-        out_dir.display()
-    );
-    println!(
-        "  Java:       {}/java/com/anycompute/AnyCompute.java",
-        out_dir.display()
-    );
-    println!(
-        "              {}/java/com/anycompute/AnyComputeTest.java",
-        out_dir.display()
-    );
-    println!("\nDone.");
+    for (target, files) in [
+        (
+            "python",
+            vec!["python/any_compute.py", "python/test_any_compute.py"],
+        ),
+        (
+            "javascript",
+            vec![
+                "javascript/any_compute.js",
+                "javascript/any_compute.d.ts",
+                "javascript/any_compute.test.js",
+            ],
+        ),
+        (
+            "java",
+            vec![
+                "java/com/anycompute/AnyCompute.java",
+                "java/com/anycompute/AnyComputeTest.java",
+            ],
+        ),
+        (
+            "react",
+            vec![
+                "react/src/hooks.ts",
+                "react/src/bench.ts",
+                "react/package.json",
+            ],
+        ),
+        ("vue", vec!["vue/src/composables.ts", "vue/package.json"]),
+        (
+            "svelte",
+            vec!["svelte/src/stores.ts", "svelte/package.json"],
+        ),
+        (
+            "angular",
+            vec![
+                "angular/src/any-compute.service.ts",
+                "angular/src/any-compute.module.ts",
+                "angular/package.json",
+            ],
+        ),
+        (
+            "node",
+            vec![
+                "node/src/index.ts",
+                "node/src/bench.ts",
+                "node/package.json",
+            ],
+        ),
+    ] {
+        println!("  [{target}]");
+        for f in files {
+            println!("    {}/{f}", out_dir.display());
+        }
+    }
+
+    println!("\nDone — commit bindings/ as build artifacts.");
 }

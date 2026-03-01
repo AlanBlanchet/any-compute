@@ -1,0 +1,9 @@
+{
+  "name": "@any-compute/svelte",
+  "version": "0.1.0",
+  "description": "Svelte stores for any-compute",
+  "main": "dist/index.js",
+  "scripts": { "build": "tsc", "test": "vitest run" },
+  "peerDependencies": { "svelte": ">=4" },
+  "devDependencies": { "vitest": "^2", "typescript": "^5" }
+}

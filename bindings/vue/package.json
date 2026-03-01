@@ -1,0 +1,9 @@
+{
+  "name": "@any-compute/vue",
+  "version": "0.1.0",
+  "description": "Vue 3 composables for any-compute",
+  "main": "dist/index.js",
+  "scripts": { "build": "tsc", "test": "vitest run" },
+  "peerDependencies": { "vue": ">=3" },
+  "devDependencies": { "vitest": "^2", "typescript": "^5", "@vue/test-utils": "^2" }
+}

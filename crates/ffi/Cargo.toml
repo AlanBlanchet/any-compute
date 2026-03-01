@@ -20,9 +20,3 @@ serde_json.workspace = true
 
 [features]
 default = []
-# Enable RSX support through FFI (pulls in the rsx crate)
-rsx = ["dep:any-compute-rsx"]
-
-[dependencies.any-compute-rsx]
-workspace = true
-optional = true
