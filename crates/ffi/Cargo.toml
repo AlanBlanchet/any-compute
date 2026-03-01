@@ -1,0 +1,28 @@
+[package]
+name = "any-compute-ffi"
+description = "C ABI bindings for any-compute — enables Python, JS, and other language integrations."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "anc-codegen"
+path = "src/bin/codegen.rs"
+
+[dependencies]
+any-compute-core.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+default = []
+# Enable RSX support through FFI (pulls in the rsx crate)
+rsx = ["dep:any-compute-rsx"]
+
+[dependencies.any-compute-rsx]
+workspace = true
+optional = true

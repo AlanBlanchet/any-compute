@@ -1,0 +1,25 @@
+[package]
+name = "any-compute-rsx"
+description = "RSX / declarative UI layer for any-compute. Isolated from core — lives in its own crate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-compute-core.workspace = true
+log.workspace = true
+
+# RSX framework — dioxus is the most mature React-like RSX in Rust
+dioxus = { version = "0.6", features = ["desktop"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+default = []
+bench = ["any-compute-core/hwinfo"]
+
+[[bin]]
+name = "anc-bench-window"
+path = "src/bin/bench_window.rs"
+required-features = ["bench"]

@@ -1,0 +1,43 @@
+[package]
+name = "any-compute-core"
+description = "Core abstractions for any-compute: compute, layout, data, interaction — zero UI framework deps."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# GPU backends
+wgpu-backend = ["dep:wgpu"]
+# Vendor-specific compute (link to proprietary libs)
+cuda = []   # Requires CUDA toolkit — nvcc, libcuda, cuBLAS, cuDNN, cuFFT
+rocm = []   # Requires ROCm toolkit — hipcc, rocBLAS, rocFFT
+mkl = []    # Intel MKL/oneMKL — LAPACK, BLAS, FFT
+metal = []  # Apple Metal Performance Shaders
+# Shader compilation
+shader = ["dep:naga"]
+# Hardware detection for benchmarks
+hwinfo = ["dep:sysinfo", "dep:num_cpus"]
+
+[dependencies]
+thiserror.workspace = true
+smallvec.workspace = true
+bumpalo.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+humansize.workspace = true
+
+# Optional deps behind feature flags
+wgpu = { workspace = true, optional = true }
+naga = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
+num_cpus = { workspace = true, optional = true }
+
+[[bin]]
+name = "anc-bench"
+path = "src/bin/anc_bench.rs"
+required-features = ["hwinfo"]
