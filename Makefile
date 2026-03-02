@@ -59,7 +59,7 @@ NEED_MVN    := $(if $(shell command -v mvn  2>/dev/null),,@echo "[skip] mvn not 
 all: window
 
 window:
-	$(CARGO) run $(BENCH_FEAT) -p any-compute-rsx
+	$(CARGO) run -p any-compute-bench --bin anv-bench-window
 
 # ── CLI benchmark (writes JSON + flamegraph to out/) ─────────────────────
 bench:

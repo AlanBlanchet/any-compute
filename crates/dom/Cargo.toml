@@ -1,0 +1,10 @@
+[package]
+name = "any-compute-dom"
+description = "Arena-based scene graph, style system, and DOM parser for any-compute rendering."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-compute-core = { workspace = true }
+log.workspace = true

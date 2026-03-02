@@ -10,6 +10,8 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # Internal crates
 any-compute-core = { path = "crates/core" }
+any-compute-dom = { path = "crates/dom" }
+any-compute-bench = { path = "crates/bench" }
 any-compute-ffi = { path = "crates/ffi" }
 
 # Shared deps — pinned once, inherited everywhere

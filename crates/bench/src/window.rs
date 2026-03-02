@@ -4,11 +4,15 @@
 //! Runs real `any_compute_core::bench` workloads on background threads and
 //! streams results into the render loop at 60+ FPS with zero stutter.
 
+use any_compute_core::Lerp;
+use any_compute_core::animation::{Easing, Transition, TransitionManager};
 use any_compute_core::bench::*;
-use any_compute_core::dom::{style::*, tree::*};
 use any_compute_core::kernel::{UnaryOp, best_kernel};
 use any_compute_core::layout::{Point, Size};
 use any_compute_core::render::{Color, Primitive, RenderList};
+use any_compute_dom::css::StyleSheet;
+use any_compute_dom::style::*;
+use any_compute_dom::tree::*;
 use glyphon::{
     Attrs, Buffer as GlyphBuffer, Cache as GlyphCache, Family, FontSystem, Metrics, Resolution,
     Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -16,6 +20,7 @@ use glyphon::{
 use pollster::block_on;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 use winit::{
     event::{Event, WindowEvent},
@@ -23,33 +28,42 @@ use winit::{
     window::WindowBuilder,
 };
 
-// ── Theme ────────────────────────────────────────────────────────────────────
+// ── Theme (colors only — all styling is in bench.css) ────────────────────────
 mod theme {
     use super::Color;
+    // Catppuccin Mocha palette — same values used in bench.css.
+    // CSS owns *styling* (layout, typography, component appearance);
+    // these consts give Rust code fast, const-time access for dynamic
+    // color logic (bar graphs, active/inactive states, wgpu clear).
     pub const BG: Color = Color::rgb(30, 30, 46);
-    pub const SURFACE: Color = Color::rgb(49, 50, 68);
     pub const SURFACE_BRIGHT: Color = Color::rgb(69, 71, 90);
+    pub const TEXT_DIM: Color = Color::rgb(147, 153, 178);
     pub const GREEN: Color = Color::rgb(166, 227, 161);
     pub const BLUE: Color = Color::rgb(137, 180, 250);
     pub const RED: Color = Color::rgb(243, 139, 168);
     pub const YELLOW: Color = Color::rgb(249, 226, 175);
     pub const MAUVE: Color = Color::rgb(203, 166, 247);
-    pub const TEXT: Color = Color::rgb(205, 214, 244);
-    pub const TEXT_DIM: Color = Color::rgb(147, 153, 178);
     pub const SIDEBAR_BG: Color = Color::rgb(24, 24, 37);
     pub const ACCENT: Color = Color::rgb(137, 180, 250);
+    pub const BAR_COLORS: [Color; 4] = [GREEN, BLUE, YELLOW, MAUVE];
 }
 
 // ── WGPU Renderer (reusable) ────────────────────────────────────────────────
 const SHADER_CODE: &str = r#"
 struct VertexInput { @location(0) position: vec2<f32> };
 struct InstanceInput {
-    @location(1) bounds: vec4<f32>,
-    @location(2) color: vec4<f32>,
+    @location(1) bounds:       vec4<f32>,  // x, y, w, h
+    @location(2) color:        vec4<f32>,  // fill RGBA
+    @location(3) params:       vec4<f32>,  // corner_radius, border_width, 0, 0
+    @location(4) border_color: vec4<f32>,  // border RGBA
 };
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) color:        vec4<f32>,
+    @location(1) uv:           vec2<f32>,
+    @location(2) rect_size:    vec2<f32>,
+    @location(3) params:       vec4<f32>,
+    @location(4) border_color: vec4<f32>,
 };
 struct Uniforms { screen_size: vec2<f32> }
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -65,18 +79,48 @@ fn vs_main(model: VertexInput, instance: InstanceInput) -> VertexOutput {
     let clip_y = 1.0 - (pos.y / uniforms.screen_size.y) * 2.0;
     out.clip_position = vec4<f32>(clip_x, clip_y, 0.0, 1.0);
     out.color = instance.color;
+    out.uv = model.position;
+    out.rect_size = instance.bounds.zw;
+    out.params = instance.params;
+    out.border_color = instance.border_color;
     return out;
 }
 
+// SDF for a rounded rectangle centered at origin.
+fn sdf_round_rect(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - half + vec2<f32>(r);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> { return in.color; }
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let p = in.uv * in.rect_size - in.rect_size * 0.5;
+    let half = in.rect_size * 0.5;
+    let radius = min(in.params.x, min(half.x, half.y));
+    let border_w = in.params.y;
+
+    let d = sdf_round_rect(p, half, radius);
+    if d > 0.5 { discard; }
+    let aa = 1.0 - smoothstep(-0.5, 0.5, d);
+
+    var col = in.color;
+    if border_w > 0.0 {
+        let ir = max(radius - border_w, 0.0);
+        let inner_d = sdf_round_rect(p, half - vec2<f32>(border_w), ir);
+        if inner_d > 0.0 { col = in.border_color; }
+    }
+
+    return vec4<f32>(col.rgb * col.a * aa, col.a * aa);
+}
 "#;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceData {
-    bounds: [f32; 4],
-    color: [f32; 4],
+    bounds: [f32; 4],       // x, y, w, h
+    color: [f32; 4],        // fill RGBA
+    params: [f32; 4],       // corner_radius, border_width, 0, 0
+    border_color: [f32; 4], // border RGBA
 }
 
 #[repr(C)]
@@ -97,7 +141,6 @@ struct Gpu {
     ub: wgpu::Buffer,
     bg: wgpu::BindGroup,
     max_inst: usize,
-    // Text rendering (glyphon)
     font_system: FontSystem,
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
@@ -209,7 +252,12 @@ impl Gpu {
                     wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<InstanceData>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![1 => Float32x4, 2 => Float32x4],
+                        attributes: &wgpu::vertex_attr_array![
+                            1 => Float32x4,  // bounds
+                            2 => Float32x4,  // color
+                            3 => Float32x4,  // params
+                            4 => Float32x4,  // border_color
+                        ],
                     },
                 ],
             },
@@ -219,7 +267,7 @@ impl Gpu {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: fmt,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -232,7 +280,6 @@ impl Gpu {
             multiview: None,
         });
 
-        // ── Glyphon text rendering ──
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let glyph_cache = GlyphCache::new(&device);
@@ -274,10 +321,28 @@ impl Gpu {
     }
 
     fn paint(&mut self, list: &RenderList) {
-        // ── Collect rect instances ──
         let mut instances: Vec<InstanceData> = Vec::with_capacity(list.len());
         for p in &list.primitives {
-            if let Primitive::Rect { bounds, fill, .. } = p {
+            if let Primitive::Rect {
+                bounds,
+                fill,
+                border,
+                corner_radius,
+            } = p
+            {
+                let (bw, bc) = border
+                    .map(|b| {
+                        (
+                            b.width as f32,
+                            [
+                                b.color.r as f32 / 255.0,
+                                b.color.g as f32 / 255.0,
+                                b.color.b as f32 / 255.0,
+                                b.color.a as f32 / 255.0,
+                            ],
+                        )
+                    })
+                    .unwrap_or((0.0, [0.0; 4]));
                 instances.push(InstanceData {
                     bounds: [
                         bounds.origin.x as f32,
@@ -291,6 +356,8 @@ impl Gpu {
                         fill.b as f32 / 255.0,
                         fill.a as f32 / 255.0,
                     ],
+                    params: [*corner_radius as f32, bw, 0.0, 0.0],
+                    border_color: bc,
                 });
             }
         }
@@ -300,7 +367,6 @@ impl Gpu {
                 .write_buffer(&self.ib, 0, bytemuck::cast_slice(&instances[..n]));
         }
 
-        // ── Collect text primitives → glyphon TextAreas ──
         let w = self.config.width;
         let h = self.config.height;
         self.text_viewport.update(
@@ -311,7 +377,6 @@ impl Gpu {
             },
         );
 
-        // Build one glyphon Buffer per Text primitive
         let mut text_buffers: Vec<(GlyphBuffer, f32, f32, glyphon::Color)> = Vec::new();
         for p in &list.primitives {
             if let Primitive::Text {
@@ -341,7 +406,7 @@ impl Gpu {
             .map(|(buf, x, y, color)| TextArea {
                 buffer: buf,
                 left: *x,
-                top: *y - buf.metrics().font_size * 0.8, // baseline offset
+                top: *y - buf.metrics().font_size * 0.8,
                 scale: 1.0,
                 bounds: TextBounds {
                     left: 0,
@@ -366,7 +431,6 @@ impl Gpu {
             )
             .unwrap();
 
-        // ── Render pass ──
         let Ok(output) = self.surface.get_current_texture() else {
             return;
         };
@@ -396,7 +460,6 @@ impl Gpu {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            // Draw rects
             if n > 0 {
                 rp.set_pipeline(&self.pipeline);
                 rp.set_bind_group(0, &self.bg, &[]);
@@ -404,7 +467,6 @@ impl Gpu {
                 rp.set_vertex_buffer(1, self.ib.slice(..));
                 rp.draw(0..4, 0..n as u32);
             }
-            // Draw text on top
             self.text_renderer
                 .render(&self.text_atlas, &self.text_viewport, &mut rp)
                 .unwrap();
@@ -427,14 +489,14 @@ struct AppData {
     bench_running: bool,
     bench_progress: (usize, usize),
     current_cat: Option<String>,
-    // Live simulation
     sim_running: bool,
     ac_ops: f64,
     rayon_ops: f64,
     std_ops: f64,
-    // Tab
     tab: usize,
     scroll_y: f64,
+    scroll_target: f64,
+    transitions: TransitionManager,
 }
 
 impl SharedState {
@@ -452,6 +514,15 @@ impl SharedState {
                 std_ops: 0.0,
                 tab: 0,
                 scroll_y: 0.0,
+                scroll_target: 0.0,
+                transitions: {
+                    let mut mgr = TransitionManager::default();
+                    // Tab-0 starts active.
+                    let mut t = Transition::new(0.0, 1.0, Duration::ZERO);
+                    t.start();
+                    mgr.add("tab-0", t);
+                    mgr
+                },
             })),
         }
     }
@@ -567,42 +638,26 @@ fn spawn_simulation(state: SharedState) {
 }
 
 // ── Layout / Paint ──────────────────────────────────────────────────────────
-const SIDEBAR_W: f64 = 220.0;
-const HEADER_H: f64 = 56.0;
-const TAB_LABELS: &[&str] = &["Hardware", "Benchmarks", "Live Showdown"];
+use any_compute_bench::{BENCH_CSS, TAB_LABELS, VERSION, kv_row};
 
-// ── Semantic style presets ──────────────────────────────────────────────────
-fn s_title() -> Style {
-    Style::default().font(22.0).color(theme::TEXT)
+static SHEET: std::sync::LazyLock<StyleSheet> =
+    std::sync::LazyLock::new(|| StyleSheet::parse(BENCH_CSS));
+
+fn s(class: &str) -> Style {
+    SHEET.class(class)
 }
-fn s_subtitle() -> Style {
-    Style::default().font(12.0).color(theme::TEXT_DIM)
-}
-fn s_label() -> Style {
-    Style::default().font(11.0).color(theme::TEXT_DIM)
-}
-fn s_body() -> Style {
-    Style::default().font(12.0).color(theme::TEXT)
-}
-fn s_card() -> Style {
-    Style::default()
-        .grow(1.0)
-        .bg(theme::SURFACE)
-        .radius(12.0)
-        .pad(16.0)
-        .gap(6.0)
+fn sm(classes: &[&str]) -> Style {
+    SHEET.classes(classes)
 }
 
 // ── DOM construction helpers ────────────────────────────────────────────────
-/// Section header row with title + flex spacer. Returns the row NodeId for button attachment.
 fn section_hdr(t: &mut Tree, parent: NodeId, title: &str) -> NodeId {
-    let hdr = t.add_box(parent, Style::default().row().align(Align::Center));
-    t.add_text(hdr, title, s_title());
-    t.add_box(hdr, Style::default().grow(1.0));
+    let hdr = t.add_box(parent, sm(&["row", "center"]));
+    t.add_text(hdr, title, s("title"));
+    t.add_box(hdr, s("grow"));
     hdr
 }
 
-/// Action button: colored pill with label + tag.
 fn action_btn(
     t: &mut Tree,
     parent: NodeId,
@@ -611,116 +666,63 @@ fn action_btn(
     fg: Color,
     tag: &str,
 ) -> NodeId {
-    let btn = t.add_box(
-        parent,
-        Style::default()
-            .bg(bg)
-            .radius(8.0)
-            .pad_xy(16.0, 8.0)
-            .row()
-            .align(Align::Center),
-    );
-    t.add_text(btn, label, Style::default().font(12.0).color(fg));
+    let mut btn_s = s("btn");
+    btn_s.background = bg;
+    let btn = t.add_box(parent, btn_s);
+    t.add_text(btn, label, s("body").color(fg));
     t.tag(btn, tag);
     btn
 }
 
-/// Card with title accent. Returns card NodeId.
 fn card(t: &mut Tree, parent: NodeId, title: &str, accent: Color) -> NodeId {
-    let c = t.add_box(parent, s_card());
-    t.add_text(c, title, Style::default().font(16.0).color(accent));
+    let c = t.add_box(parent, s("card"));
+    t.add_text(c, title, s("heading").color(accent));
     c
 }
 
-/// Build the full DOM tree from current app state.
 fn build_tree(state: &SharedState, w: f64, h: f64) -> Tree {
-    let data = state.inner.lock().unwrap();
-    let mut t = Tree::new(Style::default().w(w).h(h).row().bg(theme::BG));
+    let mut data = state.inner.lock().unwrap();
+
+    // Smooth scroll: lerp scroll_y toward scroll_target each frame.
+    let scroll_speed = 0.18;
+    data.scroll_y += (data.scroll_target - data.scroll_y) * scroll_speed;
+    if (data.scroll_target - data.scroll_y).abs() < 0.5 {
+        data.scroll_y = data.scroll_target;
+    }
+
+    let mut t = Tree::new(sm(&["bg", "row"]).w(w).h(h));
     let root = t.root;
 
     // ── Sidebar ──
-    let sb = t.add_box(
-        root,
-        Style::default()
-            .w(SIDEBAR_W)
-            .bg(theme::SIDEBAR_BG)
-            .pad_xy(12.0, 16.0)
-            .gap(8.0),
-    );
-    let brand = t.add_box(
-        sb,
-        Style::default()
-            .row()
-            .gap(12.0)
-            .h(40.0)
-            .align(Align::Center),
-    );
-    t.add_box(
-        brand,
-        Style::default()
-            .w(28.0)
-            .h(28.0)
-            .bg(theme::ACCENT)
-            .radius(6.0),
-    );
-    let btext = t.add_box(brand, Style::default().gap(2.0));
-    t.add_text(
-        btext,
-        "any-compute",
-        Style::default().font(16.0).color(theme::TEXT),
-    );
-    t.add_text(
-        btext,
-        "v0.5.0",
-        Style::default().font(10.0).color(theme::TEXT_DIM),
-    );
-    t.add_box(sb, Style::default().h(12.0));
+    let sb = t.add_box(root, s("sidebar"));
+    let brand = t.add_box(sb, s("brand"));
+    t.add_box(brand, s("brand-icon"));
+    let btext = t.add_box(brand, s("brand-text"));
+    t.add_text(btext, "any-compute", sm(&["heading", "text"]));
+    t.add_text(btext, VERSION, sm(&["small", "text-dim"]));
+    t.add_box(sb, s("spacer-12"));
     for (i, &label) in TAB_LABELS.iter().enumerate() {
-        let active = data.tab == i;
-        let (bg, fg) = if active {
-            (theme::ACCENT, theme::SIDEBAR_BG)
-        } else {
-            (Color::TRANSPARENT, theme::TEXT_DIM)
-        };
-        let btn = t.add_box(
-            sb,
-            Style::default()
-                .h(36.0)
-                .bg(bg)
-                .radius(8.0)
-                .pad_xy(12.0, 0.0)
-                .row()
-                .align(Align::Center),
-        );
-        t.add_text(btn, label, Style::default().font(13.0).color(fg));
-        t.tag(btn, format!("tab-{}", i));
+        // Transition-driven tab appearance: blend between inactive and active.
+        let alpha = data
+            .transitions
+            .value(&format!("tab-{i}"))
+            .unwrap_or(if data.tab == i { 1.0 } else { 0.0 });
+        let bg = Color::TRANSPARENT.lerp(theme::ACCENT, alpha);
+        let fg = theme::TEXT_DIM.lerp(theme::SIDEBAR_BG, alpha);
+        let mut tab_s = s("tab-btn");
+        tab_s.background = bg;
+        tab_s.color = fg;
+        let btn = t.add_box(sb, tab_s);
+        t.add_text(btn, label, s("font-13").color(fg));
+        t.tag(btn, format!("tab-{i}"));
     }
 
     // ── Main area ──
-    let main_col = t.add_box(root, Style::default().grow(1.0));
-    let hdr = t.add_box(
-        main_col,
-        Style::default()
-            .h(HEADER_H)
-            .bg(theme::SURFACE)
-            .row()
-            .pad_xy(24.0, 0.0)
-            .align(Align::Center),
-    );
-    t.add_text(
-        hdr,
-        TAB_LABELS[data.tab],
-        Style::default().font(18.0).color(theme::TEXT),
-    );
-    let content = t.add_box(
-        main_col,
-        Style::default()
-            .grow(1.0)
-            .overflow(Overflow::Scroll)
-            .pad(24.0)
-            .gap(16.0),
-    );
-    t.arena[content.0].scroll.y = data.scroll_y;
+    let main_col = t.add_box(root, s("grow"));
+    let hdr = t.add_box(main_col, s("header"));
+    t.add_text(hdr, TAB_LABELS[data.tab], sm(&["font-18", "text"]));
+    let content = t.add_box(main_col, s("content"));
+    t.slot_mut(content).scroll.y = data.scroll_y;
 
     match data.tab {
         0 => build_hw(&mut t, content, &data),
@@ -733,21 +735,16 @@ fn build_tree(state: &SharedState, w: f64, h: f64) -> Tree {
 }
 
 fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
-    t.add_text(p, "Hardware Profile", s_title());
-    t.add_text(p, "Detected system capabilities", s_subtitle());
+    t.add_text(p, "Hardware Profile", s("title"));
+    t.add_text(p, "Detected system capabilities", s("subtitle"));
 
     let Some(hw) = &data.hw else {
-        t.add_text(
-            p,
-            "Detecting hardware\u{2026}",
-            Style::default().font(14.0).color(theme::YELLOW),
-        );
+        t.add_text(p, "Detecting hardware\u{2026}", sm(&["font-14", "yellow"]));
         return;
     };
 
-    let row = t.add_box(p, Style::default().row().gap(12.0));
+    let row = t.add_box(p, sm(&["row", "gap-12"]));
 
-    // ── CPU ──
     let c = card(t, row, "Processor", theme::ACCENT);
     let topo = format!(
         "{} cores / {} threads",
@@ -760,34 +757,26 @@ fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
         ("Topology", topo.as_str()),
         ("Frequency", freq.as_str()),
     ] {
-        let r = t.add_box(c, Style::default().row().gap(8.0));
-        t.add_text(r, lbl, s_label().w(72.0));
-        t.add_text(r, val, s_body());
+        kv_row(t, c, lbl, val, &SHEET);
     }
 
-    // ── SIMD ──
     let c = card(t, row, "SIMD / Vector", theme::GREEN);
-    t.add_text(c, &hw.simd.detected, s_body());
+    t.add_text(c, &hw.simd.detected, s("body"));
     t.add_text(
         c,
         &format!("{}-bit vectors", hw.simd.vector_width),
-        s_label(),
+        s("label"),
     );
     let tags_str = hw.simd.features.join("  \u{00b7}  ");
-    t.add_text(
-        c,
-        &tags_str,
-        Style::default().font(10.0).color(theme::MAUVE),
-    );
+    t.add_text(c, &tags_str, sm(&["small", "mauve"]));
 
-    // ── Memory & GPU ──
     let c = card(t, row, "Memory & GPU", theme::YELLOW);
     let total_gb = hw.memory.total_bytes / 1024 / 1024 / 1024;
     let avail_gb = hw.memory.available_bytes / 1024 / 1024 / 1024;
     t.add_text(
         c,
-        &format!("{} GB total / {} GB available", total_gb, avail_gb),
-        s_body(),
+        &format!("{total_gb} GB total / {avail_gb} GB available"),
+        s("body"),
     );
     let pct = if hw.memory.total_bytes > 0 {
         hw.memory.used_bytes as f64 / hw.memory.total_bytes as f64
@@ -795,24 +784,18 @@ fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
         0.0
     };
     let bar_c = if pct > 0.8 { theme::RED } else { theme::GREEN };
-    t.add_bar(c, pct, bar_c, Style::default().h(8.0).radius(4.0));
+    t.add_bar(c, pct, bar_c, s("bar-thin"));
     t.add_text(
         c,
         &format!("{:.0}% used", pct * 100.0),
-        Style::default().font(10.0).color(theme::TEXT_DIM),
+        sm(&["small", "text-dim"]),
     );
     for gpu in &hw.gpus {
-        let g = t.add_box(
-            c,
-            Style::default()
-                .bg(theme::SURFACE_BRIGHT)
-                .radius(6.0)
-                .pad_xy(8.0, 6.0),
-        );
-        t.add_text(g, &gpu.name, s_label());
+        let g = t.add_box(c, s("gpu-badge"));
+        t.add_text(g, &gpu.name, s("label"));
     }
     if hw.gpus.is_empty() {
-        t.add_text(c, "No GPU detected", s_label());
+        t.add_text(c, "No GPU detected", s("label"));
     }
 }
 
@@ -826,63 +809,41 @@ fn build_bench(t: &mut Tree, p: NodeId, data: &AppData) {
     if !data.bench_running {
         action_btn(t, hdr, btn_lbl, btn_bg, btn_fg, "run-bench");
     } else {
-        let btn = t.add_box(
-            hdr,
-            Style::default()
-                .bg(btn_bg)
-                .radius(8.0)
-                .pad_xy(16.0, 8.0)
-                .row()
-                .align(Align::Center),
-        );
-        t.add_text(btn, btn_lbl, Style::default().font(12.0).color(btn_fg));
+        let mut btn_s = s("btn");
+        btn_s.background = btn_bg;
+        let btn = t.add_box(hdr, btn_s);
+        t.add_text(btn, btn_lbl, s("body").color(btn_fg));
     }
 
     if data.bench_running {
         let (done, total) = data.bench_progress;
         let pct = done as f64 / total.max(1) as f64;
-        t.add_bar(p, pct, theme::ACCENT, Style::default().h(6.0).radius(3.0));
+        t.add_bar(p, pct, theme::ACCENT, s("bar-medium"));
         if let Some(cat) = &data.current_cat {
-            t.add_text(
-                p,
-                &format!("Running: {} ({}/{})", cat, done, total),
-                s_label(),
-            );
+            t.add_text(p, &format!("Running: {cat} ({done}/{total})"), s("label"));
         }
     }
 
     if data.bench_results.is_empty() && !data.bench_running {
         t.add_text(
             p,
-            "No results yet \u{2014} click 'Run All Tests' to begin.",
-            Style::default().font(14.0).color(theme::TEXT_DIM),
+            "No results yet \u{2014} click \u{2018}Run All Tests\u{2019} to begin.",
+            sm(&["font-14", "text-dim"]),
         );
         return;
     }
 
     let mut i = 0;
     while i < data.bench_results.len() {
-        let row = t.add_box(p, Style::default().row().gap(12.0));
+        let row = t.add_box(p, sm(&["row", "gap-12"]));
         for j in 0..2 {
             let idx = i + j;
             if idx >= data.bench_results.len() {
                 break;
             }
             let report = &data.bench_results[idx];
-            let c = t.add_box(
-                row,
-                Style::default()
-                    .grow(1.0)
-                    .bg(theme::SURFACE)
-                    .radius(10.0)
-                    .pad(14.0)
-                    .gap(4.0),
-            );
-            t.add_text(
-                c,
-                &report.category,
-                Style::default().font(14.0).color(theme::ACCENT),
-            );
+            let c = t.add_box(row, s("result-card"));
+            t.add_text(c, &report.category, sm(&["font-14", "blue"]));
             let max_ops = report
                 .results
                 .iter()
@@ -896,17 +857,17 @@ fn build_bench(t: &mut Tree, p: NodeId, data: &AppData) {
                     r.name.clone()
                 };
                 let pct = r.throughput_ops_sec / max_ops;
-                let bar_c = [theme::GREEN, theme::BLUE, theme::YELLOW, theme::MAUVE][bi % 4];
-                let entry = t.add_box(c, Style::default().gap(2.0));
-                let lr = t.add_box(entry, Style::default().row());
-                t.add_text(lr, &name, Style::default().font(9.0).color(theme::TEXT_DIM));
-                t.add_box(lr, Style::default().grow(1.0));
+                let bar_c = theme::BAR_COLORS[bi % 4];
+                let entry = t.add_box(c, s("gap-2"));
+                let lr = t.add_box(entry, s("row"));
+                t.add_text(lr, &name, sm(&["font-9", "text-dim"]));
+                t.add_box(lr, s("grow"));
                 t.add_text(
                     lr,
                     &format_ops(r.throughput_ops_sec),
-                    Style::default().font(9.0).color(theme::TEXT),
+                    sm(&["font-9", "text"]),
                 );
-                t.add_bar(entry, pct, bar_c, Style::default().h(9.0).radius(3.0));
+                t.add_bar(entry, pct, bar_c, s("bar-small"));
             }
         }
         i += 2;
@@ -925,7 +886,7 @@ fn build_sim(t: &mut Tree, p: NodeId, data: &AppData) {
     t.add_text(
         p,
         "Real-time Sigmoid(200K): any-compute vs rayon vs stdlib",
-        s_subtitle(),
+        s("subtitle"),
     );
 
     let peak = data.ac_ops.max(data.rayon_ops).max(data.std_ops).max(1.0);
@@ -938,22 +899,18 @@ fn build_sim(t: &mut Tree, p: NodeId, data: &AppData) {
             theme::YELLOW,
         ),
     ] {
-        let lane = t.add_box(p, Style::default().gap(4.0));
-        let top = t.add_box(lane, Style::default().row());
-        t.add_text(top, label, Style::default().font(13.0).color(color));
-        t.add_box(top, Style::default().grow(1.0));
-        t.add_text(
-            top,
-            &format_ops(ops),
-            Style::default().font(13.0).color(theme::TEXT),
-        );
+        let lane = t.add_box(p, s("gap-4"));
+        let top = t.add_box(lane, s("row"));
+        t.add_text(top, label, s("font-13").color(color));
+        t.add_box(top, s("grow"));
+        t.add_text(top, &format_ops(ops), sm(&["font-13", "text"]));
         let frac = if peak > 0.0 { ops / peak } else { 0.0 };
-        t.add_bar(lane, frac, color, Style::default().h(24.0).radius(6.0));
+        t.add_bar(lane, frac, color, s("bar-large"));
         if ops != data.std_ops && data.std_ops > 0.0 {
             t.add_text(
                 lane,
                 &format!("{:.1}x vs stdlib", ops / data.std_ops),
-                Style::default().font(10.0).color(theme::TEXT_DIM),
+                sm(&["small", "text-dim"]),
             );
         }
     }
@@ -961,10 +918,27 @@ fn build_sim(t: &mut Tree, p: NodeId, data: &AppData) {
 
 // ── Click dispatch ──────────────────────────────────────────────────────────
 fn handle_tag(state: &SharedState, tag: &str) {
+    const TAB_DUR: Duration = Duration::from_millis(180);
     match tag {
-        "tab-0" => state.write(|d| d.tab = 0),
-        "tab-1" => state.write(|d| d.tab = 1),
-        "tab-2" => state.write(|d| d.tab = 2),
+        t @ ("tab-0" | "tab-1" | "tab-2") => {
+            let new: usize = t[4..].parse().unwrap();
+            state.write(|d| {
+                let old = d.tab;
+                if old == new {
+                    return;
+                }
+                d.tab = new;
+                d.scroll_y = 0.0;
+                d.scroll_target = 0.0;
+                // Fade old tab out, new tab in.
+                let mut out = Transition::new(1.0, 0.0, TAB_DUR).with_easing(Easing::EaseOut);
+                out.start();
+                d.transitions.add(format!("tab-{old}"), out);
+                let mut inp = Transition::new(0.0, 1.0, TAB_DUR).with_easing(Easing::EaseOut);
+                inp.start();
+                d.transitions.add(format!("tab-{new}"), inp);
+            });
+        }
         "run-bench" => spawn_benchmarks(state.clone()),
         "toggle-sim" => spawn_simulation(state.clone()),
         _ => {}
@@ -1050,7 +1024,7 @@ pub fn main() {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64 * 40.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
                 };
-                state.write(|d| d.scroll_y = (d.scroll_y - dy).max(0.0));
+                state.write(|d| d.scroll_target = (d.scroll_target - dy).max(0.0));
             }
             _ => {}
         },

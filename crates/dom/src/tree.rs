@@ -3,10 +3,10 @@
 //! Uses a flat `Vec<Slot>` arena so the whole tree is one allocation,
 //! cache-friendly, and trivially serialisable.  Node IDs are indices.
 
-use crate::hints::Hints;
-use crate::interaction::{EventContext, EventResponse, InputEvent, Phase};
-use crate::layout::{Point, Rect, Size};
-use crate::render::{Border, Color, Primitive, RenderList};
+use any_compute_core::hints::Hints;
+use any_compute_core::interaction::{EventContext, EventResponse, InputEvent, Phase};
+use any_compute_core::layout::{Point, Rect, Size};
+use any_compute_core::render::{Border, Color, Primitive, RenderList};
 
 use super::style::*;
 
@@ -46,6 +46,22 @@ pub struct Slot {
     pub tag: Option<String>,
 }
 
+impl Slot {
+    /// Create a new slot with sensible defaults for spatial/hint fields.
+    pub fn new(kind: NodeKind, style: Style, parent: Option<NodeId>) -> Self {
+        Self {
+            kind,
+            style,
+            hints: Hints::default(),
+            parent,
+            children: Vec::new(),
+            rect: Rect::ZERO,
+            scroll: Point::ZERO,
+            tag: None,
+        }
+    }
+}
+
 // ── Tree ────────────────────────────────────────────────────────────────────
 
 /// The DOM — a flat arena of [`Slot`]s.
@@ -55,20 +71,24 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Read-only access to a slot by id.
+    #[inline]
+    pub fn slot(&self, id: NodeId) -> &Slot {
+        &self.arena[id.0]
+    }
+
+    /// Mutable access to a slot by id.
+    #[inline]
+    pub fn slot_mut(&mut self, id: NodeId) -> &mut Slot {
+        &mut self.arena[id.0]
+    }
+}
+
+impl Tree {
     /// Start building a tree with a root node.
     pub fn new(root_style: Style) -> Self {
-        let slot = Slot {
-            kind: NodeKind::Box,
-            style: root_style,
-            hints: Hints::default(),
-            parent: None,
-            children: Vec::new(),
-            rect: Rect::ZERO,
-            scroll: Point::ZERO,
-            tag: None,
-        };
         Self {
-            arena: vec![slot],
+            arena: vec![Slot::new(NodeKind::Box, root_style, None)],
             root: NodeId(0),
         }
     }
@@ -77,42 +97,33 @@ impl Tree {
 
     /// Allocate a Box node as child of `parent`. Returns its `NodeId`.
     pub fn add_box(&mut self, parent: NodeId, style: Style) -> NodeId {
-        self.add_node(parent, NodeKind::Box, style, Hints::default())
+        self.add_node(parent, NodeKind::Box, style)
     }
 
     /// Allocate a Text node.
     pub fn add_text(&mut self, parent: NodeId, content: impl Into<String>, style: Style) -> NodeId {
-        self.add_node(parent, NodeKind::Text(content.into()), style, Hints::default())
+        self.add_node(parent, NodeKind::Text(content.into()), style)
     }
 
     /// Allocate a Bar node (progress / throughput).
     pub fn add_bar(&mut self, parent: NodeId, fraction: f64, fill: Color, style: Style) -> NodeId {
-        self.add_node(parent, NodeKind::Bar { fraction, fill }, style, Hints::default())
+        self.add_node(parent, NodeKind::Bar { fraction, fill }, style)
     }
 
     /// Tag a node for event matching.
     pub fn tag(&mut self, id: NodeId, tag: impl Into<String>) {
-        self.arena[id.0].tag = Some(tag.into());
+        self.slot_mut(id).tag = Some(tag.into());
     }
 
     /// Set hints on a node.
     pub fn set_hints(&mut self, id: NodeId, hints: Hints) {
-        self.arena[id.0].hints = hints;
+        self.slot_mut(id).hints = hints;
     }
 
-    fn add_node(&mut self, parent: NodeId, kind: NodeKind, style: Style, hints: Hints) -> NodeId {
+    fn add_node(&mut self, parent: NodeId, kind: NodeKind, style: Style) -> NodeId {
         let id = NodeId(self.arena.len());
-        self.arena.push(Slot {
-            kind,
-            style,
-            hints,
-            parent: Some(parent),
-            children: Vec::new(),
-            rect: Rect::ZERO,
-            scroll: Point::ZERO,
-            tag: None,
-        });
-        self.arena[parent.0].children.push(id);
+        self.arena.push(Slot::new(kind, style, Some(parent)));
+        self.slot_mut(parent).children.push(id);
         id
     }
 
@@ -126,7 +137,7 @@ impl Tree {
 
     fn layout_node(&mut self, id: NodeId, avail_w: f64, avail_h: f64, ox: f64, oy: f64) {
         // Resolve own size.
-        let style = self.arena[id.0].style.clone();
+        let style = self.slot(id).style.clone();
         let pad_h = style.padding.horizontal();
         let pad_v = style.padding.vertical();
         let margin_h = style.margin.horizontal();
@@ -138,7 +149,7 @@ impl Tree {
         let content_w = (outer_w - margin_h - pad_h).max(0.0);
 
         // Determine intrinsic height for text / bar.
-        let intrinsic_h = match &self.arena[id.0].kind {
+        let intrinsic_h = match &self.slot(id).kind {
             NodeKind::Text(s) => {
                 let font = style.font_size;
                 let chars = s.len().max(1) as f64;
@@ -150,11 +161,11 @@ impl Tree {
         };
 
         // Recursively layout children to know content height.
-        let children: Vec<NodeId> = self.arena[id.0].children.clone();
+        let children: Vec<NodeId> = self.slot(id).children.clone();
         let flow_children: Vec<NodeId> = children
             .iter()
             .copied()
-            .filter(|c| self.arena[c.0].style.position != Position::Absolute)
+            .filter(|c| self.slot(*c).style.position != Position::Absolute)
             .collect();
 
         let is_row = style.direction == Direction::Row;
@@ -171,25 +182,41 @@ impl Tree {
         };
 
         // Compute flex totals.
-        let total_grow: f64 = flow_children.iter().map(|c| self.arena[c.0].style.flex_grow).sum();
+        let total_grow: f64 = flow_children
+            .iter()
+            .map(|c| self.slot(*c).style.flex_grow)
+            .sum();
 
         let mut child_sizes: Vec<(NodeId, f64, f64)> = Vec::with_capacity(flow_children.len());
         let mut used_main = total_gap;
 
         for &cid in &flow_children {
-            let cs = &self.arena[cid.0].style;
+            // Extract resolved values first, then drop the borrow so
+            // intrinsic_width can read the arena without conflict.
+            let (explicit_w, explicit_h, margin_main) = {
+                let cs = &self.slot(cid).style;
+                (
+                    cs.width.resolve(child_avail_w),
+                    cs.height.resolve(child_avail_h),
+                    if is_row {
+                        cs.margin.horizontal()
+                    } else {
+                        cs.margin.vertical()
+                    },
+                )
+            };
             let cw = if is_row {
-                cs.width.resolve(child_avail_w).unwrap_or(0.0)
+                explicit_w.unwrap_or_else(|| self.intrinsic_width(cid))
             } else {
-                cs.width.resolve(child_avail_w).unwrap_or(child_avail_w)
+                explicit_w.unwrap_or(child_avail_w)
             };
             let ch = if is_row {
-                cs.height.resolve(child_avail_h).unwrap_or(child_avail_h)
+                explicit_h.unwrap_or(child_avail_h)
             } else {
-                cs.height.resolve(child_avail_h).unwrap_or(0.0)
+                explicit_h.unwrap_or(0.0)
             };
             child_sizes.push((cid, cw, ch));
-            used_main += if is_row { cw + cs.margin.horizontal() } else { ch + cs.margin.vertical() };
+            used_main += if is_row { cw } else { ch } + margin_main;
         }
 
         // Distribute remaining space among flex-grow children.
@@ -198,10 +225,14 @@ impl Tree {
 
         if total_grow > 0.0 && remaining > 0.0 {
             for (cid, cw, ch) in &mut child_sizes {
-                let grow = self.arena[cid.0].style.flex_grow;
+                let grow = self.slot(*cid).style.flex_grow;
                 if grow > 0.0 {
                     let share = remaining * grow / total_grow;
-                    if is_row { *cw += share; } else { *ch += share; }
+                    if is_row {
+                        *cw += share;
+                    } else {
+                        *ch += share;
+                    }
                 }
             }
         }
@@ -209,27 +240,44 @@ impl Tree {
         // Second pass: position children.
         let inner_x = ox + style.margin.left + style.padding.left;
         let inner_y = oy + style.margin.top + style.padding.top;
-        let scroll = self.arena[id.0].scroll;
+        let scroll = self.slot(id).scroll;
         let mut cursor_x = inner_x - scroll.x;
         let mut cursor_y = inner_y - scroll.y;
 
         // Justify offset.
-        let total_child_main: f64 = child_sizes.iter().map(|(cid, w, h)| {
-            let cs = &self.arena[cid.0].style;
-            if is_row { *w + cs.margin.horizontal() } else { *h + cs.margin.vertical() }
-        }).sum::<f64>() + total_gap;
+        let total_child_main: f64 = child_sizes
+            .iter()
+            .map(|(cid, w, h)| {
+                let cs = &self.slot(*cid).style;
+                if is_row {
+                    *w + cs.margin.horizontal()
+                } else {
+                    *h + cs.margin.vertical()
+                }
+            })
+            .sum::<f64>()
+            + total_gap;
 
         let justify_offset = match style.justify {
-            Justify::Center => ((if is_row { child_avail_w } else { child_avail_h }) - total_child_main).max(0.0) / 2.0,
-            Justify::End => ((if is_row { child_avail_w } else { child_avail_h }) - total_child_main).max(0.0),
+            Justify::Center => {
+                ((if is_row { child_avail_w } else { child_avail_h }) - total_child_main).max(0.0)
+                    / 2.0
+            }
+            Justify::End => {
+                ((if is_row { child_avail_w } else { child_avail_h }) - total_child_main).max(0.0)
+            }
             _ => 0.0,
         };
 
-        if is_row { cursor_x += justify_offset; } else { cursor_y += justify_offset; }
+        if is_row {
+            cursor_x += justify_offset;
+        } else {
+            cursor_y += justify_offset;
+        }
 
         let mut max_cross = 0.0_f64;
         for (cid, cw, ch) in &child_sizes {
-            let cs = &self.arena[cid.0].style;
+            let cs = &self.slot(*cid).style;
             let cm = cs.margin;
             let cx = cursor_x + cm.left;
             let cy = cursor_y + cm.top;
@@ -253,7 +301,7 @@ impl Tree {
 
             self.layout_node(*cid, *cw, *ch, fx, fy);
 
-            let child_rect = self.arena[cid.0].rect;
+            let child_rect = self.slot(*cid).rect;
             if is_row {
                 cursor_x += child_rect.size.w + cm.horizontal() + style.gap;
                 max_cross = max_cross.max(child_rect.size.h + cm.vertical());
@@ -265,8 +313,10 @@ impl Tree {
 
         // Layout absolute children.
         for &cid in &children {
-            let cs = &self.arena[cid.0].style;
-            if cs.position != Position::Absolute { continue; }
+            let cs = &self.slot(cid).style;
+            if cs.position != Position::Absolute {
+                continue;
+            }
             let ax = inner_x + cs.left.resolve(content_w).unwrap_or(0.0);
             let ay = inner_y + cs.top.resolve(child_avail_h).unwrap_or(0.0);
             let aw = cs.width.resolve(content_w).unwrap_or(content_w);
@@ -276,11 +326,12 @@ impl Tree {
 
         // Compute own height from children if auto.
         let children_h = cursor_y - (inner_y - scroll.y) - style.gap.max(0.0);
-        let children_w = cursor_x - (inner_x - scroll.x) - style.gap.max(0.0);
+        let _children_w = cursor_x - (inner_x - scroll.x) - style.gap.max(0.0);
 
-        let final_w = style.width.resolve(avail_w).unwrap_or(
-            if is_row { (children_w + pad_h).max(0.0) } else { avail_w - margin_h }
-        );
+        let final_w = style
+            .width
+            .resolve(avail_w)
+            .unwrap_or((avail_w - margin_h).max(0.0));
         let final_h = outer_h_hint.unwrap_or_else(|| {
             let content = intrinsic_h.max(if is_row { max_cross } else { children_h });
             content + pad_v + margin_v
@@ -290,7 +341,55 @@ impl Tree {
         let final_w = Dimension::clamp(final_w, style.min_width, style.max_width, avail_w);
         let final_h = Dimension::clamp(final_h, style.min_height, style.max_height, avail_h);
 
-        self.arena[id.0].rect = Rect::new(ox, oy, final_w, final_h);
+        self.slot_mut(id).rect = Rect::new(ox, oy, final_w, final_h);
+    }
+
+    // ── Intrinsic sizing ─────────────────────────────────
+
+    /// Estimate the min-content width of a subtree (for main-axis measurement
+    /// of row children that have no explicit width).
+    fn intrinsic_width(&self, id: NodeId) -> f64 {
+        let slot = self.slot(id);
+        let s = &slot.style;
+        let pad_h = s.padding.horizontal();
+        match &slot.kind {
+            NodeKind::Text(t) => t.len() as f64 * s.font_size * 0.55 + pad_h,
+            NodeKind::Bar { .. } => pad_h,
+            NodeKind::Box => {
+                let row = s.direction == Direction::Row;
+                let gap = if slot.children.len() > 1 {
+                    s.gap * (slot.children.len() - 1) as f64
+                } else {
+                    0.0
+                };
+                let children: Vec<NodeId> = slot.children.clone();
+                let content: f64 = if row {
+                    children
+                        .iter()
+                        .map(|c| {
+                            let cs = &self.slot(*c).style;
+                            cs.width
+                                .resolve(0.0)
+                                .unwrap_or_else(|| self.intrinsic_width(*c))
+                                + cs.margin.horizontal()
+                        })
+                        .sum::<f64>()
+                        + gap
+                } else {
+                    children
+                        .iter()
+                        .map(|c| {
+                            let cs = &self.slot(*c).style;
+                            cs.width
+                                .resolve(0.0)
+                                .unwrap_or_else(|| self.intrinsic_width(*c))
+                                + cs.margin.horizontal()
+                        })
+                        .fold(0.0_f64, f64::max)
+                };
+                content + pad_h
+            }
+        }
     }
 
     // ── Paint ───────────────────────────────────────────
@@ -301,11 +400,13 @@ impl Tree {
     }
 
     fn paint_node(&self, id: NodeId, list: &mut RenderList) {
-        let slot = &self.arena[id.0];
+        let slot = self.slot(id);
         let r = slot.rect;
         let s = &slot.style;
 
-        if s.opacity <= 0.0 { return; }
+        if s.opacity <= 0.0 {
+            return;
+        }
 
         // Clip for scrollable containers.
         let needs_clip = s.overflow != Overflow::Visible;
@@ -316,7 +417,10 @@ impl Tree {
         // Background.
         if s.background.a > 0 {
             let border = if s.border_width > 0.0 && s.border_color.a > 0 {
-                Some(Border { color: s.border_color, width: s.border_width })
+                Some(Border {
+                    color: s.border_color,
+                    width: s.border_width,
+                })
             } else {
                 None
             };
@@ -384,8 +488,10 @@ impl Tree {
     }
 
     fn hit_test_node(&self, id: NodeId, pos: Point) -> Option<NodeId> {
-        let slot = &self.arena[id.0];
-        if !slot.rect.contains(pos) { return None; }
+        let slot = self.slot(id);
+        if !slot.rect.contains(pos) {
+            return None;
+        }
         // Deepest child wins (reverse for z-order: last child = on top).
         for &child_id in slot.children.iter().rev() {
             if let Some(hit) = self.hit_test_node(child_id, pos) {
@@ -400,10 +506,10 @@ impl Tree {
         let mut id = self.hit_test(pos)?;
         // Walk up until we find a tagged node.
         loop {
-            if let Some(ref tag) = self.arena[id.0].tag {
+            if let Some(ref tag) = self.slot(id).tag {
                 return Some(tag.as_str());
             }
-            id = self.arena[id.0].parent?;
+            id = self.slot(id).parent?;
         }
     }
 
@@ -417,14 +523,16 @@ impl Tree {
         };
 
         let target = pos.and_then(|p| self.hit_test(p));
-        let Some(target) = target else { return EventResponse::Ignored; };
+        let Some(target) = target else {
+            return EventResponse::Ignored;
+        };
 
         // Build path: root → ... → target.
         let mut path = Vec::new();
         let mut cur = Some(target);
         while let Some(id) = cur {
             path.push(id);
-            cur = self.arena[id.0].parent;
+            cur = self.slot(id).parent;
         }
         path.reverse();
 
@@ -433,7 +541,9 @@ impl Tree {
         // Capture phase.
         ctx.phase = Phase::Capture;
         for &id in &path[..path.len().saturating_sub(1)] {
-            if ctx.stopped { break; }
+            if ctx.stopped {
+                break;
+            }
             let _ = id; // Hook point for future per-node handlers.
         }
 
@@ -443,7 +553,9 @@ impl Tree {
         // Bubble phase.
         ctx.phase = Phase::Bubble;
         for &id in path.iter().rev().skip(1) {
-            if ctx.stopped { break; }
+            if ctx.stopped {
+                break;
+            }
             let _ = id;
         }
 
@@ -452,22 +564,23 @@ impl Tree {
 
     /// Apply a scroll delta to a node (or the nearest scrollable ancestor).
     pub fn scroll(&mut self, pos: Point, delta: Point) {
-        let Some(mut id) = self.hit_test(pos) else { return; };
+        let Some(mut id) = self.hit_test(pos) else {
+            return;
+        };
         loop {
-            if self.arena[id.0].style.overflow == Overflow::Scroll {
-                let s = &mut self.arena[id.0].scroll;
+            if self.slot(id).style.overflow == Overflow::Scroll {
+                let s = &mut self.slot_mut(id).scroll;
                 s.x = (s.x - delta.x).max(0.0);
                 s.y = (s.y - delta.y).max(0.0);
                 return;
             }
-            match self.arena[id.0].parent {
+            match self.slot(id).parent {
                 Some(p) => id = p,
                 None => return,
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -476,10 +589,13 @@ mod tests {
     #[test]
     fn basic_tree_layout() {
         let mut tree = Tree::new(Style::default().w(400.0).h(300.0).bg(Color::BLACK));
-        let child = tree.add_box(tree.root, Style::default().w(200.0).h(100.0).bg(Color::WHITE));
+        let child = tree.add_box(
+            tree.root,
+            Style::default().w(200.0).h(100.0).bg(Color::WHITE),
+        );
         tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(tree.arena[child.0].rect.size.w, 200.0);
-        assert_eq!(tree.arena[child.0].rect.size.h, 100.0);
+        assert_eq!(tree.slot(child).rect.size.w, 200.0);
+        assert_eq!(tree.slot(child).rect.size.h, 100.0);
     }
 
     #[test]
@@ -487,7 +603,7 @@ mod tests {
         let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
         let txt = tree.add_text(tree.root, "Hello world", Style::default().font(16.0));
         tree.layout(Size::new(300.0, 200.0));
-        assert!(tree.arena[txt.0].rect.size.h > 0.0);
+        assert!(tree.slot(txt).rect.size.h > 0.0);
     }
 
     #[test]
@@ -515,18 +631,94 @@ mod tests {
         let _a = tree.add_box(tree.root, Style::default().w(50.0).h(100.0));
         let b = tree.add_box(tree.root, Style::default().h(100.0).grow(1.0));
         tree.layout(Size::new(300.0, 100.0));
-        let bw = tree.arena[b.0].rect.size.w;
-        assert!(bw > 200.0, "flex child should consume remaining space, got {}", bw);
+        let bw = tree.slot(b).rect.size.w;
+        assert!(
+            bw > 200.0,
+            "flex child should consume remaining space, got {}",
+            bw
+        );
     }
 
     #[test]
     fn paint_produces_primitives() {
         let mut tree = Tree::new(Style::default().w(400.0).h(300.0).bg(Color::BLACK));
-        tree.add_text(tree.root, "Hi", Style::default().font(14.0).color(Color::WHITE));
-        tree.add_bar(tree.root, 0.5, Color::rgb(0, 255, 0), Style::default().h(10.0));
+        tree.add_text(
+            tree.root,
+            "Hi",
+            Style::default().font(14.0).color(Color::WHITE),
+        );
+        tree.add_bar(
+            tree.root,
+            0.5,
+            Color::rgb(0, 255, 0),
+            Style::default().h(10.0),
+        );
         tree.layout(Size::new(400.0, 300.0));
         let mut list = RenderList::default();
         tree.paint(&mut list);
-        assert!(list.len() >= 3, "expected ≥3 primitives, got {}", list.len());
+        assert!(
+            list.len() >= 3,
+            "expected ≥3 primitives, got {}",
+            list.len()
+        );
+    }
+
+    /// Regression: row-direction tab buttons inside a column sidebar must
+    /// stretch to the sidebar width so clicks anywhere on the row register.
+    #[test]
+    fn row_button_in_column_stretches_width() {
+        // Sidebar: column, 220×600, padding 16 12
+        let mut tree = Tree::new(Style::default().w(800.0).h(600.0).row());
+        let sidebar = tree.add_box(
+            tree.root,
+            Style {
+                width: Dimension::Px(220.0),
+                padding: Edges::xy(12.0, 16.0),
+                gap: 8.0,
+                ..Style::default()
+            },
+        );
+        // Tab button: row with height=36, no explicit width.
+        let btn = tree.add_box(
+            sidebar,
+            Style {
+                height: Dimension::Px(36.0),
+                direction: Direction::Row,
+                padding: Edges::xy(12.0, 0.0),
+                align: Align::Center,
+                ..Style::default()
+            },
+        );
+        tree.add_text(btn, "Hardware", Style::default().font(13.0));
+        tree.tag(btn, "tab-0");
+
+        tree.layout(Size::new(800.0, 600.0));
+
+        let btn_r = tree.slot(btn).rect;
+        // Button must fill the sidebar's inner width (220 − 12 − 12 = 196).
+        assert!(
+            (btn_r.size.w - 196.0).abs() < 1.0,
+            "tab button should stretch to 196px, got {}",
+            btn_r.size.w
+        );
+        // Click in the middle of the button must return the tag.
+        let mid_x = btn_r.origin.x + btn_r.size.w / 2.0;
+        let mid_y = btn_r.origin.y + btn_r.size.h / 2.0;
+        assert_eq!(tree.click(Point::new(mid_x, mid_y)), Some("tab-0"));
+        // Click near the right edge (x ≈ 190) must also work.
+        assert_eq!(
+            tree.click(Point::new(btn_r.origin.x + 180.0, mid_y)),
+            Some("tab-0")
+        );
+    }
+
+    /// Text in a row parent must get intrinsic width, not 0.
+    #[test]
+    fn text_in_row_has_intrinsic_width() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(100.0).row());
+        let txt = tree.add_text(tree.root, "Hello", Style::default().font(14.0));
+        tree.layout(Size::new(400.0, 100.0));
+        let w = tree.slot(txt).rect.size.w;
+        assert!(w > 10.0, "text in row should have intrinsic width, got {w}");
     }
 }

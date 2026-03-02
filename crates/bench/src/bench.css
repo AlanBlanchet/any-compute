@@ -1,0 +1,221 @@
+/* any-compute bench-window — Catppuccin Mocha theme
+ *
+ * Parsed once at startup by StyleSheet::parse(), then discarded.
+ * Runtime lookups are O(1) HashMap probes returning pre-baked Style structs.
+ * All px values are our native f64 units — no CSS engine at runtime.
+ */
+
+/* ── Typography ─────────────────────────────────────────────────────── */
+
+.title {
+  font-size: 22px;
+  color: #cdd2f4;
+}
+.subtitle {
+  font-size: 12px;
+  color: #9399b2;
+}
+.label {
+  font-size: 11px;
+  color: #9399b2;
+}
+.body {
+  font-size: 12px;
+  color: #cdd2f4;
+}
+.heading {
+  font-size: 16px;
+}
+.small {
+  font-size: 10px;
+}
+.font-13 {
+  font-size: 13px;
+}
+.font-14 {
+  font-size: 14px;
+}
+.font-18 {
+  font-size: 18px;
+}
+.font-9 {
+  font-size: 9px;
+}
+
+/* ── Color accents (for dynamic text) ───────────────────────────────── */
+
+.green {
+  color: #a6e3a1;
+}
+.blue {
+  color: #89b4fa;
+}
+.red {
+  color: #f38ba8;
+}
+.yellow {
+  color: #f9e2af;
+}
+.mauve {
+  color: #cba6f7;
+}
+.text {
+  color: #cdd2f4;
+}
+.text-dim {
+  color: #9399b2;
+}
+
+/* ── Layout utilities ───────────────────────────────────────────────── */
+
+.row {
+  flex-direction: row;
+}
+.col {
+  flex-direction: column;
+}
+.center {
+  align-items: center;
+}
+.grow {
+  flex-grow: 1;
+}
+
+.gap-2 {
+  gap: 2px;
+}
+.gap-4 {
+  gap: 4px;
+}
+.gap-8 {
+  gap: 8px;
+}
+.gap-12 {
+  gap: 12px;
+}
+.gap-16 {
+  gap: 16px;
+}
+
+/* ── Surfaces ───────────────────────────────────────────────────────── */
+
+.bg {
+  background: #1e1e2e;
+}
+.surface {
+  background: #313244;
+}
+.surface-bright {
+  background: #45475a;
+}
+
+/* ── Components ─────────────────────────────────────────────────────── */
+
+.card {
+  flex-grow: 1;
+  background: #313244;
+  border-radius: 12px;
+  padding: 16px;
+  gap: 6px;
+}
+
+.sidebar {
+  width: 220px;
+  background: #181825;
+  padding: 16px 12px;
+  gap: 8px;
+}
+
+.header {
+  height: 56px;
+  background: #313244;
+  flex-direction: row;
+  padding: 0px 24px;
+  align-items: center;
+}
+
+.content {
+  flex-grow: 1;
+  overflow: scroll;
+  padding: 24px;
+  gap: 16px;
+}
+
+.btn {
+  border-radius: 8px;
+  padding: 8px 16px;
+  flex-direction: row;
+  align-items: center;
+}
+
+.tab-btn {
+  height: 36px;
+  border-radius: 8px;
+  padding: 0px 12px;
+  flex-direction: row;
+  align-items: center;
+}
+
+.tab-active {
+  background: #89b4fa;
+  color: #181825;
+}
+.tab-inactive {
+  background: transparent;
+  color: #9399b2;
+}
+
+.brand {
+  flex-direction: row;
+  gap: 12px;
+  height: 40px;
+  align-items: center;
+}
+
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  background: #89b4fa;
+  border-radius: 6px;
+}
+
+.brand-text {
+  gap: 2px;
+}
+
+/* ── Bench-specific presets ─────────────────────────────────────────── */
+
+.result-card {
+  flex-grow: 1;
+  background: #313244;
+  border-radius: 10px;
+  padding: 14px;
+  gap: 4px;
+}
+
+.bar-thin {
+  height: 8px;
+  border-radius: 4px;
+}
+.bar-small {
+  height: 9px;
+  border-radius: 3px;
+}
+.bar-medium {
+  height: 6px;
+  border-radius: 3px;
+}
+.bar-large {
+  height: 24px;
+  border-radius: 6px;
+}
+
+.gpu-badge {
+  background: #45475a;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.spacer-12 {
+  height: 12px;
+}

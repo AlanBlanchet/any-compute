@@ -1,0 +1,43 @@
+[package]
+name = "any-compute-bench"
+description = "Benchmark dashboard & performance comparison suite for any-compute DOM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["window"]
+# Enables the GPU dashboard binary
+window = [
+    "any-compute-core/wgpu-backend",
+    "any-compute-core/hwinfo",
+    "dep:wgpu",
+    "dep:glyphon",
+    "dep:pollster",
+    "dep:winit",
+    "dep:bytemuck",
+    "dep:rayon",
+    "dep:env_logger",
+]
+
+[dependencies]
+any-compute-core = { workspace = true }
+any-compute-dom = { workspace = true }
+
+# GPU rendering (optional, behind window feature)
+wgpu = { workspace = true, optional = true }
+glyphon = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+env_logger = { version = "0.11", optional = true }
+
+[dev-dependencies]
+any-compute-core = { workspace = true, features = ["hwinfo"] }
+any-compute-dom = { workspace = true }
+
+[[bin]]
+name = "anv-bench-window"
+path = "src/window.rs"
+required-features = ["window"]

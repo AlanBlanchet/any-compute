@@ -7,6 +7,8 @@ license.workspace = true
 
 [features]
 default = []
+# Convenience: enables everything the bench-window binary needs
+bench = ["wgpu-backend", "hwinfo"]
 # GPU backends
 wgpu-backend = ["dep:wgpu", "dep:glyphon"]
 # Vendor-specific compute (link to proprietary libs)
@@ -45,8 +47,3 @@ num_cpus = { workspace = true, optional = true }
 name = "anc-bench"
 path = "src/bin/anc_bench.rs"
 required-features = ["hwinfo"]
-
-[[bin]]
-name = "bench-window"
-path = "src/bin/bench_window.rs"
-required-features = ["wgpu-backend", "hwinfo"]

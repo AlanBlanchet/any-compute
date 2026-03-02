@@ -127,6 +127,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "any-compute-bench"
+version = "0.1.0"
+dependencies = [
+ "any-compute-core",
+ "any-compute-dom",
+ "bytemuck",
+ "env_logger",
+ "glyphon",
+ "pollster",
+ "rayon",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "any-compute-core"
 version = "0.1.0"
 dependencies = [
@@ -148,6 +163,14 @@ dependencies = [
  "thiserror 2.0.18",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "any-compute-dom"
+version = "0.1.0"
+dependencies = [
+ "any-compute-core",
+ "log",
 ]
 
 [[package]]
