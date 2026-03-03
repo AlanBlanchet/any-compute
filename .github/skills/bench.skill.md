@@ -37,13 +37,13 @@ cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
 | `VIEWPORT`      | Default `Size(1400, 900)`                           |
 | `VERSION`       | `"vX.Y.Z"` from `Cargo.toml`                        |
 | `TAB_LABELS`    | `["Hardware", "Benchmarks", "Live Showdown"]`       |
-| `sheet()`       | Parse and return the bench stylesheet               |
-| `s(cls)`/`sm()` | Shorthand class resolution                          |
-| `kv_row()`      | Key-value row helper (label 72px + value)           |
-| `build_shell()` | Common sidebar + tab shell (returns content NodeId) |
+| `SHEET`         | `LazyLock<StyleSheet>` — parsed once, O(1) lookups  |
+| `s(cls)`/`sm()` | Shorthand class resolution via `SHEET`               |
+| `kv_row()`      | Key-value row helper (label 72px + value)            |
+| `build_shell()` | Common sidebar + tab shell (returns content NodeId)  |
 
-`window.rs` imports these instead of duplicating. Theme color constants live in
-`window.rs::theme` for wgpu clear color and dynamic bar graph coloring.
+`kv_row` and `build_shell` use the global `SHEET` directly — no `&StyleSheet` parameter.
+`window.rs` imports `SHEET` from `lib.rs` and defines local `s()`/`sm()` wrappers.
 
 ## DOM Performance Comparison
 
@@ -69,7 +69,17 @@ Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference
 - Background threads via rayon: hardware detection, compute benchmarks, live throughput loop
 - `build_tree()` constructs sidebar + tabs + tab-specific content builders per frame
 - Three tabs: Hardware (system info), Benchmarks (results + comparisons), Live Showdown (sigmoid throughput)
-- All styling via CSS classes from `bench.css`; `theme` module only for dynamic color logic
+- Styling: Tailwind CSS utilities + bench.css component classes, merged via `combined_css()` at startup
+- `theme` module provides const `Color` values for dynamic logic (bar graphs, clear color)
+- `TAILWIND_CSS` exported from `any-compute-dom` — compiled Tailwind v3 subset, no runtime
+
+### CSS Pipeline
+
+- `combined_css()` in `lib.rs` concatenates `TAILWIND_CSS` + `BENCH_CSS` → one string
+- `SHEET = LazyLock::new(|| StyleSheet::parse(&combined_css()))` — parsed once, O(1) lookups
+- Tailwind utilities provide spacing, layout, colors; bench.css provides component classes
+- Compound CSS classes (`.row-gap-8`, `.row-gap-12`, `.section-hdr`, `.small-dim`, `.heading-text`) reduce multi-class lookups to single `s()` calls
+- Both parsed by the same CSS engine, same `StyleOp` compilation, zero duplication
 
 ### GPU Renderer
 
@@ -78,18 +88,39 @@ Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference
 - Premultiplied alpha blending (`PREMULTIPLIED_ALPHA_BLENDING` blend state)
 - Border rendering via inner SDF: distance to outer edge < border_width → border color, else fill
 
-### Transitions & Smooth Scroll
+### Event System (V8-like)
 
-- `TransitionManager` in `AppData` drives tab-switch animations
-- Tab clicks start 180ms `EaseOut` fade transitions per tab (old fades out, new fades in)
-- `build_tree()` reads transition values and blends between inactive/active colors via `Color::lerp`
-- Scroll uses exponential smoothing: `scroll_y` lerps toward `scroll_target` each frame (0.18 speed)
-- `build_tree` takes `&mut AppData` (via `MutexGuard`) since `TransitionManager::value` updates internal state
+All winit events are converted to `InputEvent` and dispatched through `Tree::dispatch()`:
 
-### Click Handling
+| winit Event          | InputEvent        | Action                                    |
+| -------------------- | ----------------- | ----------------------------------------- |
+| MouseInput Pressed   | PointerDown       | Set focus, track active tag               |
+| MouseInput Released  | PointerUp         | Fire click if same tag as press (web model)|
+| CursorMoved          | PointerMove       | Hover tracking → transition fade in/out   |
+| CursorLeft           | —                 | Clear hover                               |
+| MouseWheel           | Scroll            | Smooth scroll + dispatch                  |
+| KeyboardInput        | KeyDown           | Tab/Arrow navigation, Enter/Space activate|
+| Focused(false)       | —                 | Clear hover                               |
+| ModifiersChanged     | —                 | Track modifier state                      |
 
-- `tree.click(pos)` returns the tag of the clicked node (walks parents if needed)
-- `handle_tag()` dispatches tags: `"tab-N"` → switch tab + start transitions, `"run-bench"`, `"toggle-sim"`
+- `HoverState` tracks hovered tag; emits `HoverDelta` → starts 120ms EaseOut fade transitions
+- `FocusState` tracks focused tag for keyboard activation (Enter/Space)
+- Pointer click only fires on release *if* released on the same tag as pressed (web behavior)
+- `winit_key_to_string()` / `winit_button()` / `winit_modifiers()` convert winit types → our types
+
+### Transitions & Animations
+
+- `ease_transition(mgr, key, from, to, dur)` — centralized helper for all transitions
+- `switch_tab(d, new)` — single source of truth for tab-switch animation (fade out old, fade in new, reset scroll)
+- Tab switch: 180ms EaseOut via `TransitionManager`
+- Hover: 120ms EaseOut fade, blended into background color at draw time via `Color::lerp`
+- Buttons: hover brightens background by 15% toward white
+- Scroll: exponential smoothing (0.18 speed, `scroll_y` lerps toward `scroll_target` each frame)
+
+### Click / Keyboard Handling
+
+- `handle_click(state, tag)` — dispatches tags: `"tab-N"` → `switch_tab`, `"run-bench"`, `"toggle-sim"`
+- `handle_keyboard(state, key, mods)` — Tab/ArrowDown/ArrowUp cycle tabs, Enter/Space activate focused, Escape stops sim
+- `handle_hover(state, tag)` — hover transition management
 - **Critical**: tab buttons must stretch to fill the sidebar width (cross-axis stretch) — if they
-  collapse to padding-only width, clicks miss them entirely (this was a layout solver bug, fixed by
-  making `final_w` always stretch to `avail_w` when no explicit width set)
+  collapse to padding-only width, clicks miss them entirely

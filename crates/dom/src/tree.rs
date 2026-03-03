@@ -4,11 +4,13 @@
 //! cache-friendly, and trivially serialisable.  Node IDs are indices.
 
 use any_compute_core::hints::Hints;
-use any_compute_core::interaction::{EventContext, EventResponse, InputEvent, Phase};
+use any_compute_core::interaction::{DispatchResult, EventContext, InputEvent, Phase};
 use any_compute_core::layout::{Point, Rect, Size};
 use any_compute_core::render::{Border, Color, Primitive, RenderList};
 
 use super::style::*;
+// Re-import specific items we use in match arms for clarity.
+use super::style::{BoxSizing, Overflow, Visibility};
 
 // ── Node identity ───────────────────────────────────────────────────────────
 
@@ -136,17 +138,30 @@ impl Tree {
     }
 
     fn layout_node(&mut self, id: NodeId, avail_w: f64, avail_h: f64, ox: f64, oy: f64) {
-        // Resolve own size.
+        // Skip hidden nodes entirely.
         let style = self.slot(id).style.clone();
+        if style.is_hidden() {
+            self.slot_mut(id).rect = Rect::ZERO;
+            return;
+        }
+
         let pad_h = style.padding.horizontal();
         let pad_v = style.padding.vertical();
         let margin_h = style.margin.horizontal();
         let margin_v = style.margin.vertical();
+        let bdr = style.effective_border();
+        let bdr_h = bdr.horizontal();
+        let bdr_v = bdr.vertical();
 
+        // In border-box mode, width/height *include* padding + border.
+        // Content area = resolved size − padding − border.
         let outer_w = style.width.resolve(avail_w).unwrap_or(avail_w) + margin_h;
         let outer_h_hint = style.height.resolve(avail_h);
 
-        let content_w = (outer_w - margin_h - pad_h).max(0.0);
+        let content_w = match style.box_sizing {
+            BoxSizing::BorderBox => (outer_w - margin_h - pad_h - bdr_h).max(0.0),
+            BoxSizing::ContentBox => (outer_w - margin_h).max(0.0),
+        };
 
         // Determine intrinsic height for text / bar.
         let intrinsic_h = match &self.slot(id).kind {
@@ -154,7 +169,7 @@ impl Tree {
                 let font = style.font_size;
                 let chars = s.len().max(1) as f64;
                 let lines = (chars * font * 0.55 / content_w.max(1.0)).ceil().max(1.0);
-                lines * font * 1.3
+                lines * font * style.line_height
             }
             NodeKind::Bar { .. } => style.font_size.max(8.0),
             NodeKind::Box => 0.0,
@@ -165,18 +180,34 @@ impl Tree {
         let flow_children: Vec<NodeId> = children
             .iter()
             .copied()
-            .filter(|c| self.slot(*c).style.position != Position::Absolute)
+            .filter(|c| {
+                let cs = &self.slot(*c).style;
+                !cs.is_out_of_flow() && !cs.is_hidden()
+            })
             .collect();
 
         let is_row = style.direction == Direction::Row;
         let child_avail_w = content_w;
         let child_avail_h = outer_h_hint
-            .map(|h| (h - margin_v - pad_v).max(0.0))
-            .unwrap_or(avail_h - margin_v - pad_v);
+            .map(|h| {
+                let deduct = match style.box_sizing {
+                    BoxSizing::BorderBox => pad_v + bdr_v,
+                    BoxSizing::ContentBox => 0.0,
+                };
+                (h - deduct).max(0.0)
+            })
+            .unwrap_or((avail_h - margin_v - pad_v - bdr_v).max(0.0));
+
+        // Compute main-axis gap (row-gap / column-gap overrides).
+        let main_gap = if is_row {
+            style.column_gap.unwrap_or(style.gap)
+        } else {
+            style.row_gap.unwrap_or(style.gap)
+        };
 
         // First pass: measure children.
         let total_gap = if flow_children.len() > 1 {
-            style.gap * (flow_children.len() - 1) as f64
+            main_gap * (flow_children.len() - 1) as f64
         } else {
             0.0
         };
@@ -237,9 +268,45 @@ impl Tree {
             }
         }
 
+        // Flex-shrink: when children overflow main axis, shrink proportionally.
+        // Without this, children would extend beyond the container and overlap.
+        let overflow = used_main - main_budget;
+        if overflow > 0.0 {
+            let total_shrink: f64 = child_sizes
+                .iter()
+                .map(|(cid, _, _)| self.slot(*cid).style.flex_shrink)
+                .sum();
+            if total_shrink > 0.0 {
+                for (cid, cw, ch) in &mut child_sizes {
+                    let shrink = self.slot(*cid).style.flex_shrink;
+                    if shrink > 0.0 {
+                        let share = overflow * shrink / total_shrink;
+                        // Respect min-width / min-height constraints.
+                        if is_row {
+                            let min = self
+                                .slot(*cid)
+                                .style
+                                .min_width
+                                .resolve(child_avail_w)
+                                .unwrap_or(0.0);
+                            *cw = (*cw - share).max(min);
+                        } else {
+                            let min = self
+                                .slot(*cid)
+                                .style
+                                .min_height
+                                .resolve(child_avail_h)
+                                .unwrap_or(0.0);
+                            *ch = (*ch - share).max(min);
+                        }
+                    }
+                }
+            }
+        }
+
         // Second pass: position children.
-        let inner_x = ox + style.margin.left + style.padding.left;
-        let inner_y = oy + style.margin.top + style.padding.top;
+        let inner_x = ox + style.margin.left + style.padding.left + bdr.left;
+        let inner_y = oy + style.margin.top + style.padding.top + bdr.top;
         let scroll = self.slot(id).scroll;
         let mut cursor_x = inner_x - scroll.x;
         let mut cursor_y = inner_y - scroll.y;
@@ -283,15 +350,17 @@ impl Tree {
             let cy = cursor_y + cm.top;
 
             // Cross-axis alignment.
+            // Per-child align-self overrides parent align.
+            let effective_align = cs.align_self.unwrap_or(style.align);
             let (fx, fy) = if is_row {
-                let aligned_y = match style.align {
+                let aligned_y = match effective_align {
                     Align::Center => cy + (child_avail_h - ch) / 2.0,
                     Align::End => cy + child_avail_h - ch,
                     _ => cy,
                 };
                 (cx, aligned_y)
             } else {
-                let aligned_x = match style.align {
+                let aligned_x = match effective_align {
                     Align::Center => cx + (child_avail_w - cw) / 2.0,
                     Align::End => cx + child_avail_w - cw,
                     _ => cx,
@@ -303,18 +372,18 @@ impl Tree {
 
             let child_rect = self.slot(*cid).rect;
             if is_row {
-                cursor_x += child_rect.size.w + cm.horizontal() + style.gap;
+                cursor_x += child_rect.size.w + cm.horizontal() + main_gap;
                 max_cross = max_cross.max(child_rect.size.h + cm.vertical());
             } else {
-                cursor_y += child_rect.size.h + cm.vertical() + style.gap;
+                cursor_y += child_rect.size.h + cm.vertical() + main_gap;
                 max_cross = max_cross.max(child_rect.size.w + cm.horizontal());
             }
         }
 
-        // Layout absolute children.
+        // Layout out-of-flow children (absolute / fixed).
         for &cid in &children {
             let cs = &self.slot(cid).style;
-            if cs.position != Position::Absolute {
+            if !cs.is_out_of_flow() || cs.is_hidden() {
                 continue;
             }
             let ax = inner_x + cs.left.resolve(content_w).unwrap_or(0.0);
@@ -325,16 +394,24 @@ impl Tree {
         }
 
         // Compute own height from children if auto.
-        let children_h = cursor_y - (inner_y - scroll.y) - style.gap.max(0.0);
-        let _children_w = cursor_x - (inner_x - scroll.x) - style.gap.max(0.0);
+        let children_h = cursor_y - (inner_y - scroll.y) - main_gap.max(0.0);
+        let _children_w = cursor_x - (inner_x - scroll.x) - main_gap.max(0.0);
 
+        let _insets = match style.box_sizing {
+            BoxSizing::BorderBox => pad_h + bdr_h,
+            BoxSizing::ContentBox => 0.0,
+        };
         let final_w = style
             .width
             .resolve(avail_w)
             .unwrap_or((avail_w - margin_h).max(0.0));
         let final_h = outer_h_hint.unwrap_or_else(|| {
             let content = intrinsic_h.max(if is_row { max_cross } else { children_h });
-            content + pad_v + margin_v
+            let v_insets = match style.box_sizing {
+                BoxSizing::BorderBox => 0.0,
+                BoxSizing::ContentBox => pad_v + bdr_v,
+            };
+            content + pad_v + bdr_v + v_insets - v_insets // simplifies: content + pad_v + bdr_v
         });
 
         // Apply min/max constraints.
@@ -404,22 +481,34 @@ impl Tree {
         let r = slot.rect;
         let s = &slot.style;
 
-        if s.opacity <= 0.0 {
+        // Display::None → skip entirely (no children either).
+        if s.is_hidden() {
+            return;
+        }
+
+        if s.opacity <= 0.0 || s.visibility == Visibility::Hidden {
+            // Invisible but still occupies space; still paint children though
+            // (visibility is not inherited in our model, only display:none is).
+            self.paint_children(id, list);
             return;
         }
 
         // Clip for scrollable containers.
-        let needs_clip = s.overflow != Overflow::Visible;
+        let needs_clip = !matches!(s.overflow, Overflow::Visible);
         if needs_clip {
             list.push(Primitive::PushClip { bounds: r });
         }
 
         // Background.
         if s.background.a > 0 {
-            let border = if s.border_width > 0.0 && s.border_color.a > 0 {
+            let bw = s.effective_border();
+            let has_border = s.border_color.a > 0
+                && (bw.top > 0.0 || bw.right > 0.0 || bw.bottom > 0.0 || bw.left > 0.0);
+            let border = if has_border {
+                let max_bw = bw.top.max(bw.right).max(bw.bottom).max(bw.left);
                 Some(Border {
                     color: s.border_color,
-                    width: s.border_width,
+                    width: max_bw,
                 })
             } else {
                 None
@@ -470,13 +559,38 @@ impl Tree {
             NodeKind::Box => {}
         }
 
-        // Paint children in order (z = insertion order).
-        for &child_id in &slot.children {
-            self.paint_node(child_id, list);
-        }
+        // Paint children in z-index order.
+        self.paint_children(id, list);
 
         if needs_clip {
             list.push(Primitive::PopClip);
+        }
+    }
+
+    /// Paint children sorted by z-index. Children without z-index use
+    /// insertion order (stable sort preserves source order for equal z).
+    fn paint_children(&self, id: NodeId, list: &mut RenderList) {
+        let children = &self.slot(id).children;
+        if children.is_empty() {
+            return;
+        }
+
+        // Fast path: if no child has a z-index set, paint in insertion order.
+        let any_z = children
+            .iter()
+            .any(|c| self.slot(*c).style.z_index.is_some());
+        if !any_z {
+            for &child_id in children {
+                self.paint_node(child_id, list);
+            }
+            return;
+        }
+
+        // Sort by z-index (stable — preserves insertion order for equal z).
+        let mut sorted: Vec<NodeId> = children.clone();
+        sorted.sort_by_key(|c| self.slot(*c).style.z_index.unwrap_or(0));
+        for child_id in sorted {
+            self.paint_node(child_id, list);
         }
     }
 
@@ -513,21 +627,8 @@ impl Tree {
         }
     }
 
-    /// Full capture → target → bubble dispatch.
-    pub fn dispatch(&mut self, event: InputEvent) -> EventResponse {
-        let pos = match &event {
-            InputEvent::PointerDown { pos, .. }
-            | InputEvent::PointerUp { pos, .. }
-            | InputEvent::PointerMove { pos } => Some(*pos),
-            _ => None,
-        };
-
-        let target = pos.and_then(|p| self.hit_test(p));
-        let Some(target) = target else {
-            return EventResponse::Ignored;
-        };
-
-        // Build path: root → ... → target.
+    /// Build the ancestor path (root → target) for a given node.
+    fn ancestor_path(&self, target: NodeId) -> Vec<NodeId> {
         let mut path = Vec::new();
         let mut cur = Some(target);
         while let Some(id) = cur {
@@ -535,31 +636,76 @@ impl Tree {
             cur = self.slot(id).parent;
         }
         path.reverse();
+        path
+    }
 
+    /// Collect tags along a path (root → target order).
+    fn collect_tags(&self, path: &[NodeId]) -> Vec<String> {
+        path.iter()
+            .filter_map(|&id| self.slot(id).tag.clone())
+            .collect()
+    }
+
+    /// Find the deepest tagged node from target upward (same as `click` walk).
+    pub fn tag_at(&self, pos: Point) -> Option<String> {
+        let mut id = self.hit_test(pos)?;
+        loop {
+            if let Some(ref tag) = self.slot(id).tag {
+                return Some(tag.clone());
+            }
+            id = self.slot(id).parent?;
+        }
+    }
+
+    /// Full capture → target → bubble dispatch.
+    ///
+    /// For pointer events, hit-tests to find the target.
+    /// Returns a [`DispatchResult`] with the tag chain from root → target.
+    /// The host inspects `result.target_tag()` or `result.bubble_tags()` to dispatch actions.
+    pub fn dispatch(&self, event: InputEvent) -> DispatchResult {
+        let target = event.pos().and_then(|p| self.hit_test(p));
+        let Some(target) = target else {
+            return DispatchResult::default();
+        };
+
+        let path = self.ancestor_path(target);
+        let tags = self.collect_tags(&path);
         let mut ctx = EventContext::new(event);
 
-        // Capture phase.
+        // Capture phase: root → target-1
         ctx.phase = Phase::Capture;
         for &id in &path[..path.len().saturating_sub(1)] {
             if ctx.stopped {
                 break;
             }
-            let _ = id; // Hook point for future per-node handlers.
-        }
-
-        // Target phase.
-        ctx.phase = Phase::Target;
-
-        // Bubble phase.
-        ctx.phase = Phase::Bubble;
-        for &id in path.iter().rev().skip(1) {
-            if ctx.stopped {
-                break;
-            }
+            // Per-node handler hook point: if handlers were stored on Slot,
+            // we would invoke them here.  For tag-based dispatch the host
+            // processes the returned DispatchResult instead.
             let _ = id;
         }
 
-        EventResponse::Consumed
+        // Target phase.
+        if !ctx.stopped {
+            ctx.phase = Phase::Target;
+            let _ = target;
+        }
+
+        // Bubble phase: target-1 → root (reverse).
+        if !ctx.stopped {
+            ctx.phase = Phase::Bubble;
+            for &id in path.iter().rev().skip(1) {
+                if ctx.stopped {
+                    break;
+                }
+                let _ = id;
+            }
+        }
+
+        DispatchResult {
+            tags,
+            stopped: ctx.stopped,
+            default_prevented: ctx.default_prevented,
+        }
     }
 
     /// Apply a scroll delta to a node (or the nearest scrollable ancestor).
@@ -720,5 +866,46 @@ mod tests {
         tree.layout(Size::new(400.0, 100.0));
         let w = tree.slot(txt).rect.size.w;
         assert!(w > 10.0, "text in row should have intrinsic width, got {w}");
+    }
+
+    #[test]
+    fn dispatch_returns_tag_chain() {
+        use any_compute_core::interaction::{Button, InputEvent};
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        let sidebar = tree.add_box(tree.root, Style::default().w(200.0).h(300.0));
+        tree.tag(sidebar, "sidebar");
+        let btn = tree.add_box(sidebar, Style::default().w(100.0).h(50.0));
+        tree.tag(btn, "tab-0");
+        tree.layout(Size::new(400.0, 300.0));
+
+        let result = tree.dispatch(InputEvent::PointerDown {
+            pos: Point::new(50.0, 25.0),
+            button: Button::Primary,
+        });
+        assert_eq!(result.tags, vec!["sidebar", "tab-0"]);
+        assert_eq!(result.target_tag(), Some("tab-0"));
+    }
+
+    #[test]
+    fn dispatch_miss_returns_empty() {
+        use any_compute_core::interaction::{Button, InputEvent};
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        tree.layout(Size::new(400.0, 300.0));
+        let result = tree.dispatch(InputEvent::PointerDown {
+            pos: Point::new(500.0, 500.0),
+            button: Button::Primary,
+        });
+        assert!(result.tags.is_empty());
+    }
+
+    #[test]
+    fn tag_at_finds_deepest() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        let c = tree.add_box(tree.root, Style::default().w(200.0).h(100.0));
+        tree.tag(c, "container");
+        let inner = tree.add_box(c, Style::default().w(100.0).h(50.0));
+        tree.tag(inner, "inner-btn");
+        tree.layout(Size::new(400.0, 300.0));
+        assert_eq!(tree.tag_at(Point::new(50.0, 25.0)).as_deref(), Some("inner-btn"));
     }
 }

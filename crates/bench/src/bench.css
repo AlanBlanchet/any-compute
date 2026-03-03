@@ -3,31 +3,43 @@
  * Parsed once at startup by StyleSheet::parse(), then discarded.
  * Runtime lookups are O(1) HashMap probes returning pre-baked Style structs.
  * All px values are our native f64 units — no CSS engine at runtime.
+ *
+ * Uses z-index for proper layering: sidebar > header > content.
+ * Uses font-weight / line-height for typography correctness.
+ * Uses min-height + flex-shrink: 0 on fixed-size components.
  */
 
 /* ── Typography ─────────────────────────────────────────────────────── */
 
 .title {
   font-size: 22px;
+  font-weight: 600;
   color: #cdd2f4;
+  line-height: 1.2;
 }
 .subtitle {
   font-size: 12px;
   color: #9399b2;
+  line-height: 1.4;
 }
 .label {
   font-size: 11px;
   color: #9399b2;
+  line-height: 1.3;
 }
 .body {
   font-size: 12px;
   color: #cdd2f4;
+  line-height: 1.4;
 }
 .heading {
   font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 .small {
   font-size: 10px;
+  line-height: 1.3;
 }
 .font-13 {
   font-size: 13px;
@@ -37,6 +49,7 @@
 }
 .font-18 {
   font-size: 18px;
+  font-weight: 600;
 }
 .font-9 {
   font-size: 9px;
@@ -97,6 +110,32 @@
   gap: 16px;
 }
 
+/* Compound layout classes — reduce multi-class arrays at call sites */
+.row-gap-8 {
+  flex-direction: row;
+  gap: 8px;
+}
+.row-gap-12 {
+  flex-direction: row;
+  gap: 12px;
+}
+.section-hdr {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.small-dim {
+  font-size: 10px;
+  line-height: 1.3;
+  color: #9399b2;
+}
+.heading-text {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #cdd2f4;
+}
+
 /* ── Surfaces ───────────────────────────────────────────────────────── */
 
 .bg {
@@ -117,21 +156,29 @@
   border-radius: 12px;
   padding: 16px;
   gap: 6px;
+  overflow: hidden;
 }
 
 .sidebar {
   width: 220px;
+  min-width: 220px;
   background: #181825;
   padding: 16px 12px;
   gap: 8px;
+  z-index: 10;
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 .header {
   height: 56px;
+  min-height: 56px;
   background: #313244;
   flex-direction: row;
   padding: 0px 24px;
   align-items: center;
+  z-index: 5;
+  flex-shrink: 0;
 }
 
 .content {
@@ -146,14 +193,17 @@
   padding: 8px 16px;
   flex-direction: row;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .tab-btn {
   height: 36px;
+  min-height: 36px;
   border-radius: 8px;
   padding: 0px 12px;
   flex-direction: row;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .tab-active {
@@ -169,14 +219,19 @@
   flex-direction: row;
   gap: 12px;
   height: 40px;
+  min-height: 40px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .brand-icon {
   width: 28px;
   height: 28px;
+  min-width: 28px;
+  min-height: 28px;
   background: #89b4fa;
   border-radius: 6px;
+  flex-shrink: 0;
 }
 
 .brand-text {
@@ -191,23 +246,32 @@
   border-radius: 10px;
   padding: 14px;
   gap: 4px;
+  overflow: hidden;
 }
 
 .bar-thin {
   height: 8px;
+  min-height: 8px;
   border-radius: 4px;
+  flex-shrink: 0;
 }
 .bar-small {
   height: 9px;
+  min-height: 9px;
   border-radius: 3px;
+  flex-shrink: 0;
 }
 .bar-medium {
   height: 6px;
+  min-height: 6px;
   border-radius: 3px;
+  flex-shrink: 0;
 }
 .bar-large {
   height: 24px;
+  min-height: 24px;
   border-radius: 6px;
+  flex-shrink: 0;
 }
 
 .gpu-badge {
@@ -218,4 +282,6 @@
 
 .spacer-12 {
   height: 12px;
+  min-height: 12px;
+  flex-shrink: 0;
 }

@@ -33,8 +33,8 @@
 
 use std::collections::HashMap;
 
-use crate::parse::apply_style_attrs;
-use crate::style::Style;
+use crate::parse::{apply_style_attrs, compile_attr, parse_px};
+use crate::style::{Style, StyleOp, apply_ops};
 
 // ── StyleSheet ──────────────────────────────────────────────────────────────
 
@@ -44,10 +44,62 @@ use crate::style::Style;
 /// class is one HashMap probe + a sequential attribute application — zero
 /// string parsing at resolve time beyond `f64::parse` and hex→u8.
 pub struct StyleSheet {
-    classes: HashMap<String, Vec<(String, String)>>,
-    tags: HashMap<String, Vec<(String, String)>>,
-    ids: HashMap<String, Vec<(String, String)>>,
+    classes: HashMap<String, Vec<StyleOp>>,
+    tags: HashMap<String, Vec<StyleOp>>,
+    ids: HashMap<String, Vec<StyleOp>>,
 }
+
+/// Browser-like user-agent defaults for HTML tags.
+///
+/// Applied as the lowest-specificity base before any CSS classes or IDs.
+/// Mimics the browser's built-in stylesheet so tags like `<p>`, `<h1>`, etc.
+/// look correct without requiring any external CSS.
+const UA_CSS: &str = r#"
+/* Block elements: column direction */
+div, section, article, aside, nav, header, footer, main, form, fieldset, details, summary {
+    flex-direction: column;
+}
+
+/* Headings */
+h1 { font-size: 32px; font-weight: bold; margin-top: 21.44px; margin-bottom: 21.44px; }
+h2 { font-size: 24px; font-weight: bold; margin-top: 19.92px; margin-bottom: 19.92px; }
+h3 { font-size: 18.72px; font-weight: bold; margin-top: 18.72px; margin-bottom: 18.72px; }
+h4 { font-size: 16px; font-weight: bold; margin-top: 21.28px; margin-bottom: 21.28px; }
+h5 { font-size: 13.28px; font-weight: bold; margin-top: 22.18px; margin-bottom: 22.18px; }
+h6 { font-size: 10.72px; font-weight: bold; margin-top: 24.98px; margin-bottom: 24.98px; }
+
+/* Paragraph */
+p { margin-top: 16px; margin-bottom: 16px; }
+
+/* Body */
+body { margin: 8px; }
+
+/* Lists */
+ul, ol { margin-top: 16px; margin-bottom: 16px; padding-left: 40px; }
+li { flex-direction: row; }
+
+/* Code / pre */
+pre, code { font-size: 13px; }
+pre { margin-top: 16px; margin-bottom: 16px; overflow: scroll; }
+
+/* HR */
+hr { height: 1px; margin-top: 8px; margin-bottom: 8px; }
+
+/* Table */
+table { flex-direction: column; }
+tr { flex-direction: row; }
+td, th { padding: 4px; }
+th { font-weight: bold; }
+
+/* Strong / Bold */
+strong, b { font-weight: bold; }
+
+/* Small */
+small { font-size: 13px; }
+
+/* Blockquote */
+blockquote { margin-top: 16px; margin-bottom: 16px; margin-left: 40px; margin-right: 40px; }
+"#;
 
 impl StyleSheet {
     /// Parse a CSS string into a `StyleSheet`.
@@ -55,9 +107,9 @@ impl StyleSheet {
     /// Fault-tolerant: malformed rules are silently skipped.  Never panics.
     pub fn parse(css: &str) -> Self {
         let rules = parse_rules(css);
-        let mut classes: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        let mut tags: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        let mut ids: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut classes: HashMap<String, Vec<StyleOp>> = HashMap::new();
+        let mut tags: HashMap<String, Vec<StyleOp>> = HashMap::new();
+        let mut ids: HashMap<String, Vec<StyleOp>> = HashMap::new();
 
         for (selector, decls) in rules {
             let sel = selector.trim();
@@ -82,22 +134,36 @@ impl StyleSheet {
         Self { classes, tags, ids }
     }
 
+    /// Parse CSS with UA (user-agent) defaults baked in.
+    ///
+    /// UA styles are the lowest specificity — any class, id, or even tag
+    /// rule from `css` will override them.
+    pub fn parse_with_ua(css: &str) -> Self {
+        let combined = format!("{UA_CSS}\n{css}");
+        Self::parse(&combined)
+    }
+
+    /// Look up a name in a map and apply its ops onto a default [`Style`].
+    fn lookup(map: &HashMap<String, Vec<StyleOp>>, name: &str) -> Style {
+        let mut s = Style::default();
+        if let Some(ops) = map.get(name) {
+            apply_ops(&mut s, ops);
+        }
+        s
+    }
+
     /// Resolve a single class name into a [`Style`].
     /// Unknown class → `Style::default()`.
     pub fn class(&self, name: &str) -> Style {
-        let mut s = Style::default();
-        if let Some(attrs) = self.classes.get(name) {
-            apply_style_attrs(&mut s, attrs);
-        }
-        s
+        Self::lookup(&self.classes, name)
     }
 
     /// Resolve multiple class names, merging in order (later overrides earlier).
     pub fn classes(&self, names: &[&str]) -> Style {
         let mut s = Style::default();
         for name in names {
-            if let Some(attrs) = self.classes.get(*name) {
-                apply_style_attrs(&mut s, attrs);
+            if let Some(ops) = self.classes.get(*name) {
+                apply_ops(&mut s, ops);
             }
         }
         s
@@ -105,27 +171,19 @@ impl StyleSheet {
 
     /// Apply a class's declarations on top of an existing style.
     pub fn apply(&self, style: &mut Style, name: &str) {
-        if let Some(attrs) = self.classes.get(name) {
-            apply_style_attrs(style, attrs);
+        if let Some(ops) = self.classes.get(name) {
+            apply_ops(style, ops);
         }
     }
 
     /// Resolve a tag selector.
     pub fn tag(&self, name: &str) -> Style {
-        let mut s = Style::default();
-        if let Some(attrs) = self.tags.get(name) {
-            apply_style_attrs(&mut s, attrs);
-        }
-        s
+        Self::lookup(&self.tags, name)
     }
 
     /// Resolve an id selector.
     pub fn id(&self, name: &str) -> Style {
-        let mut s = Style::default();
-        if let Some(attrs) = self.ids.get(name) {
-            apply_style_attrs(&mut s, attrs);
-        }
-        s
+        Self::lookup(&self.ids, name)
     }
 
     /// Full cascade: tag < class(es) < id < inline attrs.
@@ -139,19 +197,19 @@ impl StyleSheet {
     ) -> Style {
         let mut s = Style::default();
         // 1. Tag
-        if let Some(attrs) = self.tags.get(tag) {
-            apply_style_attrs(&mut s, attrs);
+        if let Some(ops) = self.tags.get(tag) {
+            apply_ops(&mut s, ops);
         }
         // 2. Classes (in order)
         for cls in class_list.split_ascii_whitespace() {
-            if let Some(attrs) = self.classes.get(cls) {
-                apply_style_attrs(&mut s, attrs);
+            if let Some(ops) = self.classes.get(cls) {
+                apply_ops(&mut s, ops);
             }
         }
         // 3. Id
         if let Some(id) = id {
-            if let Some(attrs) = self.ids.get(id) {
-                apply_style_attrs(&mut s, attrs);
+            if let Some(ops) = self.ids.get(id) {
+                apply_ops(&mut s, ops);
             }
         }
         // 4. Inline attributes (highest specificity)
@@ -162,7 +220,7 @@ impl StyleSheet {
 
 // ── CSS tokenizer ───────────────────────────────────────────────────────────
 
-fn parse_rules(css: &str) -> Vec<(String, Vec<(String, String)>)> {
+fn parse_rules(css: &str) -> Vec<(String, Vec<StyleOp>)> {
     let cleaned = strip_comments(css);
     let bytes = cleaned.as_bytes();
     let mut rules = Vec::new();
@@ -211,7 +269,7 @@ fn parse_rules(css: &str) -> Vec<(String, Vec<(String, String)>)> {
         let body = &cleaned[decl_start..i];
         i += 1; // skip '}'
 
-        let decls = parse_declarations(body);
+        let decls = compile_declarations(body);
 
         // Handle comma-separated selectors
         for sel in selector.split(',') {
@@ -246,9 +304,10 @@ fn strip_comments(css: &str) -> String {
     out
 }
 
-/// Parse "prop: value; prop: value;" into normalized attribute pairs.
-fn parse_declarations(body: &str) -> Vec<(String, String)> {
-    let mut attrs = Vec::new();
+/// Parse declarations and compile each to pre-resolved [`StyleOp`]s.
+/// CSS shorthand expansion happens here; resolve-time is pure enum-match.
+fn compile_declarations(body: &str) -> Vec<StyleOp> {
+    let mut ops = Vec::new();
     for decl in body.split(';') {
         let decl = decl.trim();
         if decl.is_empty() {
@@ -259,16 +318,21 @@ fn parse_declarations(body: &str) -> Vec<(String, String)> {
         };
         let prop = prop.trim().to_ascii_lowercase();
         let value = value.trim();
-        attrs.extend(expand_css_property(&prop, value));
+        for (key, val) in expand_css_property(&prop, value) {
+            if let Some(op) = compile_attr(&key, &val) {
+                ops.push(op);
+            }
+        }
     }
-    attrs
+    ops
 }
 
 // ── Property normalization + shorthand expansion ────────────────────────────
 
-/// Normalize CSS px values — strip `px` suffix since our system is px-native.
+/// Normalize a CSS length value to a bare-number string in px.
+/// Delegates to [`parse_px`] — the single unit-conversion source of truth.
 fn norm_val(v: &str) -> String {
-    v.strip_suffix("px").unwrap_or(v).to_string()
+    parse_px(v).map(|n| n.to_string()).unwrap_or_else(|| v.to_string())
 }
 
 /// Map CSS property names to our attribute names and expand shorthands.
@@ -277,10 +341,14 @@ fn expand_css_property(prop: &str, value: &str) -> Vec<(String, String)> {
         // ── Shorthands with 1–4 values ──
         "padding" | "margin" => expand_box_shorthand(prop, value),
 
+        // ── Border shorthand: `border: 1px solid #color` ──
+        "border" => expand_border(value),
+
         // ── Name aliases: standard CSS → our attr names ──
         "background-color" | "background" => vec![("bg".into(), value.into())],
         "flex-direction" => vec![("direction".into(), value.into())],
         "align-items" => vec![("align".into(), value.into())],
+        "align-self" => vec![("align-self".into(), value.into())],
         "justify-content" => vec![("justify".into(), value.into())],
         "border-radius" => vec![("radius".into(), norm_val(value))],
 
@@ -305,14 +373,37 @@ fn expand_css_property(prop: &str, value: &str) -> Vec<(String, String)> {
 
         // ── Dimension properties: normalize px ──
         "width" | "height" | "min-width" | "min-height" | "max-width" | "max-height" | "gap"
-        | "border-width" | "left" | "top" => vec![(prop.into(), norm_val(value))],
+        | "row-gap" | "column-gap" | "border-width" | "border-top-width"
+        | "border-right-width" | "border-bottom-width" | "border-left-width" | "left" | "top"
+        | "right" | "bottom" | "flex-basis" => {
+            vec![(prop.into(), norm_val(value))]
+        }
 
         // ── Font-size: normalize px ──
         "font-size" => vec![(prop.into(), norm_val(value))],
 
+        // ── New properties (pass through directly) ──
+        "display" | "box-sizing" | "visibility" | "flex-wrap" | "font-weight" | "line-height"
+        | "text-align" | "white-space" | "z-index" => vec![(prop.into(), value.into())],
+
         // ── Everything else passes through unchanged ──
         _ => vec![(prop.into(), value.into())],
     }
+}
+
+/// Expand CSS `border` shorthand: `1px solid #color` → width + style(ignored) + color.
+fn expand_border(value: &str) -> Vec<(String, String)> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    let mut result = Vec::new();
+    for part in &parts {
+        if let Some(px) = crate::parse::parse_px(part) {
+            result.push(("border-width".into(), px.to_string()));
+        } else if part.starts_with('#') || part.starts_with("rgb") || crate::parse::parse_color(part).is_some() {
+            result.push(("border-color".into(), (*part).into()));
+        }
+        // "solid", "dashed", etc. are silently ignored (we only render solid)
+    }
+    result
 }
 
 /// Expand `padding`/`margin` shorthand with 1–4 space-separated values.
@@ -674,5 +765,357 @@ mod tests {
         assert_eq!(buf.pixel(10, 10), child_bg);
         // Parent area outside child.
         assert_eq!(buf.pixel(150, 80), parent_bg);
+    }
+
+    // ── Tailwind CSS visual comparison tests ────────────────────────────
+    //
+    // These parse real compiled Tailwind CSS output (tailwind.css) through
+    // our StyleSheet::parse() engine, then verify both computed Style values
+    // and rendered pixel output match expected results.
+
+    /// Lazily parse the bundled Tailwind CSS subset — reused across tests.
+    fn tailwind() -> StyleSheet {
+        StyleSheet::parse(include_str!("tailwind.css"))
+    }
+
+    // ── Property correctness (Style assertions) ─────────────────────
+
+    #[test]
+    fn tw_padding_rem_values() {
+        let tw = tailwind();
+        // .p-4 { padding: 1rem; } → 16px all sides
+        let s = tw.class("p-4");
+        assert_eq!(s.padding, Edges::all(16.0));
+        // .p-2 { padding: 0.5rem; } → 8px
+        assert_eq!(tw.class("p-2").padding, Edges::all(8.0));
+        // .p-8 { padding: 2rem; } → 32px
+        assert_eq!(tw.class("p-8").padding, Edges::all(32.0));
+    }
+
+    #[test]
+    fn tw_padding_px_axis() {
+        let tw = tailwind();
+        // .px-4 → padding-left: 1rem; padding-right: 1rem;
+        let s = tw.class("px-4");
+        assert_eq!(s.padding.left, 16.0);
+        assert_eq!(s.padding.right, 16.0);
+        // .py-2 → padding-top: 0.5rem; padding-bottom: 0.5rem;
+        let s = tw.class("py-2");
+        assert_eq!(s.padding.top, 8.0);
+        assert_eq!(s.padding.bottom, 8.0);
+    }
+
+    #[test]
+    fn tw_padding_individual_sides() {
+        let tw = tailwind();
+        assert_eq!(tw.class("pt-4").padding.top, 16.0);
+        assert_eq!(tw.class("pr-4").padding.right, 16.0);
+        assert_eq!(tw.class("pb-4").padding.bottom, 16.0);
+        assert_eq!(tw.class("pl-4").padding.left, 16.0);
+    }
+
+    #[test]
+    fn tw_margin_rem_values() {
+        let tw = tailwind();
+        assert_eq!(tw.class("m-4").margin, Edges::all(16.0));
+        assert_eq!(tw.class("m-2").margin, Edges::all(8.0));
+        // .mx-4 → margin-left: 1rem; margin-right: 1rem;
+        let s = tw.class("mx-4");
+        assert_eq!(s.margin.left, 16.0);
+        assert_eq!(s.margin.right, 16.0);
+    }
+
+    #[test]
+    fn tw_gap_scale() {
+        let tw = tailwind();
+        assert_eq!(tw.class("gap-0").gap, 0.0);
+        assert_eq!(tw.class("gap-1").gap, 4.0); // 0.25rem
+        assert_eq!(tw.class("gap-2").gap, 8.0); // 0.5rem
+        assert_eq!(tw.class("gap-4").gap, 16.0); // 1rem
+        assert_eq!(tw.class("gap-8").gap, 32.0); // 2rem
+    }
+
+    #[test]
+    fn tw_width_height_rem() {
+        let tw = tailwind();
+        assert_eq!(tw.class("w-4").width, Dimension::Px(16.0));
+        assert_eq!(tw.class("w-8").width, Dimension::Px(32.0));
+        assert_eq!(tw.class("w-64").width, Dimension::Px(256.0));
+        assert_eq!(tw.class("h-16").height, Dimension::Px(64.0));
+        assert_eq!(tw.class("h-full").height, Dimension::Percent(100.0));
+        assert_eq!(tw.class("w-full").width, Dimension::Percent(100.0));
+        assert_eq!(tw.class("w-1\\/2").width, Dimension::Percent(50.0));
+    }
+
+    #[test]
+    fn tw_flex_direction() {
+        let tw = tailwind();
+        assert_eq!(tw.class("flex-row").direction, Direction::Row);
+        assert_eq!(tw.class("flex-col").direction, Direction::Column);
+    }
+
+    #[test]
+    fn tw_alignment() {
+        let tw = tailwind();
+        assert_eq!(tw.class("items-center").align, Align::Center);
+        assert_eq!(tw.class("items-end").align, Align::End);
+        assert_eq!(tw.class("items-stretch").align, Align::Stretch);
+        assert_eq!(tw.class("justify-center").justify, Justify::Center);
+        assert_eq!(
+            tw.class("justify-between").justify,
+            Justify::SpaceBetween
+        );
+        assert_eq!(
+            tw.class("justify-evenly").justify,
+            Justify::SpaceEvenly
+        );
+    }
+
+    #[test]
+    fn tw_flex_grow_shrink() {
+        let tw = tailwind();
+        assert_eq!(tw.class("grow").flex_grow, 1.0);
+        assert_eq!(tw.class("grow-0").flex_grow, 0.0);
+        assert_eq!(tw.class("shrink").flex_shrink, 1.0);
+        assert_eq!(tw.class("shrink-0").flex_shrink, 0.0);
+    }
+
+    #[test]
+    fn tw_border_radius() {
+        let tw = tailwind();
+        assert_eq!(tw.class("rounded-none").corner_radius, 0.0);
+        assert_eq!(tw.class("rounded-sm").corner_radius, 2.0); // 0.125rem
+        assert_eq!(tw.class("rounded").corner_radius, 4.0); // 0.25rem
+        assert_eq!(tw.class("rounded-lg").corner_radius, 8.0); // 0.5rem
+        assert_eq!(tw.class("rounded-full").corner_radius, 9999.0);
+    }
+
+    #[test]
+    fn tw_opacity() {
+        let tw = tailwind();
+        assert_eq!(tw.class("opacity-0").opacity, 0.0);
+        assert_eq!(tw.class("opacity-50").opacity, 0.5);
+        assert_eq!(tw.class("opacity-100").opacity, 1.0);
+    }
+
+    #[test]
+    fn tw_font_size() {
+        let tw = tailwind();
+        assert_eq!(tw.class("text-xs").font_size, 12.0); // 0.75rem
+        assert_eq!(tw.class("text-sm").font_size, 14.0); // 0.875rem
+        assert_eq!(tw.class("text-base").font_size, 16.0); // 1rem
+        assert_eq!(tw.class("text-lg").font_size, 18.0); // 1.125rem
+        assert_eq!(tw.class("text-xl").font_size, 20.0); // 1.25rem
+        assert_eq!(tw.class("text-2xl").font_size, 24.0); // 1.5rem
+    }
+
+    #[test]
+    fn tw_background_colors() {
+        let tw = tailwind();
+        assert_eq!(tw.class("bg-white").background, Color::WHITE);
+        assert_eq!(tw.class("bg-black").background, Color::BLACK);
+        assert_eq!(
+            tw.class("bg-red-500").background,
+            Color::rgb(239, 68, 68)
+        );
+        assert_eq!(
+            tw.class("bg-blue-500").background,
+            Color::rgb(59, 130, 246)
+        );
+        assert_eq!(
+            tw.class("bg-green-500").background,
+            Color::rgb(34, 197, 94)
+        );
+        assert_eq!(
+            tw.class("bg-slate-900").background,
+            Color::rgb(15, 23, 42)
+        );
+    }
+
+    #[test]
+    fn tw_text_colors() {
+        let tw = tailwind();
+        assert_eq!(tw.class("text-white").color, Color::WHITE);
+        assert_eq!(tw.class("text-black").color, Color::BLACK);
+        assert_eq!(
+            tw.class("text-red-500").color,
+            Color::rgb(239, 68, 68)
+        );
+        assert_eq!(
+            tw.class("text-gray-400").color,
+            Color::rgb(156, 163, 175)
+        );
+    }
+
+    #[test]
+    fn tw_border_width_and_color() {
+        let tw = tailwind();
+        assert_eq!(tw.class("border").border_width, 1.0);
+        assert_eq!(tw.class("border-2").border_width, 2.0);
+        assert_eq!(tw.class("border-4").border_width, 4.0);
+        assert_eq!(
+            tw.class("border-red-500").border_color,
+            Color::rgb(239, 68, 68)
+        );
+    }
+
+    #[test]
+    fn tw_position_overflow() {
+        let tw = tailwind();
+        assert_eq!(tw.class("relative").position, Position::Relative);
+        assert_eq!(tw.class("absolute").position, Position::Absolute);
+        assert_eq!(tw.class("overflow-hidden").overflow, Overflow::Hidden);
+        assert_eq!(tw.class("overflow-scroll").overflow, Overflow::Scroll);
+    }
+
+    #[test]
+    fn tw_multi_class_composition() {
+        let tw = tailwind();
+        // Simulating: class="flex-row items-center gap-4 p-4 bg-slate-800 rounded-lg"
+        let s = tw.classes(&[
+            "flex-row",
+            "items-center",
+            "gap-4",
+            "p-4",
+            "bg-slate-800",
+            "rounded-lg",
+        ]);
+        assert_eq!(s.direction, Direction::Row);
+        assert_eq!(s.align, Align::Center);
+        assert_eq!(s.gap, 16.0);
+        assert_eq!(s.padding, Edges::all(16.0));
+        assert_eq!(s.background, Color::rgb(30, 41, 59));
+        assert_eq!(s.corner_radius, 8.0);
+    }
+
+    // ── Pixel-level Tailwind visual tests ───────────────────────────
+
+    /// Build a tree from Tailwind-styled HTML, layout, paint, and rasterize.
+    fn tw_to_pixels(html: &str, vw: f64, vh: f64) -> PixelBuffer {
+        let tw = tailwind();
+        let mut tree = crate::parse::parse_with_css(html, &tw);
+        tree.layout(Size::new(vw, vh));
+        let mut list = RenderList::default();
+        tree.paint(&mut list);
+        let mut buf = PixelBuffer::new(vw as u32, vh as u32, Color::BLACK);
+        buf.paint(&list);
+        buf
+    }
+
+    #[test]
+    fn tw_pixel_card_bg_matches() {
+        // Tailwind bg-blue-500 must produce exact pixel color.
+        let buf = tw_to_pixels(
+            r#"<div class="bg-blue-500 w-64 h-32 rounded-lg"></div>"#,
+            256.0,
+            128.0,
+        );
+        let blue500 = Color::rgb(59, 130, 246);
+        assert_eq!(buf.pixel(128, 64), blue500);
+        // Corner is clipped by rounded-lg (8px radius).
+        assert_eq!(buf.pixel(0, 0), Color::BLACK);
+    }
+
+    #[test]
+    fn tw_pixel_nested_layout() {
+        // Parent: dark bg, column layout with padding.
+        // Child: blue card inside.
+        let html = r#"
+            <div class="bg-slate-900 w-96 h-48 p-4 flex-col">
+                <div class="bg-blue-500 w-full h-16 rounded"></div>
+            </div>
+        "#;
+        let buf = tw_to_pixels(html, 384.0, 192.0);
+        let parent_bg = Color::rgb(15, 23, 42);
+        let child_bg = Color::rgb(59, 130, 246);
+        // Padding area (top-left corner) is parent bg.
+        assert_eq!(buf.pixel(8, 8), parent_bg);
+        // Child inside padding at (16, 16).
+        assert_eq!(buf.pixel(24, 24), child_bg);
+        // Far bottom-right is parent bg (below child).
+        assert_eq!(buf.pixel(200, 170), parent_bg);
+    }
+
+    #[test]
+    fn tw_pixel_diff_identical_renders() {
+        // Two identical renders should produce zero diff.
+        let html = r#"<div class="bg-red-500 w-32 h-32 rounded-full"></div>"#;
+        let a = tw_to_pixels(html, 128.0, 128.0);
+        let b = tw_to_pixels(html, 128.0, 128.0);
+        assert_eq!(a.diff(&b, 0), 0);
+        assert_eq!(a.diff_ratio(&b, 0), 0.0);
+    }
+
+    #[test]
+    fn tw_pixel_diff_different_colors() {
+        // Different backgrounds → many differing pixels.
+        let a = tw_to_pixels(
+            r#"<div class="bg-red-500 w-32 h-32"></div>"#,
+            128.0,
+            128.0,
+        );
+        let b = tw_to_pixels(
+            r#"<div class="bg-blue-500 w-32 h-32"></div>"#,
+            128.0,
+            128.0,
+        );
+        let ratio = a.diff_ratio(&b, 0);
+        // Most pixels differ (entire fill area).
+        assert!(ratio > 0.9, "diff ratio should be >90%, got {ratio}");
+    }
+
+    #[test]
+    fn tw_pixel_radius_visual_equivalence() {
+        // Tailwind rounded-2xl (1rem = 16px) should match our raw CSS with radius: 16px.
+        let tw_buf = tw_to_pixels(
+            r#"<div class="bg-white w-48 h-48 rounded-2xl"></div>"#,
+            192.0,
+            192.0,
+        );
+        let raw_buf = css_to_pixels(
+            ".box { background: #ffffff; border-radius: 16px; }",
+            "box",
+            192.0,
+            192.0,
+        );
+        // Zero pixel difference — our Tailwind CSS parse and raw CSS produce identical output.
+        assert_eq!(tw_buf.diff(&raw_buf, 0), 0);
+    }
+
+    #[test]
+    fn tw_full_color_palette_parse_count() {
+        // Verify the Tailwind CSS file parsed all expected classes.
+        let tw = tailwind();
+        // Spot-check: every Tailwind color family (22 backgrounds × 11 shades = 242+).
+        // We check a handful to confirm they're all present.
+        for name in &[
+            "bg-slate-500",
+            "bg-gray-700",
+            "bg-zinc-900",
+            "bg-red-300",
+            "bg-orange-400",
+            "bg-amber-600",
+            "bg-yellow-200",
+            "bg-lime-500",
+            "bg-green-700",
+            "bg-emerald-400",
+            "bg-teal-600",
+            "bg-cyan-300",
+            "bg-sky-500",
+            "bg-blue-800",
+            "bg-indigo-400",
+            "bg-violet-600",
+            "bg-purple-300",
+            "bg-fuchsia-500",
+            "bg-pink-700",
+            "bg-rose-400",
+        ] {
+            let s = tw.class(name);
+            assert_ne!(
+                s.background,
+                Color::TRANSPARENT,
+                "Tailwind class '{name}' should set a non-transparent background"
+            );
+        }
     }
 }

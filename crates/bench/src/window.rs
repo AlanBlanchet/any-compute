@@ -7,10 +7,10 @@
 use any_compute_core::Lerp;
 use any_compute_core::animation::{Easing, Transition, TransitionManager};
 use any_compute_core::bench::*;
+use any_compute_core::interaction::{Button, FocusState, HoverState, InputEvent, Modifiers};
 use any_compute_core::kernel::{UnaryOp, best_kernel};
 use any_compute_core::layout::{Point, Size};
 use any_compute_core::render::{Color, Primitive, RenderList};
-use any_compute_dom::css::StyleSheet;
 use any_compute_dom::style::*;
 use any_compute_dom::tree::*;
 use glyphon::{
@@ -25,6 +25,7 @@ use std::time::Instant;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
+    keyboard::{Key, NamedKey},
     window::WindowBuilder,
 };
 
@@ -497,6 +498,12 @@ struct AppData {
     scroll_y: f64,
     scroll_target: f64,
     transitions: TransitionManager,
+    hover: HoverState,
+    focus: FocusState,
+    /// Whether any pointer button is currently pressed.
+    pointer_down: bool,
+    /// Pressed tag (for active/pressed visual state).
+    active_tag: Option<String>,
 }
 
 impl SharedState {
@@ -523,6 +530,10 @@ impl SharedState {
                     mgr.add("tab-0", t);
                     mgr
                 },
+                hover: HoverState::default(),
+                focus: FocusState::default(),
+                pointer_down: false,
+                active_tag: None,
             })),
         }
     }
@@ -638,10 +649,7 @@ fn spawn_simulation(state: SharedState) {
 }
 
 // ── Layout / Paint ──────────────────────────────────────────────────────────
-use any_compute_bench::{BENCH_CSS, TAB_LABELS, VERSION, kv_row};
-
-static SHEET: std::sync::LazyLock<StyleSheet> =
-    std::sync::LazyLock::new(|| StyleSheet::parse(BENCH_CSS));
+use any_compute_bench::{SHEET, TAB_LABELS, VERSION, kv_row};
 
 fn s(class: &str) -> Style {
     SHEET.class(class)
@@ -652,7 +660,7 @@ fn sm(classes: &[&str]) -> Style {
 
 // ── DOM construction helpers ────────────────────────────────────────────────
 fn section_hdr(t: &mut Tree, parent: NodeId, title: &str) -> NodeId {
-    let hdr = t.add_box(parent, sm(&["row", "center"]));
+    let hdr = t.add_box(parent, s("section-hdr"));
     t.add_text(hdr, title, s("title"));
     t.add_box(hdr, s("grow"));
     hdr
@@ -665,9 +673,11 @@ fn action_btn(
     bg: Color,
     fg: Color,
     tag: &str,
+    hover_alpha: f64,
 ) -> NodeId {
     let mut btn_s = s("btn");
-    btn_s.background = bg;
+    // Hover: brighten background slightly.
+    btn_s.background = bg.lerp(Color::WHITE, hover_alpha * 0.15);
     let btn = t.add_box(parent, btn_s);
     t.add_text(btn, label, s("body").color(fg));
     t.tag(btn, tag);
@@ -698,23 +708,30 @@ fn build_tree(state: &SharedState, w: f64, h: f64) -> Tree {
     let brand = t.add_box(sb, s("brand"));
     t.add_box(brand, s("brand-icon"));
     let btext = t.add_box(brand, s("brand-text"));
-    t.add_text(btext, "any-compute", sm(&["heading", "text"]));
-    t.add_text(btext, VERSION, sm(&["small", "text-dim"]));
+    t.add_text(btext, "any-compute", s("heading-text"));
+    t.add_text(btext, VERSION, s("small-dim"));
     t.add_box(sb, s("spacer-12"));
     for (i, &label) in TAB_LABELS.iter().enumerate() {
+        let tag_name = format!("tab-{i}");
         // Transition-driven tab appearance: blend between inactive and active.
         let alpha = data
             .transitions
-            .value(&format!("tab-{i}"))
+            .value(&tag_name)
             .unwrap_or(if data.tab == i { 1.0 } else { 0.0 });
-        let bg = Color::TRANSPARENT.lerp(theme::ACCENT, alpha);
+        // Hover glow: subtle highlight when hovered.
+        let hover_alpha = data
+            .transitions
+            .value(&format!("hover-{tag_name}"))
+            .unwrap_or(0.0);
+        let base_bg = Color::TRANSPARENT.lerp(theme::ACCENT, alpha);
+        let bg = base_bg.lerp(theme::SURFACE_BRIGHT, hover_alpha * (1.0 - alpha));
         let fg = theme::TEXT_DIM.lerp(theme::SIDEBAR_BG, alpha);
         let mut tab_s = s("tab-btn");
         tab_s.background = bg;
         tab_s.color = fg;
         let btn = t.add_box(sb, tab_s);
         t.add_text(btn, label, s("font-13").color(fg));
-        t.tag(btn, format!("tab-{i}"));
+        t.tag(btn, &tag_name);
     }
 
     // ── Main area ──
@@ -726,8 +743,8 @@ fn build_tree(state: &SharedState, w: f64, h: f64) -> Tree {
 
     match data.tab {
         0 => build_hw(&mut t, content, &data),
-        1 => build_bench(&mut t, content, &data),
-        2 => build_sim(&mut t, content, &data),
+        1 => build_bench(&mut t, content, &mut data),
+        2 => build_sim(&mut t, content, &mut data),
         _ => {}
     }
 
@@ -743,7 +760,7 @@ fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
         return;
     };
 
-    let row = t.add_box(p, sm(&["row", "gap-12"]));
+    let row = t.add_box(p, s("row-gap-12"));
 
     let c = card(t, row, "Processor", theme::ACCENT);
     let topo = format!(
@@ -757,7 +774,7 @@ fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
         ("Topology", topo.as_str()),
         ("Frequency", freq.as_str()),
     ] {
-        kv_row(t, c, lbl, val, &SHEET);
+        kv_row(t, c, lbl, val);
     }
 
     let c = card(t, row, "SIMD / Vector", theme::GREEN);
@@ -788,7 +805,7 @@ fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
     t.add_text(
         c,
         &format!("{:.0}% used", pct * 100.0),
-        sm(&["small", "text-dim"]),
+        s("small-dim"),
     );
     for gpu in &hw.gpus {
         let g = t.add_box(c, s("gpu-badge"));
@@ -799,7 +816,7 @@ fn build_hw(t: &mut Tree, p: NodeId, data: &AppData) {
     }
 }
 
-fn build_bench(t: &mut Tree, p: NodeId, data: &AppData) {
+fn build_bench(t: &mut Tree, p: NodeId, data: &mut AppData) {
     let hdr = section_hdr(t, p, "Benchmark Results");
     let (btn_bg, btn_fg, btn_lbl) = if data.bench_running {
         (theme::SURFACE_BRIGHT, theme::TEXT_DIM, "Running\u{2026}")
@@ -807,7 +824,8 @@ fn build_bench(t: &mut Tree, p: NodeId, data: &AppData) {
         (theme::GREEN, theme::SIDEBAR_BG, "Run All Tests")
     };
     if !data.bench_running {
-        action_btn(t, hdr, btn_lbl, btn_bg, btn_fg, "run-bench");
+        let ha = data.transitions.value("hover-run-bench").unwrap_or(0.0);
+        action_btn(t, hdr, btn_lbl, btn_bg, btn_fg, "run-bench", ha);
     } else {
         let mut btn_s = s("btn");
         btn_s.background = btn_bg;
@@ -835,7 +853,7 @@ fn build_bench(t: &mut Tree, p: NodeId, data: &AppData) {
 
     let mut i = 0;
     while i < data.bench_results.len() {
-        let row = t.add_box(p, sm(&["row", "gap-12"]));
+        let row = t.add_box(p, s("row-gap-12"));
         for j in 0..2 {
             let idx = i + j;
             if idx >= data.bench_results.len() {
@@ -874,14 +892,15 @@ fn build_bench(t: &mut Tree, p: NodeId, data: &AppData) {
     }
 }
 
-fn build_sim(t: &mut Tree, p: NodeId, data: &AppData) {
+fn build_sim(t: &mut Tree, p: NodeId, data: &mut AppData) {
     let hdr = section_hdr(t, p, "Live Showdown");
     let (btn_bg, btn_lbl) = if data.sim_running {
         (theme::RED, "Stop Showdown")
     } else {
         (theme::GREEN, "Start Showdown")
     };
-    action_btn(t, hdr, btn_lbl, btn_bg, theme::SIDEBAR_BG, "toggle-sim");
+    let ha = data.transitions.value("hover-toggle-sim").unwrap_or(0.0);
+    action_btn(t, hdr, btn_lbl, btn_bg, theme::SIDEBAR_BG, "toggle-sim", ha);
 
     t.add_text(
         p,
@@ -910,38 +929,135 @@ fn build_sim(t: &mut Tree, p: NodeId, data: &AppData) {
             t.add_text(
                 lane,
                 &format!("{:.1}x vs stdlib", ops / data.std_ops),
-                sm(&["small", "text-dim"]),
+                s("small-dim"),
             );
         }
     }
 }
 
-// ── Click dispatch ──────────────────────────────────────────────────────────
-fn handle_tag(state: &SharedState, tag: &str) {
-    const TAB_DUR: Duration = Duration::from_millis(180);
+// ── Event dispatch ──────────────────────────────────────────────────────────
+const TAB_DUR: Duration = Duration::from_millis(180);
+const HOVER_DUR: Duration = Duration::from_millis(120);
+
+/// Start a named f64 transition (from → to) with EaseOut and register it.
+fn ease_transition(mgr: &mut TransitionManager, key: String, from: f64, to: f64, dur: Duration) {
+    let mut t = Transition::new(from, to, dur).with_easing(Easing::EaseOut);
+    t.start();
+    mgr.add(key, t);
+}
+
+/// Animate tab switch: fade old out, fade new in, reset scroll.
+fn switch_tab(d: &mut AppData, new: usize) {
+    let old = d.tab;
+    if old == new {
+        return;
+    }
+    d.tab = new;
+    d.scroll_y = 0.0;
+    d.scroll_target = 0.0;
+    ease_transition(&mut d.transitions, format!("tab-{old}"), 1.0, 0.0, TAB_DUR);
+    ease_transition(&mut d.transitions, format!("tab-{new}"), 0.0, 1.0, TAB_DUR);
+}
+
+fn handle_click(state: &SharedState, tag: &str) {
     match tag {
         t @ ("tab-0" | "tab-1" | "tab-2") => {
             let new: usize = t[4..].parse().unwrap();
-            state.write(|d| {
-                let old = d.tab;
-                if old == new {
-                    return;
-                }
-                d.tab = new;
-                d.scroll_y = 0.0;
-                d.scroll_target = 0.0;
-                // Fade old tab out, new tab in.
-                let mut out = Transition::new(1.0, 0.0, TAB_DUR).with_easing(Easing::EaseOut);
-                out.start();
-                d.transitions.add(format!("tab-{old}"), out);
-                let mut inp = Transition::new(0.0, 1.0, TAB_DUR).with_easing(Easing::EaseOut);
-                inp.start();
-                d.transitions.add(format!("tab-{new}"), inp);
-            });
+            state.write(|d| switch_tab(d, new));
         }
         "run-bench" => spawn_benchmarks(state.clone()),
         "toggle-sim" => spawn_simulation(state.clone()),
         _ => {}
+    }
+}
+
+fn handle_hover(state: &SharedState, tag: Option<String>) {
+    state.write(|d| {
+        if let Some(delta) = d.hover.update(tag) {
+            if let Some(left) = &delta.left {
+                let key = format!("hover-{left}");
+                let cur = d.transitions.value(&key).unwrap_or(0.0);
+                ease_transition(&mut d.transitions, key, cur, 0.0, HOVER_DUR);
+            }
+            if let Some(entered) = &delta.entered {
+                let key = format!("hover-{entered}");
+                let cur = d.transitions.value(&key).unwrap_or(0.0);
+                ease_transition(&mut d.transitions, key, cur, 1.0, HOVER_DUR);
+            }
+        }
+    });
+}
+
+fn handle_keyboard(state: &SharedState, key: &str, _modifiers: Modifiers) {
+    match key {
+        "Tab" | "ArrowDown" => {
+            state.write(|d| {
+                let next = (d.tab + 1) % TAB_LABELS.len();
+                switch_tab(d, next);
+            });
+        }
+        "ArrowUp" => {
+            state.write(|d| {
+                let next = if d.tab == 0 {
+                    TAB_LABELS.len() - 1
+                } else {
+                    d.tab - 1
+                };
+                switch_tab(d, next);
+            });
+        }
+        "Enter" | " " => {
+            let focused = state.read(|d| d.focus.focused.clone());
+            if let Some(tag) = focused {
+                handle_click(state, &tag);
+            }
+        }
+        "Escape" => {
+            state.write(|d| {
+                d.sim_running = false;
+                d.focus.focus(None);
+            });
+        }
+        _ => {}
+    }
+}
+
+// ── winit → InputEvent conversion ────────────────────────────────────────────
+fn winit_button(b: winit::event::MouseButton) -> Button {
+    match b {
+        winit::event::MouseButton::Left => Button::Primary,
+        winit::event::MouseButton::Right => Button::Secondary,
+        winit::event::MouseButton::Middle => Button::Middle,
+        _ => Button::Primary,
+    }
+}
+
+fn winit_modifiers(m: &winit::event::Modifiers) -> Modifiers {
+    let s = m.state();
+    Modifiers {
+        shift: s.shift_key(),
+        ctrl: s.control_key(),
+        alt: s.alt_key(),
+        meta: s.super_key(),
+    }
+}
+
+fn winit_key_to_string(key: &Key) -> String {
+    match key {
+        Key::Named(NamedKey::Tab) => "Tab".into(),
+        Key::Named(NamedKey::Enter) => "Enter".into(),
+        Key::Named(NamedKey::Escape) => "Escape".into(),
+        Key::Named(NamedKey::Space) => " ".into(),
+        Key::Named(NamedKey::ArrowUp) => "ArrowUp".into(),
+        Key::Named(NamedKey::ArrowDown) => "ArrowDown".into(),
+        Key::Named(NamedKey::ArrowLeft) => "ArrowLeft".into(),
+        Key::Named(NamedKey::ArrowRight) => "ArrowRight".into(),
+        Key::Named(NamedKey::Home) => "Home".into(),
+        Key::Named(NamedKey::End) => "End".into(),
+        Key::Named(NamedKey::PageUp) => "PageUp".into(),
+        Key::Named(NamedKey::PageDown) => "PageDown".into(),
+        Key::Character(c) => c.to_string(),
+        _ => format!("{key:?}"),
     }
 }
 
@@ -966,34 +1082,136 @@ pub fn main() {
 
     let mut fps_timer = Instant::now();
     let mut fps_count = 0u32;
-    let mut cursor_pos = (0.0_f64, 0.0_f64);
+    let mut cursor_pos = Point::ZERO;
     let mut last_tree: Option<Tree> = None;
+    let mut modifiers = winit::event::Modifiers::default();
 
     let _ = event_loop.run(move |event, elwt| match event {
         Event::WindowEvent {
             event: wevent,
             window_id,
         } if window_id == window.id() => match wevent {
+            // ── Window lifecycle ─────────────────────────────
             WindowEvent::CloseRequested => {
                 state.write(|d| d.sim_running = false);
                 elwt.exit();
             }
             WindowEvent::Resized(s) => gpu.resize(s.width, s.height),
+
+            // ── Modifier tracking ────────────────────────────
+            WindowEvent::ModifiersChanged(m) => {
+                modifiers = m;
+            }
+
+            // ── Pointer events ───────────────────────────────
             WindowEvent::MouseInput {
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
+                state: elem_state,
+                button,
                 ..
             } => {
-                if let Some(tree) = &last_tree {
-                    let pos = Point::new(cursor_pos.0, cursor_pos.1);
-                    if let Some(tag) = tree.click(pos) {
-                        handle_tag(&state, tag);
+                let btn = winit_button(button);
+                let event = match elem_state {
+                    winit::event::ElementState::Pressed => {
+                        // Track active (pressed) state.
+                        if let Some(tree) = &last_tree {
+                            let tag = tree.tag_at(cursor_pos);
+                            state.write(|d| {
+                                d.pointer_down = true;
+                                d.active_tag = tag.clone();
+                            });
+                            // Set focus to clicked element.
+                            state.write(|d| {
+                                d.focus.focus(tag);
+                            });
+                        }
+                        InputEvent::PointerDown {
+                            pos: cursor_pos,
+                            button: btn,
+                        }
                     }
+                    winit::event::ElementState::Released => {
+                        // Dispatch click on release (matches web behavior).
+                        let was_active = state.read(|d| d.active_tag.clone());
+                        if let Some(tree) = &last_tree {
+                            let release_tag = tree.tag_at(cursor_pos);
+                            // Only fire click if released on the same tag as pressed.
+                            if let (Some(pressed), Some(released)) = (&was_active, &release_tag) {
+                                if pressed == released {
+                                    handle_click(&state, pressed);
+                                }
+                            }
+                        }
+                        state.write(|d| {
+                            d.pointer_down = false;
+                            d.active_tag = None;
+                        });
+                        InputEvent::PointerUp {
+                            pos: cursor_pos,
+                            button: btn,
+                        }
+                    }
+                };
+                // Full dispatch through tree.
+                if let Some(tree) = &last_tree {
+                    let _result = tree.dispatch(event);
                 }
             }
+
             WindowEvent::CursorMoved { position, .. } => {
-                cursor_pos = (position.x, position.y);
+                cursor_pos = Point::new(position.x, position.y);
+                // Hover tracking: find the tag under cursor.
+                if let Some(tree) = &last_tree {
+                    let tag = tree.tag_at(cursor_pos);
+                    handle_hover(&state, tag);
+                    // Full dispatch.
+                    let _result = tree.dispatch(InputEvent::PointerMove { pos: cursor_pos });
+                }
             }
+
+            WindowEvent::CursorLeft { .. } => {
+                // Cursor left window → clear hover.
+                handle_hover(&state, None);
+            }
+
+            // ── Scroll ───────────────────────────────────────
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64 * 40.0,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                state.write(|d| d.scroll_target = (d.scroll_target - dy).max(0.0));
+                // Dispatch scroll event through tree.
+                if let Some(tree) = &last_tree {
+                    let _result = tree.dispatch(InputEvent::Scroll {
+                        delta: Point::new(0.0, dy),
+                    });
+                }
+            }
+
+            // ── Keyboard events ──────────────────────────────
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: winit::event::ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let key_str = winit_key_to_string(&logical_key);
+                let mods = winit_modifiers(&modifiers);
+                handle_keyboard(&state, &key_str, mods);
+            }
+
+            // ── Focus / Blur ─────────────────────────────────
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    // Window lost focus → clear hover.
+                    handle_hover(&state, None);
+                }
+            }
+
+            // ── Redraw ──────────────────────────────────────
             WindowEvent::RedrawRequested => {
                 let sz = window.inner_size();
                 if sz.width > 0 && sz.height > 0 {
@@ -1018,13 +1236,6 @@ pub fn main() {
                     last_tree = Some(tree);
                 }
                 window.request_redraw();
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64 * 40.0,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
-                };
-                state.write(|d| d.scroll_target = (d.scroll_target - dy).max(0.0));
             }
             _ => {}
         },

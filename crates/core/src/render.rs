@@ -235,6 +235,38 @@ impl PixelBuffer {
             }
         }
     }
+
+    /// Per-pixel diff against another buffer.
+    ///
+    /// Returns the count of pixels where any channel differs by more than
+    /// `tolerance` (0 = exact match).  Panics if dimensions differ.
+    pub fn diff(&self, other: &Self, tolerance: u8) -> u32 {
+        assert_eq!(
+            (self.width, self.height),
+            (other.width, other.height),
+            "PixelBuffer::diff requires same dimensions"
+        );
+        let tol = tolerance as i16;
+        self.pixels
+            .iter()
+            .zip(other.pixels.iter())
+            .filter(|(a, b)| {
+                (a.r as i16 - b.r as i16).abs() > tol
+                    || (a.g as i16 - b.g as i16).abs() > tol
+                    || (a.b as i16 - b.b as i16).abs() > tol
+                    || (a.a as i16 - b.a as i16).abs() > tol
+            })
+            .count() as u32
+    }
+
+    /// Fraction of differing pixels (0.0 = identical, 1.0 = every pixel different).
+    pub fn diff_ratio(&self, other: &Self, tolerance: u8) -> f64 {
+        let total = (self.width * self.height) as f64;
+        if total == 0.0 {
+            return 0.0;
+        }
+        self.diff(other, tolerance) as f64 / total
+    }
 }
 
 impl RenderBackend for PixelBuffer {

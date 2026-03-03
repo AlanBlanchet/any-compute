@@ -22,3 +22,7 @@ pub mod tree;
 
 pub use style::*;
 pub use tree::*;
+
+/// Compiled Tailwind v3 CSS subset — every utility class that maps to our Style system.
+/// Parsed through `StyleSheet::parse()` at runtime; no special Tailwind runtime.
+pub const TAILWIND_CSS: &str = include_str!("tailwind.css");

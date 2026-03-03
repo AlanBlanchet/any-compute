@@ -406,220 +406,140 @@ pub(crate) fn find_attr(attrs: &[(String, String)], key: &str) -> Option<String>
 ///
 /// Only explicitly-present keys are modified — unmentioned fields stay put.
 /// This is the shared workhorse for both HTML attribute parsing and CSS
-/// class resolution.
+/// class resolution.  Internally delegates to [`compile_attr`] + [`StyleOp::apply`]
+/// so there is exactly one attribute → style mapping in the whole crate.
 pub(crate) fn apply_style_attrs(s: &mut Style, attrs: &[(String, String)]) {
     for (key, val) in attrs {
-        match key.as_str() {
-            "w" | "width" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.width = d;
-                }
-            }
-            "h" | "height" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.height = d;
-                }
-            }
-            "min-w" | "min-width" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.min_width = d;
-                }
-            }
-            "min-h" | "min-height" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.min_height = d;
-                }
-            }
-            "max-w" | "max-width" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.max_width = d;
-                }
-            }
-            "max-h" | "max-height" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.max_height = d;
-                }
-            }
-            "direction" | "dir" | "flex-direction" => {
-                s.direction = match val.as_str() {
-                    "row" => Direction::Row,
-                    _ => Direction::Column,
-                }
-            }
-            "align" | "align-items" => {
-                s.align = match val.as_str() {
-                    "center" => Align::Center,
-                    "end" | "flex-end" => Align::End,
-                    "stretch" => Align::Stretch,
-                    _ => Align::Start,
-                }
-            }
-            "justify" | "justify-content" => {
-                s.justify = match val.as_str() {
-                    "center" => Justify::Center,
-                    "end" | "flex-end" => Justify::End,
-                    "space-between" => Justify::SpaceBetween,
-                    "space-around" => Justify::SpaceAround,
-                    "space-evenly" => Justify::SpaceEvenly,
-                    _ => Justify::Start,
-                }
-            }
-            "gap" => {
-                if let Ok(v) = val.parse() {
-                    s.gap = v;
-                }
-            }
-            "pad" | "padding" => {
-                if let Ok(v) = val.parse() {
-                    s.padding = Edges::all(v);
-                }
-            }
-            "pad-x" | "padding-x" => {
-                if let Ok(v) = val.parse::<f64>() {
-                    s.padding.left = v;
-                    s.padding.right = v;
-                }
-            }
-            "pad-y" | "padding-y" => {
-                if let Ok(v) = val.parse::<f64>() {
-                    s.padding.top = v;
-                    s.padding.bottom = v;
-                }
-            }
-            "padding-top" => {
-                if let Ok(v) = val.parse() {
-                    s.padding.top = v;
-                }
-            }
-            "padding-right" => {
-                if let Ok(v) = val.parse() {
-                    s.padding.right = v;
-                }
-            }
-            "padding-bottom" => {
-                if let Ok(v) = val.parse() {
-                    s.padding.bottom = v;
-                }
-            }
-            "padding-left" => {
-                if let Ok(v) = val.parse() {
-                    s.padding.left = v;
-                }
-            }
-            "margin" => {
-                if let Ok(v) = val.parse() {
-                    s.margin = Edges::all(v);
-                }
-            }
-            "margin-x" => {
-                if let Ok(v) = val.parse::<f64>() {
-                    s.margin.left = v;
-                    s.margin.right = v;
-                }
-            }
-            "margin-y" => {
-                if let Ok(v) = val.parse::<f64>() {
-                    s.margin.top = v;
-                    s.margin.bottom = v;
-                }
-            }
-            "margin-top" => {
-                if let Ok(v) = val.parse() {
-                    s.margin.top = v;
-                }
-            }
-            "margin-right" => {
-                if let Ok(v) = val.parse() {
-                    s.margin.right = v;
-                }
-            }
-            "margin-bottom" => {
-                if let Ok(v) = val.parse() {
-                    s.margin.bottom = v;
-                }
-            }
-            "margin-left" => {
-                if let Ok(v) = val.parse() {
-                    s.margin.left = v;
-                }
-            }
-            "bg" | "background" | "background-color" => {
-                if let Some(c) = parse_color(val) {
-                    s.background = c;
-                }
-            }
-            "border-color" => {
-                if let Some(c) = parse_color(val) {
-                    s.border_color = c;
-                }
-            }
-            "border-width" => {
-                if let Ok(v) = val.parse() {
-                    s.border_width = v;
-                }
-            }
-            "radius" | "border-radius" => {
-                if let Ok(v) = val.parse() {
-                    s.corner_radius = v;
-                }
-            }
-            "opacity" => {
-                if let Ok(v) = val.parse() {
-                    s.opacity = v;
-                }
-            }
-            "font" | "font-size" => {
-                if let Ok(v) = val.parse() {
-                    s.font_size = v;
-                }
-            }
-            "color" => {
-                if let Some(c) = parse_color(val) {
-                    s.color = c;
-                }
-            }
-            "grow" | "flex-grow" => {
-                if let Ok(v) = val.parse() {
-                    s.flex_grow = v;
-                }
-            }
-            "shrink" | "flex-shrink" => {
-                if let Ok(v) = val.parse() {
-                    s.flex_shrink = v;
-                }
-            }
-            "position" => {
-                s.position = match val.as_str() {
-                    "absolute" => Position::Absolute,
-                    _ => Position::Relative,
-                }
-            }
-            "overflow" => {
-                s.overflow = match val.as_str() {
-                    "hidden" => Overflow::Hidden,
-                    "scroll" => Overflow::Scroll,
-                    _ => Overflow::Visible,
-                }
-            }
-            "left" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.left = d;
-                    s.position = Position::Absolute;
-                }
-            }
-            "top" => {
-                if let Some(d) = parse_dimension(val) {
-                    s.top = d;
-                    s.position = Position::Absolute;
-                }
-            }
-            // Non-style attributes (class, id, tag, value, text) are skipped.
-            _ => {}
+        if let Some(op) = compile_attr(key, val) {
+            op.apply(s);
         }
     }
 }
 
+/// Compile a single attribute key/value pair into a pre-resolved [`StyleOp`].
+///
+/// Returns `None` for unrecognized keys or unparseable values.
+/// This is the single source of truth for the `attr name → Style field` mapping —
+/// both the HTML parser and the CSS engine delegate here.
+pub(crate) fn compile_attr(key: &str, val: &str) -> Option<StyleOp> {
+    use StyleOp::*;
+    match key {
+        // ── Display / Box Model ─────────────────────────
+        "display" => Some(Display(crate::style::Display::from_css(val))),
+        "box-sizing" => Some(BoxSizing(crate::style::BoxSizing::from_css(val))),
+        "visibility" => Some(Visibility(crate::style::Visibility::from_css(val))),
+
+        // ── Dimensions ──────────────────────────────────
+        "w" | "width" => parse_dimension(val).map(Width),
+        "h" | "height" => parse_dimension(val).map(Height),
+        "min-w" | "min-width" => parse_dimension(val).map(MinWidth),
+        "min-h" | "min-height" => parse_dimension(val).map(MinHeight),
+        "max-w" | "max-width" => parse_dimension(val).map(MaxWidth),
+        "max-h" | "max-height" => parse_dimension(val).map(MaxHeight),
+
+        // ── Flex layout ─────────────────────────────────
+        "direction" | "dir" | "flex-direction" => {
+            Some(Direction(crate::style::Direction::from_css(val)))
+        }
+        "flex-wrap" => Some(FlexWrap(crate::style::FlexWrap::from_css(val))),
+        "align" | "align-items" => Some(Align(crate::style::Align::from_css(val))),
+        "align-self" => Some(AlignSelf(crate::style::Align::from_css(val))),
+        "justify" | "justify-content" => Some(Justify(crate::style::Justify::from_css(val))),
+        "gap" => parse_px(val).map(Gap),
+        "row-gap" => parse_px(val).map(RowGap),
+        "column-gap" => parse_px(val).map(ColumnGap),
+
+        // ── Spacing ─────────────────────────────────────
+        "pad" | "padding" => parse_px(val).map(|v| Padding(Edges::all(v))),
+        "pad-x" | "padding-x" => parse_px(val).map(PaddingX),
+        "pad-y" | "padding-y" => parse_px(val).map(PaddingY),
+        "padding-top" => parse_px(val).map(PaddingTop),
+        "padding-right" => parse_px(val).map(PaddingRight),
+        "padding-bottom" => parse_px(val).map(PaddingBottom),
+        "padding-left" => parse_px(val).map(PaddingLeft),
+        "margin" => parse_px(val).map(|v| Margin(Edges::all(v))),
+        "margin-x" => parse_px(val).map(MarginX),
+        "margin-y" => parse_px(val).map(MarginY),
+        "margin-top" => parse_px(val).map(MarginTop),
+        "margin-right" => parse_px(val).map(MarginRight),
+        "margin-bottom" => parse_px(val).map(MarginBottom),
+        "margin-left" => parse_px(val).map(MarginLeft),
+
+        // ── Position ────────────────────────────────────
+        "position" => Some(Position(crate::style::Position::from_css(val))),
+        "left" => parse_dimension(val).map(Left),
+        "top" => parse_dimension(val).map(Top),
+        "right" => parse_dimension(val).map(Right),
+        "bottom" => parse_dimension(val).map(Bottom),
+        "z-index" => val.trim().parse::<i32>().ok().map(ZIndex),
+
+        // ── Flex item ───────────────────────────────────
+        "grow" | "flex-grow" => val.parse().ok().map(FlexGrow),
+        "shrink" | "flex-shrink" => val.parse().ok().map(FlexShrink),
+        "flex-basis" => parse_dimension(val).map(FlexBasis),
+
+        // ── Overflow ────────────────────────────────────
+        "overflow" => Some(Overflow(crate::style::Overflow::from_css(val))),
+
+        // ── Visual ──────────────────────────────────────
+        "bg" | "background" | "background-color" => parse_color(val).map(Background),
+        "border-color" => parse_color(val).map(BorderColor),
+        "border-width" => parse_px(val).map(BorderWidth),
+        "border-top-width" => parse_px(val).map(BorderTopWidth),
+        "border-right-width" => parse_px(val).map(BorderRightWidth),
+        "border-bottom-width" => parse_px(val).map(BorderBottomWidth),
+        "border-left-width" => parse_px(val).map(BorderLeftWidth),
+        "radius" | "border-radius" => parse_px(val).map(CornerRadius),
+        "opacity" => val.parse().ok().map(Opacity),
+
+        // ── Text ────────────────────────────────────────
+        "font" | "font-size" => parse_px(val).map(FontSize),
+        "font-weight" => crate::style::FontWeight::from_css(val).map(FontWeight),
+        "line-height" => parse_line_height(val).map(LineHeight),
+        "color" => parse_color(val).map(TextColor),
+        "text-align" => Some(TextAlign(crate::style::TextAlign::from_css(val))),
+        "white-space" => Some(WhiteSpace(crate::style::WhiteSpace::from_css(val))),
+
+        // Non-style attributes (class, id, tag, value, text) are skipped.
+        _ => None,
+    }
+}
+
+/// Parse line-height: bare number (multiplier) or px value.
+fn parse_line_height(val: &str) -> Option<f64> {
+    let val = val.trim();
+    // "normal" → use default
+    if val == "normal" {
+        return Some(1.3);
+    }
+    // Try as px/rem first, then as bare multiplier
+    if val.ends_with("px") || val.ends_with("rem") || val.ends_with("em") {
+        // Absolute value — convert to multiplier later at layout time
+        // For now, just store the number (font_size-relative)
+        return parse_px(val);
+    }
+    // Bare number = multiplier
+    val.parse().ok()
+}
+
 // ── Value parsers ───────────────────────────────────────────────────────────
+
+use crate::style::REM_PX;
+
+/// Strip a CSS length unit and convert to f64 pixels.
+///
+/// Handles `rem` (× [`REM_PX`]), `em` (× `REM_PX`), `px`, and bare numbers.
+/// Single source of truth for unit conversion — every length parser delegates here.
+pub(crate) fn parse_px(val: &str) -> Option<f64> {
+    let val = val.trim();
+    if let Some(num) = val.strip_suffix("rem") {
+        return num.trim().parse::<f64>().ok().map(|v| v * REM_PX);
+    }
+    if let Some(num) = val.strip_suffix("em") {
+        return num.trim().parse::<f64>().ok().map(|v| v * REM_PX);
+    }
+    val.strip_suffix("px").unwrap_or(val).trim().parse().ok()
+}
 
 pub(crate) fn parse_dimension(val: &str) -> Option<Dimension> {
     let val = val.trim();
@@ -629,9 +549,7 @@ pub(crate) fn parse_dimension(val: &str) -> Option<Dimension> {
     if let Some(pct) = val.strip_suffix('%') {
         return pct.trim().parse::<f64>().ok().map(Dimension::Percent);
     }
-    // Strip "px" suffix if present.
-    let num = val.strip_suffix("px").unwrap_or(val);
-    num.trim().parse::<f64>().ok().map(Dimension::Px)
+    parse_px(val).map(Dimension::Px)
 }
 
 /// Parse `#rrggbb`, `#rgb`, `#rrggbbaa`, `rgb(r,g,b)`, `rgba(r,g,b,a)`, or named colors.

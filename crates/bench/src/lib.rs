@@ -21,6 +21,14 @@ use any_compute_dom::tree::*;
 /// Raw bench.css text — single source for both `lib` and `window`.
 pub const BENCH_CSS: &str = include_str!("bench.css");
 
+/// Combined CSS: Tailwind utilities first, then bench.css overrides.
+/// Tailwind provides the spacing/layout/color utilities; bench.css
+/// provides component-level classes (sidebar, card, tab-btn, etc.).
+/// Parsed once at startup → O(1) lookups.
+pub fn combined_css() -> String {
+    format!("{}\n{}", any_compute_dom::TAILWIND_CSS, BENCH_CSS)
+}
+
 /// Default viewport for benchmarks and the GPU dashboard.
 pub const VIEWPORT: Size = Size::new(1400.0, 900.0);
 
@@ -30,55 +38,50 @@ pub const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 /// Sidebar tab labels — shared between benchmark tree builder and GPU window.
 pub const TAB_LABELS: &[&str] = &["Hardware", "Benchmarks", "Live Showdown"];
 
-/// Parse and cache the bench stylesheet.  Re‑exported so `window.rs` avoids
-/// its own `include_str!` + parse.
-pub fn sheet() -> StyleSheet {
-    StyleSheet::parse(BENCH_CSS)
-}
+/// Cached combined stylesheet (Tailwind + bench.css).
+/// Single `LazyLock` — parsed once on first access, reused everywhere.
+pub static SHEET: std::sync::LazyLock<StyleSheet> =
+    std::sync::LazyLock::new(|| StyleSheet::parse(&combined_css()));
 
-/// Shorthand: resolve one CSS class.
+/// Shorthand: resolve one CSS class from the shared stylesheet.
 pub fn s(class: &str) -> Style {
-    sheet().class(class)
+    SHEET.class(class)
 }
 
-/// Shorthand: resolve + merge multiple CSS classes.
+/// Shorthand: resolve + merge multiple CSS classes from the shared stylesheet.
 pub fn sm(classes: &[&str]) -> Style {
-    sheet().classes(classes)
+    SHEET.classes(classes)
 }
 
 /// Key-value row: `[label.w(72) | value]` using bench.css utilities.
-pub fn kv_row(t: &mut Tree, parent: NodeId, label: &str, value: &str, sheet: &StyleSheet) {
-    let r = t.add_box(parent, sheet.classes(&["row", "gap-8"]));
-    t.add_text(r, label, sheet.class("label").w(72.0));
-    t.add_text(r, value, sheet.class("body"));
+pub fn kv_row(t: &mut Tree, parent: NodeId, label: &str, value: &str) {
+    let r = t.add_box(parent, s("row-gap-8"));
+    t.add_text(r, label, s("label").w(72.0));
+    t.add_text(r, value, s("body"));
 }
 
 /// Build the common sidebar + tab shell.
 ///
 /// Returns `(sidebar_id, content_id)`.  Caller adds dynamic content.
-pub fn build_shell(
-    t: &mut Tree,
-    sheet: &StyleSheet,
-    active_tab: usize,
-) -> (NodeId, NodeId) {
+pub fn build_shell(t: &mut Tree, active_tab: usize) -> (NodeId, NodeId) {
     let root = t.root;
     // Sidebar
-    let sb = t.add_box(root, sheet.class("sidebar"));
-    let brand = t.add_box(sb, sheet.class("brand"));
-    t.add_box(brand, sheet.class("brand-icon"));
-    let bt = t.add_box(brand, sheet.class("brand-text"));
-    t.add_text(bt, "any-compute", sheet.classes(&["heading", "text"]));
-    t.add_text(bt, VERSION, sheet.classes(&["small", "text-dim"]));
+    let sb = t.add_box(root, s("sidebar"));
+    let brand = t.add_box(sb, s("brand"));
+    t.add_box(brand, s("brand-icon"));
+    let bt = t.add_box(brand, s("brand-text"));
+    t.add_text(bt, "any-compute", s("heading-text"));
+    t.add_text(bt, VERSION, s("small-dim"));
     for (i, label) in TAB_LABELS.iter().enumerate() {
         let cls = if i == active_tab { "tab-active" } else { "tab-inactive" };
-        let btn = t.add_box(sb, sheet.classes(&["tab-btn", cls]));
-        t.add_text(btn, *label, sheet.class("font-13"));
+        let btn = t.add_box(sb, sm(&["tab-btn", cls]));
+        t.add_text(btn, *label, s("font-13"));
     }
     // Main
-    let main = t.add_box(root, sheet.class("grow"));
-    let hdr = t.add_box(main, sheet.class("header"));
-    t.add_text(hdr, TAB_LABELS[active_tab], sheet.classes(&["font-18", "text"]));
-    let content = t.add_box(main, sheet.class("content"));
+    let main = t.add_box(root, s("grow"));
+    let hdr = t.add_box(main, s("header"));
+    t.add_text(hdr, TAB_LABELS[active_tab], sm(&["font-18", "text"]));
+    let content = t.add_box(main, s("content"));
     (sb, content)
 }
 
@@ -220,49 +223,49 @@ fn heap_deep(depth: usize) -> RefNode {
 }
 
 /// Build a realistic dashboard-like tree using CSS + shared shell.
-fn arena_dashboard(sheet: &StyleSheet) -> Tree {
-    let mut t = Tree::new(sheet.classes(&["bg", "row"]).w(VIEWPORT.w).h(VIEWPORT.h));
-    let (_sb, content) = build_shell(&mut t, sheet, 0);
-    let row = t.add_box(content, sheet.classes(&["row", "gap-12"]));
+fn arena_dashboard() -> Tree {
+    let mut t = Tree::new(sm(&["bg", "row"]).w(VIEWPORT.w).h(VIEWPORT.h));
+    let (_sb, content) = build_shell(&mut t, 0);
+    let row = t.add_box(content, s("row-gap-12"));
     for _ in 0..3 {
-        let card = t.add_box(row, sheet.class("card"));
-        t.add_text(card, "Card Title", sheet.class("heading"));
+        let card = t.add_box(row, s("card"));
+        t.add_text(card, "Card Title", s("heading"));
         for _ in 0..4 {
-            kv_row(&mut t, card, "Label", "Value", sheet);
+            kv_row(&mut t, card, "Label", "Value");
         }
-        t.add_bar(card, 0.65, sheet.class("green").color, sheet.class("bar-thin"));
+        t.add_bar(card, 0.65, s("green").color, s("bar-thin"));
     }
     t
 }
 
 /// Equivalent heap tree for the dashboard.
-fn heap_dashboard(sheet: &StyleSheet) -> RefNode {
-    let mut root = RefNode::new(sheet.classes(&["bg", "row"]).w(VIEWPORT.w).h(VIEWPORT.h));
-    let sb = root.add_child(sheet.class("sidebar"));
-    let brand = sb.add_child(sheet.class("brand"));
-    brand.add_child(sheet.class("brand-icon"));
-    let bt = brand.add_child(sheet.class("brand-text"));
-    bt.add_child(sheet.classes(&["heading", "text"]));
-    bt.add_child(sheet.classes(&["small", "text-dim"]));
+fn heap_dashboard() -> RefNode {
+    let mut root = RefNode::new(sm(&["bg", "row"]).w(VIEWPORT.w).h(VIEWPORT.h));
+    let sb = root.add_child(s("sidebar"));
+    let brand = sb.add_child(s("brand"));
+    brand.add_child(s("brand-icon"));
+    let bt = brand.add_child(s("brand-text"));
+    bt.add_child(s("heading-text"));
+    bt.add_child(s("small-dim"));
     for (i, _label) in TAB_LABELS.iter().enumerate() {
         let cls = if i == 0 { "tab-active" } else { "tab-inactive" };
-        let btn = sb.add_child(sheet.classes(&["tab-btn", cls]));
-        btn.add_child(sheet.class("font-13"));
+        let btn = sb.add_child(sm(&["tab-btn", cls]));
+        btn.add_child(s("font-13"));
     }
-    let main = root.add_child(sheet.class("grow"));
-    let hdr = main.add_child(sheet.class("header"));
-    hdr.add_child(sheet.classes(&["font-18", "text"]));
-    let content = main.add_child(sheet.class("content"));
-    let row = content.add_child(sheet.classes(&["row", "gap-12"]));
+    let main = root.add_child(s("grow"));
+    let hdr = main.add_child(s("header"));
+    hdr.add_child(sm(&["font-18", "text"]));
+    let content = main.add_child(s("content"));
+    let row = content.add_child(s("row-gap-12"));
     for _ in 0..3 {
-        let card = row.add_child(sheet.class("card"));
-        card.add_child(sheet.class("heading"));
+        let card = row.add_child(s("card"));
+        card.add_child(s("heading"));
         for _ in 0..4 {
-            let r = card.add_child(sheet.classes(&["row", "gap-8"]));
-            r.add_child(sheet.class("label").w(72.0));
-            r.add_child(sheet.class("body"));
+            let r = card.add_child(s("row-gap-8"));
+            r.add_child(s("label").w(72.0));
+            r.add_child(s("body"));
         }
-        card.add_child(sheet.class("bar-thin"));
+        card.add_child(s("bar-thin"));
     }
     root
 }
@@ -400,17 +403,17 @@ pub fn run_dom_benchmarks() -> Vec<Measurement> {
         "full frame (dashboard)",
         rounds / 2,
         || {
-            let mut t = arena_dashboard(&sheet);
+            let mut t = arena_dashboard();
             t.layout(VIEWPORT);
             let mut list = RenderList::default();
             t.paint(&mut list);
             std::hint::black_box(&list);
         },
         || {
-            let h = heap_dashboard(&sheet);
+            let h = heap_dashboard();
             std::hint::black_box(h.node_count());
         },
-        arena_dashboard(&sheet).arena.len(),
+        arena_dashboard().arena.len(),
     ));
 
     results
@@ -452,8 +455,7 @@ mod tests {
 
     #[test]
     fn dashboard_builds_and_lays_out() {
-        let sh = sheet();
-        let mut t = arena_dashboard(&sh);
+        let mut t = arena_dashboard();
         assert!(t.arena.len() > 30, "dashboard should have 30+ nodes");
         t.layout(VIEWPORT);
         let mut list = RenderList::default();
