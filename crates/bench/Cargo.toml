@@ -18,6 +18,7 @@ window = [
     "dep:bytemuck",
     "dep:rayon",
     "dep:env_logger",
+    "dep:png",
 ]
 
 [dependencies]
@@ -32,6 +33,7 @@ winit = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 env_logger = { version = "0.11", optional = true }
+png = { workspace = true, optional = true }
 
 [dev-dependencies]
 any-compute-core = { workspace = true, features = ["hwinfo"] }
@@ -40,4 +42,14 @@ any-compute-dom = { workspace = true }
 [[bin]]
 name = "anv-bench-window"
 path = "src/window.rs"
+required-features = ["window"]
+
+[[bin]]
+name = "anv-visual-cmp"
+path = "src/bin/visual_cmp.rs"
+required-features = ["window"]
+
+[[bin]]
+name = "anv-scenario"
+path = "src/bin/scenario.rs"
 required-features = ["window"]

@@ -77,10 +77,10 @@ impl FlexWrap {
 /// Cross-axis alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Align {
-    #[default]
     Start,
     Center,
     End,
+    #[default]
     Stretch,
     Baseline,
 }
@@ -273,12 +273,227 @@ impl BoxSizing {
     }
 }
 
-/// A single dimension that can be auto, fixed, or percentage.
+/// Text decoration line (CSS `text-decoration`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextDecoration {
+    #[default]
+    None,
+    Underline,
+    Overline,
+    LineThrough,
+}
+
+impl TextDecoration {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "underline" => Self::Underline,
+            "overline" => Self::Overline,
+            "line-through" => Self::LineThrough,
+            "none" => Self::None,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Text transform (CSS `text-transform`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextTransform {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+impl TextTransform {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "uppercase" => Self::Uppercase,
+            "lowercase" => Self::Lowercase,
+            "capitalize" => Self::Capitalize,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Cursor style (CSS `cursor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cursor {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+    Move,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    Crosshair,
+    Help,
+    Wait,
+    None,
+}
+
+impl Cursor {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "pointer" => Self::Pointer,
+            "text" => Self::Text,
+            "move" => Self::Move,
+            "not-allowed" => Self::NotAllowed,
+            "grab" => Self::Grab,
+            "grabbing" => Self::Grabbing,
+            "crosshair" => Self::Crosshair,
+            "help" => Self::Help,
+            "wait" => Self::Wait,
+            "none" => Self::None,
+            _ => Self::Default,
+        }
+    }
+}
+
+/// Pointer events (CSS `pointer-events`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerEvents {
+    #[default]
+    Auto,
+    None,
+}
+
+impl PointerEvents {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "none" => Self::None,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// User select (CSS `user-select`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UserSelect {
+    #[default]
+    Auto,
+    None,
+    Text,
+    All,
+}
+
+impl UserSelect {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "none" => Self::None,
+            "text" => Self::Text,
+            "all" => Self::All,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Text overflow (CSS `text-overflow`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextOverflow {
+    #[default]
+    Clip,
+    Ellipsis,
+}
+
+impl TextOverflow {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "ellipsis" => Self::Ellipsis,
+            _ => Self::Clip,
+        }
+    }
+}
+
+/// Word break (CSS `word-break` / `overflow-wrap`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WordBreak {
+    #[default]
+    Normal,
+    BreakAll,
+    KeepAll,
+    BreakWord,
+}
+
+impl WordBreak {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "break-all" => Self::BreakAll,
+            "keep-all" => Self::KeepAll,
+            "break-word" => Self::BreakWord,
+            _ => Self::Normal,
+        }
+    }
+}
+
+/// Border style (CSS `border-style`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BorderStyle {
+    #[default]
+    None,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+}
+
+impl BorderStyle {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "solid" => Self::Solid,
+            "dashed" => Self::Dashed,
+            "dotted" => Self::Dotted,
+            "double" => Self::Double,
+            "groove" => Self::Groove,
+            "ridge" => Self::Ridge,
+            "inset" => Self::Inset,
+            "outset" => Self::Outset,
+            "none" => Self::None,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Object fit (CSS `object-fit`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectFit {
+    #[default]
+    Fill,
+    Contain,
+    Cover,
+    ScaleDown,
+    None,
+}
+
+impl ObjectFit {
+    pub fn from_css(val: &str) -> Self {
+        match val {
+            "contain" => Self::Contain,
+            "cover" => Self::Cover,
+            "scale-down" => Self::ScaleDown,
+            "none" => Self::None,
+            _ => Self::Fill,
+        }
+    }
+}
+
+/// A single dimension that can be auto, fixed, percentage, or calc.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Dimension {
     Auto,
     Px(f64),
     Percent(f64),
+    /// `calc(A% ± Bpx)` — resolved at layout time with parent size.
+    /// Covers the vast majority of real-world `calc()` usage while staying `Copy`.
+    Calc {
+        percent: f64,
+        px: f64,
+    },
 }
 
 impl Default for Dimension {
@@ -294,6 +509,7 @@ impl Dimension {
             Self::Auto => None,
             Self::Px(v) => Some(v),
             Self::Percent(p) => Some(parent * p / 100.0),
+            Self::Calc { percent, px } => Some(parent * percent / 100.0 + px),
         }
     }
 
@@ -348,6 +564,66 @@ impl Edges {
     }
 }
 
+/// Box shadow (CSS `box-shadow`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Shadow {
+    pub x: f64,
+    pub y: f64,
+    pub blur: f64,
+    pub spread: f64,
+    pub color: Color,
+    pub inset: bool,
+}
+
+/// Bitmask tracking which [`Style`] fields were explicitly set by CSS.
+///
+/// Used to distinguish "default because unset" from "explicitly set to the default value",
+/// enabling correct CSS property inheritance. Each bit corresponds to one field group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StyleWritten(pub u64);
+
+impl StyleWritten {
+    pub const fn has(self, bit: u64) -> bool {
+        self.0 & bit != 0
+    }
+    pub fn set(&mut self, bit: u64) {
+        self.0 |= bit;
+    }
+}
+
+// ── Inheritance bit constants ─────────────────────
+// Properties that inherit from parent by default in CSS:
+pub const INHERIT_COLOR: u64 = 1 << 0;
+pub const INHERIT_FONT_SIZE: u64 = 1 << 1;
+pub const INHERIT_FONT_WEIGHT: u64 = 1 << 2;
+pub const INHERIT_LINE_HEIGHT: u64 = 1 << 3;
+pub const INHERIT_TEXT_ALIGN: u64 = 1 << 4;
+pub const INHERIT_WHITE_SPACE: u64 = 1 << 5;
+pub const INHERIT_VISIBILITY: u64 = 1 << 6;
+pub const INHERIT_CURSOR: u64 = 1 << 7;
+pub const INHERIT_LETTER_SPACING: u64 = 1 << 8;
+pub const INHERIT_WORD_SPACING: u64 = 1 << 9;
+pub const INHERIT_TEXT_TRANSFORM: u64 = 1 << 10;
+pub const INHERIT_TEXT_INDENT: u64 = 1 << 11;
+pub const INHERIT_WORD_BREAK: u64 = 1 << 12;
+pub const INHERIT_DIRECTION: u64 = 1 << 13;
+
+/// Mask of all inheritable properties.
+pub const INHERIT_ALL: u64 = INHERIT_COLOR
+    | INHERIT_FONT_SIZE
+    | INHERIT_FONT_WEIGHT
+    | INHERIT_LINE_HEIGHT
+    | INHERIT_TEXT_ALIGN
+    | INHERIT_WHITE_SPACE
+    | INHERIT_VISIBILITY
+    | INHERIT_CURSOR
+    | INHERIT_LETTER_SPACING
+    | INHERIT_WORD_SPACING
+    | INHERIT_TEXT_TRANSFORM
+    | INHERIT_TEXT_INDENT
+    | INHERIT_WORD_BREAK
+    | INHERIT_DIRECTION;
+
 /// Complete style for one node — layout + visual in one struct.
 ///
 /// All fields have sane defaults matching CSS initial values.
@@ -366,6 +642,7 @@ pub struct Style {
     pub min_height: Dimension,
     pub max_width: Dimension,
     pub max_height: Dimension,
+    pub aspect_ratio: Option<f64>,
 
     pub direction: Direction,
     pub flex_wrap: FlexWrap,
@@ -394,6 +671,8 @@ pub struct Style {
     pub flex_shrink: f64,
     /// Flex basis (initial main size before grow/shrink).
     pub flex_basis: Dimension,
+    /// Flex item ordering.
+    pub order: i32,
 
     /// Z-index for stacking order (higher = on top).
     /// `None` means auto (paint in insertion order).
@@ -402,6 +681,7 @@ pub struct Style {
     // ── Visual ──────────────────────────────────────────
     pub background: Color,
     pub border_color: Color,
+    pub border_style: BorderStyle,
     pub border_width: f64,
     pub border_top_width: f64,
     pub border_right_width: f64,
@@ -409,6 +689,24 @@ pub struct Style {
     pub border_left_width: f64,
     pub corner_radius: f64,
     pub opacity: f64,
+    pub box_shadow: Option<Shadow>,
+    pub outline_width: f64,
+    pub outline_color: Color,
+
+    // ── Transform ───────────────────────────────────────
+    pub transform_translate_x: f64,
+    pub transform_translate_y: f64,
+    pub transform_scale_x: f64,
+    pub transform_scale_y: f64,
+    pub transform_rotate: f64,
+    pub transform_skew_x: f64,
+    pub transform_skew_y: f64,
+
+    // ── Filter ──────────────────────────────────────────
+    pub filter_blur: f64,
+    pub filter_brightness: f64,
+    pub filter_contrast: f64,
+    pub filter_opacity: f64,
 
     // ── Text ────────────────────────────────────────────
     pub font_size: f64,
@@ -417,6 +715,23 @@ pub struct Style {
     pub color: Color,
     pub text_align: TextAlign,
     pub white_space: WhiteSpace,
+    pub text_decoration: TextDecoration,
+    pub text_transform: TextTransform,
+    pub letter_spacing: f64,
+    pub word_spacing: f64,
+    pub text_indent: f64,
+    pub text_overflow: TextOverflow,
+    pub text_shadow: Option<Shadow>,
+    pub word_break: WordBreak,
+
+    // ── Interaction ─────────────────────────────────────
+    pub cursor: Cursor,
+    pub pointer_events: PointerEvents,
+    pub user_select: UserSelect,
+
+    // ── Inheritance tracking ────────────────────────────
+    /// Bitmask of which properties were explicitly set (vs inherited/default).
+    pub written: StyleWritten,
 }
 
 impl Default for Style {
@@ -431,9 +746,10 @@ impl Default for Style {
             min_height: Dimension::Auto,
             max_width: Dimension::Auto,
             max_height: Dimension::Auto,
+            aspect_ratio: None,
             direction: Direction::Column,
             flex_wrap: FlexWrap::NoWrap,
-            align: Align::Start,
+            align: Align::Stretch,
             align_self: None,
             justify: Justify::Start,
             gap: 0.0,
@@ -450,9 +766,11 @@ impl Default for Style {
             flex_grow: 0.0,
             flex_shrink: 1.0,
             flex_basis: Dimension::Auto,
+            order: 0,
             z_index: None,
             background: Color::TRANSPARENT,
             border_color: Color::TRANSPARENT,
+            border_style: BorderStyle::None,
             border_width: 0.0,
             border_top_width: 0.0,
             border_right_width: 0.0,
@@ -460,12 +778,38 @@ impl Default for Style {
             border_left_width: 0.0,
             corner_radius: 0.0,
             opacity: 1.0,
+            box_shadow: None,
+            outline_width: 0.0,
+            outline_color: Color::TRANSPARENT,
+            transform_translate_x: 0.0,
+            transform_translate_y: 0.0,
+            transform_scale_x: 1.0,
+            transform_scale_y: 1.0,
+            transform_rotate: 0.0,
+            transform_skew_x: 0.0,
+            transform_skew_y: 0.0,
+            filter_blur: 0.0,
+            filter_brightness: 1.0,
+            filter_contrast: 1.0,
+            filter_opacity: 1.0,
             font_size: 14.0,
             font_weight: FontWeight::NORMAL,
             line_height: 1.3,
             color: Color::WHITE,
             text_align: TextAlign::Left,
             white_space: WhiteSpace::Normal,
+            text_decoration: TextDecoration::None,
+            text_transform: TextTransform::None,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            text_indent: 0.0,
+            text_overflow: TextOverflow::Clip,
+            text_shadow: None,
+            word_break: WordBreak::Normal,
+            cursor: Cursor::Default,
+            pointer_events: PointerEvents::Auto,
+            user_select: UserSelect::Auto,
+            written: StyleWritten(0),
         }
     }
 }
@@ -624,10 +968,26 @@ impl Style {
     pub fn effective_border(&self) -> Edges {
         let bw = self.border_width;
         Edges {
-            top: if self.border_top_width > 0.0 { self.border_top_width } else { bw },
-            right: if self.border_right_width > 0.0 { self.border_right_width } else { bw },
-            bottom: if self.border_bottom_width > 0.0 { self.border_bottom_width } else { bw },
-            left: if self.border_left_width > 0.0 { self.border_left_width } else { bw },
+            top: if self.border_top_width > 0.0 {
+                self.border_top_width
+            } else {
+                bw
+            },
+            right: if self.border_right_width > 0.0 {
+                self.border_right_width
+            } else {
+                bw
+            },
+            bottom: if self.border_bottom_width > 0.0 {
+                self.border_bottom_width
+            } else {
+                bw
+            },
+            left: if self.border_left_width > 0.0 {
+                self.border_left_width
+            } else {
+                bw
+            },
         }
     }
 
@@ -639,6 +999,56 @@ impl Style {
     /// True when display is none.
     pub fn is_hidden(&self) -> bool {
         self.display == Display::None
+    }
+
+    /// Inherit CSS-inheritable properties from a parent style.
+    ///
+    /// Only copies properties that (a) are inheritable per CSS spec and
+    /// (b) were NOT explicitly set on this node (tracked via `written`).
+    pub fn inherit_from(&mut self, parent: &Style) {
+        let w = self.written;
+        if !w.has(INHERIT_COLOR) {
+            self.color = parent.color;
+        }
+        if !w.has(INHERIT_FONT_SIZE) {
+            self.font_size = parent.font_size;
+        }
+        if !w.has(INHERIT_FONT_WEIGHT) {
+            self.font_weight = parent.font_weight;
+        }
+        if !w.has(INHERIT_LINE_HEIGHT) {
+            self.line_height = parent.line_height;
+        }
+        if !w.has(INHERIT_TEXT_ALIGN) {
+            self.text_align = parent.text_align;
+        }
+        if !w.has(INHERIT_WHITE_SPACE) {
+            self.white_space = parent.white_space;
+        }
+        if !w.has(INHERIT_VISIBILITY) {
+            self.visibility = parent.visibility;
+        }
+        if !w.has(INHERIT_CURSOR) {
+            self.cursor = parent.cursor;
+        }
+        if !w.has(INHERIT_LETTER_SPACING) {
+            self.letter_spacing = parent.letter_spacing;
+        }
+        if !w.has(INHERIT_WORD_SPACING) {
+            self.word_spacing = parent.word_spacing;
+        }
+        if !w.has(INHERIT_TEXT_TRANSFORM) {
+            self.text_transform = parent.text_transform;
+        }
+        if !w.has(INHERIT_TEXT_INDENT) {
+            self.text_indent = parent.text_indent;
+        }
+        if !w.has(INHERIT_WORD_BREAK) {
+            self.word_break = parent.word_break;
+        }
+        if !w.has(INHERIT_DIRECTION) {
+            self.direction = parent.direction;
+        }
     }
 }
 
@@ -663,6 +1073,7 @@ pub enum StyleOp {
     MinHeight(Dimension),
     MaxWidth(Dimension),
     MaxHeight(Dimension),
+    AspectRatio(f64),
 
     // ── Flex layout ─────────────────────────────────────
     Direction(Direction),
@@ -702,6 +1113,7 @@ pub enum StyleOp {
     FlexGrow(f64),
     FlexShrink(f64),
     FlexBasis(Dimension),
+    Order(i32),
 
     // ── Overflow ────────────────────────────────────────
     Overflow(Overflow),
@@ -709,6 +1121,7 @@ pub enum StyleOp {
     // ── Visual ──────────────────────────────────────────
     Background(Color),
     BorderColor(Color),
+    BorderStyleOp(BorderStyle),
     BorderWidth(f64),
     BorderTopWidth(f64),
     BorderRightWidth(f64),
@@ -716,6 +1129,24 @@ pub enum StyleOp {
     BorderLeftWidth(f64),
     CornerRadius(f64),
     Opacity(f64),
+    BoxShadow(Shadow),
+    OutlineWidth(f64),
+    OutlineColor(Color),
+
+    // ── Transform ───────────────────────────────────────
+    TranslateX(f64),
+    TranslateY(f64),
+    ScaleX(f64),
+    ScaleY(f64),
+    Rotate(f64),
+    SkewX(f64),
+    SkewY(f64),
+
+    // ── Filter ──────────────────────────────────────────
+    FilterBlur(f64),
+    FilterBrightness(f64),
+    FilterContrast(f64),
+    FilterOpacity(f64),
 
     // ── Text ────────────────────────────────────────────
     FontSize(f64),
@@ -724,6 +1155,19 @@ pub enum StyleOp {
     TextColor(Color),
     TextAlign(TextAlign),
     WhiteSpace(WhiteSpace),
+    TextDecorationOp(TextDecoration),
+    TextTransformOp(TextTransform),
+    LetterSpacing(f64),
+    WordSpacing(f64),
+    TextIndent(f64),
+    TextOverflowOp(TextOverflow),
+    TextShadow(Shadow),
+    WordBreakOp(WordBreak),
+
+    // ── Interaction ─────────────────────────────────────
+    CursorOp(Cursor),
+    PointerEventsOp(PointerEvents),
+    UserSelectOp(UserSelect),
 }
 
 impl StyleOp {
@@ -733,14 +1177,21 @@ impl StyleOp {
         match self {
             Self::Display(d) => s.display = *d,
             Self::BoxSizing(b) => s.box_sizing = *b,
-            Self::Visibility(v) => s.visibility = *v,
+            Self::Visibility(v) => {
+                s.visibility = *v;
+                s.written.set(INHERIT_VISIBILITY);
+            }
             Self::Width(d) => s.width = *d,
             Self::Height(d) => s.height = *d,
             Self::MinWidth(d) => s.min_width = *d,
             Self::MinHeight(d) => s.min_height = *d,
             Self::MaxWidth(d) => s.max_width = *d,
             Self::MaxHeight(d) => s.max_height = *d,
-            Self::Direction(d) => s.direction = *d,
+            Self::AspectRatio(v) => s.aspect_ratio = Some(*v),
+            Self::Direction(d) => {
+                s.direction = *d;
+                s.written.set(INHERIT_DIRECTION);
+            }
             Self::FlexWrap(w) => s.flex_wrap = *w,
             Self::Align(a) => s.align = *a,
             Self::AlignSelf(a) => s.align_self = Some(*a),
@@ -783,9 +1234,11 @@ impl StyleOp {
             Self::FlexGrow(v) => s.flex_grow = *v,
             Self::FlexShrink(v) => s.flex_shrink = *v,
             Self::FlexBasis(d) => s.flex_basis = *d,
+            Self::Order(v) => s.order = *v,
             Self::Overflow(o) => s.overflow = *o,
             Self::Background(c) => s.background = *c,
             Self::BorderColor(c) => s.border_color = *c,
+            Self::BorderStyleOp(v) => s.border_style = *v,
             Self::BorderWidth(v) => s.border_width = *v,
             Self::BorderTopWidth(v) => s.border_top_width = *v,
             Self::BorderRightWidth(v) => s.border_right_width = *v,
@@ -793,12 +1246,73 @@ impl StyleOp {
             Self::BorderLeftWidth(v) => s.border_left_width = *v,
             Self::CornerRadius(v) => s.corner_radius = *v,
             Self::Opacity(v) => s.opacity = *v,
-            Self::FontSize(v) => s.font_size = *v,
-            Self::FontWeight(w) => s.font_weight = *w,
-            Self::LineHeight(v) => s.line_height = *v,
-            Self::TextColor(c) => s.color = *c,
-            Self::TextAlign(a) => s.text_align = *a,
-            Self::WhiteSpace(w) => s.white_space = *w,
+            Self::BoxShadow(v) => s.box_shadow = Some(*v),
+            Self::OutlineWidth(v) => s.outline_width = *v,
+            Self::OutlineColor(c) => s.outline_color = *c,
+            Self::TranslateX(v) => s.transform_translate_x = *v,
+            Self::TranslateY(v) => s.transform_translate_y = *v,
+            Self::ScaleX(v) => s.transform_scale_x = *v,
+            Self::ScaleY(v) => s.transform_scale_y = *v,
+            Self::Rotate(v) => s.transform_rotate = *v,
+            Self::SkewX(v) => s.transform_skew_x = *v,
+            Self::SkewY(v) => s.transform_skew_y = *v,
+            Self::FilterBlur(v) => s.filter_blur = *v,
+            Self::FilterBrightness(v) => s.filter_brightness = *v,
+            Self::FilterContrast(v) => s.filter_contrast = *v,
+            Self::FilterOpacity(v) => s.filter_opacity = *v,
+            Self::FontSize(v) => {
+                s.font_size = *v;
+                s.written.set(INHERIT_FONT_SIZE);
+            }
+            Self::FontWeight(w) => {
+                s.font_weight = *w;
+                s.written.set(INHERIT_FONT_WEIGHT);
+            }
+            Self::LineHeight(v) => {
+                s.line_height = *v;
+                s.written.set(INHERIT_LINE_HEIGHT);
+            }
+            Self::TextColor(c) => {
+                s.color = *c;
+                s.written.set(INHERIT_COLOR);
+            }
+            Self::TextAlign(a) => {
+                s.text_align = *a;
+                s.written.set(INHERIT_TEXT_ALIGN);
+            }
+            Self::WhiteSpace(w) => {
+                s.white_space = *w;
+                s.written.set(INHERIT_WHITE_SPACE);
+            }
+            Self::TextDecorationOp(v) => s.text_decoration = *v,
+            Self::TextTransformOp(v) => {
+                s.text_transform = *v;
+                s.written.set(INHERIT_TEXT_TRANSFORM);
+            }
+            Self::LetterSpacing(v) => {
+                s.letter_spacing = *v;
+                s.written.set(INHERIT_LETTER_SPACING);
+            }
+            Self::WordSpacing(v) => {
+                s.word_spacing = *v;
+                s.written.set(INHERIT_WORD_SPACING);
+            }
+            Self::TextIndent(v) => {
+                s.text_indent = *v;
+                s.written.set(INHERIT_TEXT_INDENT);
+            }
+            Self::TextOverflowOp(v) => s.text_overflow = *v,
+            Self::TextShadow(v) => s.text_shadow = Some(*v),
+            Self::WordBreakOp(v) => {
+                s.word_break = *v;
+                s.written.set(INHERIT_WORD_BREAK);
+            }
+            Self::CursorOp(v) => {
+                s.cursor = *v;
+                s.written.set(INHERIT_CURSOR);
+            }
+            Self::PointerEventsOp(v) => s.pointer_events = *v,
+            Self::UserSelectOp(v) => s.user_select = *v,
         }
     }
 }

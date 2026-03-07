@@ -5,13 +5,13 @@ Lives in its own crate to keep `core` focused on compute primitives.
 
 ## Crate Structure
 
-| Module     | Purpose                                                                                    |
-| ---------- | ------------------------------------------------------------------------------------------ |
-| `tree.rs`  | `Tree` (arena `Vec<Slot>`), `Slot`, `NodeId`, layout/paint/event dispatch                  |
-| `style.rs` | `Style` (builder pattern), `StyleOp` (pre-compiled mutations), `Dimension`, `Direction`, `Align`, `Justify`, `Edges`, `REM_PX` const — every style enum has `from_css(val) -> Self` for polymorphic string→enum resolution |
-| `parse.rs` | `parse(&str) → Tree` — zero-dep fault-tolerant HTML-like scanner + `compile_attr` / `parse_px` (single source of truth for attr→Style mapping and unit conversion) |
-| `css.rs`   | `StyleSheet::parse(css) → StyleSheet` — fault-tolerant CSS subset parser, compiles to `Vec<StyleOp>`, O(1) lookups |
-| `tailwind.css` | Real compiled Tailwind v3 CSS output — parsed via `StyleSheet::parse()` at test time for visual correctness verification |
+| Module         | Purpose                                                                                                                                                                                                                                                                                               |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tree.rs`      | `Tree` (arena `Vec<Slot>`), `Slot`, `NodeId`, layout/paint/event dispatch                                                                                                                                                                                                                             |
+| `style.rs`     | `Style` (builder pattern), `StyleOp` (pre-compiled mutations), 21 CSS enums, `Dimension` (Auto/Px/Percent/Calc), `Shadow`, `Edges`, `StyleWritten` bitmask for inheritance tracking. Every style enum has `from_css(val) -> Self` for polymorphic resolution.                                         |
+| `parse.rs`     | `parse(&str) → Tree` — zero-dep fault-tolerant HTML-like scanner + `compile_attr` / `parse_px` / `parse_dimension` / `parse_time` / `parse_angle` / `parse_shadow` / `parse_transform` / `parse_filter` / `parse_calc_expr` (single source of truth for attr→Style mapping and unit/value conversion) |
+| `css.rs`       | `StyleSheet::parse(css) → StyleSheet` — full CSS parser with transitions, @keyframes, animations, advanced selectors, CSS variables, `calc()`. O(1) HashMap lookups for simple selectors, tree-walking for complex selectors.                                                                         |
+| `tailwind.css` | Real compiled Tailwind v3 CSS output — parsed via `StyleSheet::parse()` at test time for visual correctness verification                                                                                                                                                                              |
 
 ## Key Patterns
 
@@ -23,133 +23,222 @@ Malformed input is silently skipped:
 - CSS: unclosed braces stop parsing (keeps rules parsed so far), bad declarations skipped
 - HTML: unclosed tags auto-close, unmatched close tags ignored, empty input → default root
 - Bad attribute values (e.g. `w="banana"`) silently stay at default
-- `ParseError` struct kept for external consumers but internal parsers never produce it
+- @keyframes with bad stop percentages silently skipped, unknown @-rules skipped
 
 ### Arena Access
 
 All `Tree` method bodies use `self.slot(id)` / `self.slot_mut(id)` — never raw `self.arena[id.0]`.
 The `arena` field is `pub` for external read access (tests, consumers), but internal methods
-go through the typed accessors for consistency and future-proofing (e.g. bounds-checking, validity).
-
-### Node Creation
-
-`Tree::add_box`, `add_text`, `add_bar` — each calls the internal `add_node` helper which
-allocates the Slot, sets parent/child links, and assigns Kind. `Slot::new` centralises
-default construction.
+go through the typed accessors for consistency and future-proofing.
 
 ### CSS → Style Pipeline
 
 CSS is the developer-facing input format; at runtime only pre-resolved `Style` structs exist.
-The pipeline compiles CSS text into `Vec<StyleOp>` at parse time — resolve-time is pure enum-match with zero string parsing.
 
 1. `StyleSheet::parse(css)` — hand-rolled zero-dep parser, infallible
-2. CSS text → `strip_comments` → `parse_rules` → `compile_declarations` → `Vec<StyleOp>` stored per class/tag/id
-3. `compile_declarations` expands shorthands (`padding: V H` → 4 sides) via `expand_css_property` + `norm_val`, then delegates to `compile_attr` → `StyleOp`
-4. `sheet.class("name")` — O(1) HashMap lookup → `apply_ops(&mut Style, &[StyleOp])` (pure enum-match, no string hashing)
-5. `sheet.classes(&["a", "b"])` — merge multiple classes in specificity order
-6. `StyleSheet::lookup()` — private helper deduplicating class/tag/id resolution
-7. Full cascade: `resolve(tag, classes, id, inline_attrs)` — tag < class < id < inline
+2. CSS text → `strip_comments` → inline tokenizer handles `@keyframes`, `:root` variables, regular rules
+3. `compile_declarations(body, &variables)` → `RulePayload { ops, transitions, animations }`
+4. Variable resolution: `var(--name, fallback)` replaced inline during compilation (up to 16 nested levels)
+5. Transition/animation longhands assembled after all declarations are parsed
+6. Each comma-separated selector classified: simple → HashMap, complex → `Vec<ComplexRule>`
+7. `sheet.class("name")` — O(1) HashMap → `apply_ops(&mut Style, &[StyleOp])` (pure enum match)
+8. Full cascade: `resolve(tag, classes, id, inline_attrs)` — tag < class < id < inline
+
+### StyleSheet Internal Storage
+
+```rust
+pub struct StyleSheet {
+    classes: HashMap<String, RulePayload>,   // .class selectors
+    tags: HashMap<String, RulePayload>,      // tag selectors
+    ids: HashMap<String, RulePayload>,       // #id selectors
+    complex_rules: Vec<ComplexRule>,          // descendant, child, pseudo-class selectors
+    keyframes: HashMap<String, Vec<Keyframe>>, // @keyframes definitions
+    variables: HashMap<String, String>,      // CSS custom properties from :root / *
+}
+```
+
+`RulePayload` bundles `ops: Vec<StyleOp>`, `transitions: Vec<TransitionSpec>`, `animations: Vec<AnimationSpec>`.
+
+### CSS Transitions
+
+Parsed via shorthand `transition: prop dur ease delay` or longhands (`transition-property`, `-duration`, `-timing-function`, `-delay`). Multi-property transitions supported via comma separation.
+
+```rust
+TransitionSpec { property: String, duration_secs: f64, easing: Easing, delay_secs: f64 }
+```
+
+Access: `sheet.class_transitions("name")` → `&[TransitionSpec]`.
+Bridges to `core::animation::Transition<T>` at runtime. `Easing::from_css("ease")` maps CSS keywords.
+
+### @keyframes + Animations
+
+`@keyframes name { from { ... } 50% { ... } to { ... } }` parsed inline. Stops sorted by percentage.
+Animation shorthand `animation: name dur ease delay count direction fill` parsed with positional heuristics (first time = duration, second = delay, etc).
+
+```rust
+Keyframe { stop: f64, ops: Vec<StyleOp> }
+AnimationSpec { name, duration_secs, easing, delay_secs, iteration_count, direction, fill_mode }
+AnimationIterCount::Count(f64) | ::Infinite
+AnimationDirection::Normal | Reverse | Alternate | AlternateReverse
+AnimationFillMode::None | Forwards | Backwards | Both
+```
+
+Access: `sheet.keyframes("name")` → `Option<&[Keyframe]>`, `sheet.class_animations("name")` → `&[AnimationSpec]`.
+
+### CSS Custom Properties (Variables)
+
+Extracted from `:root { --name: value; }` and `* { --name: value; }` rules.
+Resolved inline during `compile_declarations` via `resolve_var()`:
+
+- `var(--name)` → looked up in stylesheet variables
+- `var(--name, fallback)` → fallback if missing
+- Nested up to 16 levels
+  Access: `sheet.var("--name")` → `Option<&str>`.
+
+### calc()
+
+`Dimension::Calc { percent: f64, px: f64 }` — covers `calc(A% ± Bpx)`.
+Resolved at layout time: `parent * percent / 100 + px`.
+Stays `Copy` — no heap allocation. Simplifies to `Percent` or `Px` when only one component.
+Parsed via `parse_calc_expr()` in `parse.rs` — splits on whitespace-delimited `+`/`-` operators.
+
+### Advanced Selectors
+
+| Selector     | Example               | Storage                   |
+| ------------ | --------------------- | ------------------------- |
+| Class        | `.card`               | `classes` HashMap         |
+| Tag          | `div`                 | `tags` HashMap            |
+| Id           | `#main`               | `ids` HashMap             |
+| Comma group  | `.a, .b`              | both separately           |
+| Descendant   | `.parent .child`      | `complex_rules`           |
+| Child        | `.parent > .child`    | `complex_rules`           |
+| Pseudo-class | `.btn:hover`          | `complex_rules`           |
+| Universal    | `*`                   | `tags` HashMap            |
+| Compound     | `div.card#main:hover` | classified per complexity |
+
+Selector parsing: `parse_selector(sel) → ParsedSelector` with `(Combinator, SelectorSegment)` chain.
+Specificity: `(ids, classes+pseudos, tags)` — standard CSS (a,b,c) calculation.
+Pseudo-classes: `Hover`, `Focus`, `Active`, `Visited`, `FirstChild`, `LastChild`, `NthChild(a, b)`.
+`nth-child` supports `odd`, `even`, `an+b` syntax.
 
 ### StyleOp Pre-Compilation
 
-`StyleOp` (37 variants) maps 1:1 to `Style` field writes. Benefits:
+`StyleOp` (60+ variants) maps 1:1 to `Style` field writes:
+
 - Zero string matching at apply time — compiled once, applied N times
-- Enum variant carries the resolved value (Color, f64, Dimension, etc.)
-- `compile_attr(key, val) → Option<StyleOp>` is the single source of truth for the attr→Style mapping
-- Both HTML parser and CSS engine delegate through `compile_attr` — no duplication
+- Inheritable properties set `written` bits in `StyleWritten` bitmask on apply
+- `compile_attr(key, val) → Option<StyleOp>` — single source of truth (HTML + CSS both use it)
 
-### Style Enum `from_css()` Polymorphism
+### CSS Property Inheritance
 
-All 11 style enums + `FontWeight` implement `fn from_css(val: &str) -> Self` (or `-> Option<Self>` for FontWeight).
-This moves CSS string→enum mapping onto the type itself, eliminating 53+ fully-qualified paths in `compile_attr`.
+`StyleWritten(u64)` bitmask tracks explicitly-set properties. 14 inheritable property bits:
+`INHERIT_COLOR`, `INHERIT_FONT_SIZE`, `INHERIT_FONT_WEIGHT`, `INHERIT_LINE_HEIGHT`,
+`INHERIT_TEXT_ALIGN`, `INHERIT_WHITE_SPACE`, `INHERIT_VISIBILITY`, `INHERIT_CURSOR`,
+`INHERIT_LETTER_SPACING`, `INHERIT_WORD_SPACING`, `INHERIT_TEXT_TRANSFORM`,
+`INHERIT_TEXT_INDENT`, `INHERIT_WORD_BREAK`, `INHERIT_DIRECTION`.
 
-| Enum | Default on unknown |
-|------|--------------------|
-| `Display` | `Flex` |
-| `Direction` | `Column` |
-| `FlexWrap` | `NoWrap` |
-| `Align` | `Stretch` |
-| `Justify` | `Start` |
-| `Position` | `Relative` |
-| `Overflow` | `Visible` |
-| `TextAlign` | `Left` |
-| `Visibility` | `Visible` |
-| `WhiteSpace` | `Normal` |
-| `BoxSizing` | `ContentBox` |
-| `FontWeight` | `None` (returns `Option`) |
+`Style::inherit_from(&mut self, parent: &Style)` copies unset inheritable properties from parent.
 
-`compile_attr` calls e.g. `Display::from_css(val)` — no `crate::style::Display::Flex` inline.
+### Style Enums (21 total)
+
+All implement `fn from_css(val: &str) -> Self` (or `Option<Self>` for FontWeight):
+
+| Enum             | CSS Property      | Default       |
+| ---------------- | ----------------- | ------------- |
+| `Display`        | `display`         | `Flex`        |
+| `Direction`      | `flex-direction`  | `Column`      |
+| `FlexWrap`       | `flex-wrap`       | `NoWrap`      |
+| `Align`          | `align-items`     | `Stretch`     |
+| `Justify`        | `justify-content` | `Start`       |
+| `Position`       | `position`        | `Relative`    |
+| `Overflow`       | `overflow`        | `Visible`     |
+| `TextAlign`      | `text-align`      | `Left`        |
+| `Visibility`     | `visibility`      | `Visible`     |
+| `WhiteSpace`     | `white-space`     | `Normal`      |
+| `BoxSizing`      | `box-sizing`      | `BorderBox`   |
+| `FontWeight`     | `font-weight`     | `Normal(400)` |
+| `TextDecoration` | `text-decoration` | `None`        |
+| `TextTransform`  | `text-transform`  | `None`        |
+| `Cursor`         | `cursor`          | `Default`     |
+| `PointerEvents`  | `pointer-events`  | `Auto`        |
+| `UserSelect`     | `user-select`     | `Auto`        |
+| `TextOverflow`   | `text-overflow`   | `Clip`        |
+| `WordBreak`      | `word-break`      | `Normal`      |
+| `BorderStyle`    | `border-style`    | `None`        |
+| `ObjectFit`      | `object-fit`      | `Fill`        |
+
+### Value Parsers (parse.rs)
+
+| Parser                    | Input                                            | Output                  |
+| ------------------------- | ------------------------------------------------ | ----------------------- |
+| `parse_px(val)`           | `"16px"`, `"1rem"`, `"2em"`, `"14"`              | `Option<f64>` (px)      |
+| `parse_dimension(val)`    | above + `"auto"`, `"50%"`, `"calc(100% - 20px)"` | `Option<Dimension>`     |
+| `parse_time(val)`         | `"300ms"`, `"1.5s"`, `"0.3"`                     | `Option<f64>` (seconds) |
+| `parse_angle(val)`        | `"45deg"`, `"1.5rad"`, `"0.25turn"`, `"90"`      | `Option<f64>` (degrees) |
+| `parse_shadow(val)`       | `"2px 4px 6px #000"`                             | `Option<Shadow>`        |
+| `parse_transform(val)`    | `"translateX(10px) rotate(45deg)"`               | `Vec<StyleOp>`          |
+| `parse_filter(val)`       | `"blur(5px) brightness(120%)"`                   | `Vec<StyleOp>`          |
+| `parse_color(val)`        | `"#rgb"`, `"#rrggbb"`, `"rgb(r,g,b)"`, named     | `Option<Color>`         |
+| `parse_calc_expr(expr)`   | `"100% - 20px"`                                  | `Option<Dimension>`     |
+| `parse_aspect_ratio(val)` | `"16 / 9"`, `"1.5"`                              | `Option<f64>`           |
 
 ### Unit Conversion
 
-`parse_px(val) → Option<f64>` is the single source of truth for all CSS length parsing:
-- `rem` → × `REM_PX` (16.0, defined in style.rs)
+`parse_px(val)` is the single source of truth:
+
+- `rem` → × `REM_PX` (16.0)
 - `em` → × `REM_PX`
 - `px` → strip suffix
 - bare number → direct parse
-- `parse_dimension` delegates to `parse_px` for the px path (adds `auto` and `%` on top)
-- `norm_val` in css.rs delegates to `parse_px` for the string round-trip needed by shorthand expansion
+- `norm_val` in css.rs delegates to `parse_px` for shorthand expansion round-trips
 
 ### Tailwind CSS
 
-Real Tailwind v3 compiled CSS output (`tailwind.css`) is included as `include_str!` and parsed through `StyleSheet::parse()`.
-Exported as `any_compute_dom::TAILWIND_CSS` for consumers (bench window merges it with bench.css).
-Tests verify both computed Style values (rem→px conversion, color hex parsing, shorthand expansion) and pixel-level visual equivalence using `PixelBuffer::diff()`.
-No custom Tailwind runtime — just real CSS parsed by our engine.
-
-### Parser Deduplication
-
-- `compile_attr(key, val) → Option<StyleOp>` — single source of truth for attr→Style field mapping (used by HTML + CSS)
-- `apply_style_attrs(&mut Style, attrs)` — iterates attrs through `compile_attr` (pub(crate), shared by parse + css)
-- `parse_px(val) → Option<f64>` — single source of truth for CSS length unit conversion
-- `spawn_child()` — creates a child node from tag + attrs and applies `data-tag`/`tag`
-- `set_kind()` — transforms an existing node's kind (used only for the root)
-- `apply_tag()` — extracts and applies `data-tag`/`tag` attribute
-- `map_tag()` — canonical tag → `TagMapping` (Box / Text / Bar)
+Real Tailwind v3 compiled CSS output (`tailwind.css`) parsed through `StyleSheet::parse()`.
+Exported as `any_compute_dom::TAILWIND_CSS` for consumers.
+Tests verify computed Style values and pixel-level visual equivalence using `PixelBuffer::diff()`.
 
 ### Layout
 
-Flexbox-like solver in `Tree::layout_node`. Key behaviours:
+Flexbox-like solver in `Tree::layout_node`:
 
-- **Cross-axis stretch** (CSS default `align-items: stretch`): children with no explicit width/height
-  in the cross dimension get `avail_w`/`avail_h` from the parent — they stretch to fill.
-- **Main-axis intrinsic sizing**: row children with no explicit width are measured via
-  `Tree::intrinsic_width()` (recursive text-extent / child-sum / child-max) so they occupy
-  their content width. This prevents text from collapsing to 0px in a row.
-- `final_w = style.width.resolve(avail_w).unwrap_or((avail_w - margin_h).max(0.0))` — always
-  stretches when the parent offers space, regardless of the node's own direction.
-- Flex-grow distributes remaining main-axis space after intrinsic sizing.
-- **Flex-shrink**: when children exceed available main-axis space, proportional shrinking occurs.
-  Each child shrinks by `(child_flex_shrink / total_shrink) * overflow`, respecting `min_width`/`min_height` constraints.
-  Default `flex_shrink` is `1.0` (CSS spec default).
-- **The parent determines child size, not the child's own direction** — a row-direction node
-  inside a column parent still stretches its width to fill the column.
+- **Dual sizing context**: `avail_w/h` = flex-allocated space (auto-width fallback), `resolve_w/h` = parent's content dimensions (percentage resolution). This prevents percentage values from double-resolving through flex allocation.
+- **Cross-axis stretch**: `Align` defaults to `Stretch` (CSS spec). Children without explicit cross-dimension stretch to `child_avail_w/h`. Non-stretch alignments (`Start`/`Center`/`End`) let the child size to content (0.0 for height, `intrinsic_width` for width). Stretch is gated on `child_align_self.unwrap_or(parent.align)`.
+- **final_h respects avail_h**: When a node has no explicit height, its final height is `max(content + padding + border, avail_h)`. This propagates cross-axis stretch from the parent through `layout_node` without needing an extra parameter.
+- **Main-axis intrinsic sizing**: `Tree::intrinsic_width()` recursively measures text-extent / child-sum / child-max
+- **Flex-grow**: distributes remaining main-axis space after intrinsic sizing
+- **Flex-shrink**: proportional shrinking only on _definite_ main axes (main_budget > 0), respecting min constraints
+- **Dimension::Calc resolution**: `calc(100% - 20px)` resolved during layout with actual parent sizes
+- The parent determines child size, not the child's own direction
+
+### Visual Comparison Testing
+
+Pixel-accurate comparison against Chrome headless reference:
+
+- **Chrome headless**: `google-chrome-stable --headless=new --screenshot=<path> --window-size=800,600 --force-device-scale-factor=1 <url>` → exact 800×600 PNG, zero decorations
+- **Engine capture**: `maim -u -i <wid>` → window content; may include CSD title bar (37px on current system), crop with `convert -crop 800x600+0+37`
+- **Known text offset**: Engine uses `chars × font_size × 0.55` width and `lines × font_size × line_height` height estimation. This produces ~4px vertical cumulative offset vs real font metrics. 88% exact pixel match is the current baseline.
+- **Film-strip transition testing**: Freeze animations at N time steps using `animation-play-state: paused` + negative `animation-delay` in CSS, then screenshot all frames in one image. No JS/Puppeteer needed.
 
 ### Hit Test & Event Dispatch
 
-- `Tree::hit_test(pos)` — recursive depth-first, returns deepest node whose `rect.contains(pos)`.
-  Children iterated in reverse for z-order (last child = on top).
-- `Tree::click(pos)` — calls `hit_test`, then walks parents upward until finding a tagged node (returns `&str`).
-- `Tree::tag_at(pos)` — same as `click` but returns owned `String`.
-- `Tree::dispatch(event) → DispatchResult` — full Capture → Target → Bubble propagation:
-  1. Hit-tests to find target (pointer events) or uses focused node (keyboard)
-  2. Builds ancestor path root → target via `ancestor_path`
-  3. Collects tags along path via `collect_tags`
-  4. Walks capture phase (root → target-1), target phase, bubble phase (target-1 → root)
-  5. Returns `DispatchResult { tags, stopped, default_prevented }`
-- `Tree::scroll(pos, delta)` — walks parents to find nearest `Overflow::Scroll` container.
-- Both rely on layout rects being correct — if a node has a 0-width rect, it's invisible to clicks.
+- `Tree::hit_test(pos)` — depth-first, reverse child order for z-order
+- `Tree::click(pos)` — hit_test + walk parents to find tagged node
+- `Tree::dispatch(event)` — full Capture → Target → Bubble propagation
+- `Tree::scroll(pos, delta)` — nearest `Overflow::Scroll` container
+- `Tree::replay(&scenario)` — scripted interaction replay, zero OS input (see `event.skill.md`)
 
-### Style
+### Headless GPU & Scenario Runner
 
-Builder pattern with chaining: `Style::default().w(200.0).h(100.0).bg(Color::WHITE)`.
-Every field is `pub` for direct mutation when builders are excessive.
-CSS classes return fully resolved `Style` values that can be further customised via builder
-or by mutating fields directly (e.g. `s("btn").color(fg)` or `btn_s.background = bg`).
+- `Gpu::init_headless(w, h)` — no window needed, capture-only GPU renderer
+- `Gpu::capture(&mut self, &RenderList) → (w, h, rgba)` — offscreen render to RGBA bytes
+- `Gpu::capture_png(&mut self, &RenderList, path)` — capture + save as PNG (BGRA→RGBA auto-converted)
+- `Gpu::prepare()` + `Gpu::draw()` — shared helpers, `paint()` and `capture()` are thin wrappers
+- Binary `anv-scenario` — parses HTML+CSS, replays a scripted Scenario, saves PNGs at capture points
 
 ## Dependencies
 
 - `any-compute-core` — `layout::{Rect, Point, Size}`, `render::{Color, Primitive, RenderList, Border}`,
-  `interaction::{InputEvent, EventContext, DispatchResult, Phase}`
+  `animation::Easing`, `interaction::{InputEvent, EventContext, DispatchResult, Phase}`
 - No external deps for the lib — all parsing is hand-rolled
-- No feature flags — GPU rendering moved to `crates/bench/`
+- No feature flags

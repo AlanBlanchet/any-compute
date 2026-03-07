@@ -45,6 +45,16 @@ applyTo: "crates/core/src/interaction.rs,crates/dom/src/tree.rs"
 - `Tree::click(pos)` — walk parents from hit node to find deepest tagged node (legacy helper).
 - `Tree::tag_at(pos)` — same as `click` but returns `String` (owned).
 
+## Scenario Replay
+
+- `Scenario` — builder for scripted interactions, lives in `interaction.rs` (core crate, zero deps).
+- `Action` enum: `Click(Point)`, `Hover(Point)`, `Scroll{pos,delta}`, `Dispatch(InputEvent)`, `AssertTag{pos,expected}`, `Capture`.
+- `StepResult` — one per action: `dispatch`, `assertion`, `capture` flag.
+- `Tree::replay(&mut self, &Scenario) → Vec<StepResult>` — replays all actions, purely coordinate-based, no OS input.
+- Click dispatches pointer-down + pointer-up pair; Hover dispatches pointer-move.
+- `Capture` marks frames for GPU screenshot — the host inspects `StepResult::capture` to trigger `Gpu::capture()`.
+- Works headlessly in CI — no window, no mouse, no keyboard interaction with the OS.
+
 ## No framework deps
 
 - Core event model has zero UI framework dependencies — dioxus/DOM adapters live in `crates/rsx/`.

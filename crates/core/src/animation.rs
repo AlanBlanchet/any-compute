@@ -23,6 +23,21 @@ pub enum Easing {
 }
 
 impl Easing {
+    /// Parse a CSS easing function name.
+    ///
+    /// `"ease"` maps to `EaseInOut` (the CSS `ease` keyword is a cubic-bezier shortcut).
+    /// Unknown values default to `EaseInOut` (the CSS default for `transition-timing-function`).
+    pub fn from_css(val: &str) -> Self {
+        match val.trim() {
+            "linear" => Self::Linear,
+            "ease-in" => Self::EaseIn,
+            "ease-out" => Self::EaseOut,
+            "ease-in-out" | "ease" => Self::EaseInOut,
+            v if v.starts_with("cubic-bezier(") => Self::CubicBezier,
+            _ => Self::EaseInOut,
+        }
+    }
+
     /// Evaluate the easing curve at time `t` ∈ [0, 1].
     pub fn apply(self, t: f64) -> f64 {
         let t = t.clamp(0.0, 1.0);

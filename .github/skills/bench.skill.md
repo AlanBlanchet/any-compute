@@ -22,12 +22,15 @@ cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
 
 ## Crate Structure
 
-| File         | Purpose                                                                    |
-| ------------ | -------------------------------------------------------------------------- |
-| `lib.rs`     | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
-| `window.rs`  | GPU dashboard binary (wgpu + glyphon + winit), feature-gated `window`      |
-| `bench.css`  | Catppuccin Mocha theme — single source of truth for all styling            |
-| `Cargo.toml` | `window` feature (default) gates GPU deps; lib has zero optional deps      |
+| File                | Purpose                                                                    |
+| ------------------- | -------------------------------------------------------------------------- |
+| `lib.rs`            | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
+| `window.rs`         | GPU dashboard binary (wgpu + glyphon + winit), feature-gated `window`      |
+| `gpu.rs`            | Reusable GPU renderer — `Gpu::init` (windowed) + `Gpu::init_headless`      |
+| `bin/visual_cmp.rs` | Visual CSS comparison against Chrome screenshots                           |
+| `bin/scenario.rs`   | Scenario runner — replay scripted interactions + capture headless PNGs     |
+| `bench.css`         | Catppuccin Mocha theme — single source of truth for all styling            |
+| `Cargo.toml`        | `window` feature (default) gates GPU deps; lib has zero optional deps      |
 
 ## Shared Constants (exported from `lib.rs`)
 
@@ -38,9 +41,9 @@ cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
 | `VERSION`       | `"vX.Y.Z"` from `Cargo.toml`                        |
 | `TAB_LABELS`    | `["Hardware", "Benchmarks", "Live Showdown"]`       |
 | `SHEET`         | `LazyLock<StyleSheet>` — parsed once, O(1) lookups  |
-| `s(cls)`/`sm()` | Shorthand class resolution via `SHEET`               |
-| `kv_row()`      | Key-value row helper (label 72px + value)            |
-| `build_shell()` | Common sidebar + tab shell (returns content NodeId)  |
+| `s(cls)`/`sm()` | Shorthand class resolution via `SHEET`              |
+| `kv_row()`      | Key-value row helper (label 72px + value)           |
+| `build_shell()` | Common sidebar + tab shell (returns content NodeId) |
 
 `kv_row` and `build_shell` use the global `SHEET` directly — no `&StyleSheet` parameter.
 `window.rs` imports `SHEET` from `lib.rs` and defines local `s()`/`sm()` wrappers.
@@ -87,25 +90,38 @@ Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference
 - `InstanceData`: bounds, fill color, params (corner_radius, border_width), border_color — 64 bytes/instance
 - Premultiplied alpha blending (`PREMULTIPLIED_ALPHA_BLENDING` blend state)
 - Border rendering via inner SDF: distance to outer edge < border_width → border color, else fill
+- `Gpu::init(window)` — windowed mode with surface; `Gpu::init_headless(w, h)` — no window needed
+- `prepare()` + `draw()` — shared internal helpers for instance upload + render pass
+- `paint()` — renders to window surface + present; no-op in headless
+- `capture()` — renders to offscreen texture, readback to CPU RGBA bytes
+- `capture_png()` — capture + BGRA→RGBA swap + save as PNG
+
+### Scenario Runner (`anv-scenario`)
+
+- Binary (`cargo run --bin anv-scenario --features window`) — headless interaction replay + screenshots
+- Parses HTML+CSS → Tree, builds a `Scenario` (click/hover/scroll/assert/capture), replays via `Tree::replay()`
+- At each `Capture` step, re-layouts + paints + calls `Gpu::capture_png()` → saves to `out/scenario/`
+- `AssertTag` steps verify hit-testing at coordinates — non-zero exit code on failure
+- Zero OS interaction — no mouse, no keyboard, no window focus
 
 ### Event System (V8-like)
 
 All winit events are converted to `InputEvent` and dispatched through `Tree::dispatch()`:
 
-| winit Event          | InputEvent        | Action                                    |
-| -------------------- | ----------------- | ----------------------------------------- |
-| MouseInput Pressed   | PointerDown       | Set focus, track active tag               |
-| MouseInput Released  | PointerUp         | Fire click if same tag as press (web model)|
-| CursorMoved          | PointerMove       | Hover tracking → transition fade in/out   |
-| CursorLeft           | —                 | Clear hover                               |
-| MouseWheel           | Scroll            | Smooth scroll + dispatch                  |
-| KeyboardInput        | KeyDown           | Tab/Arrow navigation, Enter/Space activate|
-| Focused(false)       | —                 | Clear hover                               |
-| ModifiersChanged     | —                 | Track modifier state                      |
+| winit Event         | InputEvent  | Action                                      |
+| ------------------- | ----------- | ------------------------------------------- |
+| MouseInput Pressed  | PointerDown | Set focus, track active tag                 |
+| MouseInput Released | PointerUp   | Fire click if same tag as press (web model) |
+| CursorMoved         | PointerMove | Hover tracking → transition fade in/out     |
+| CursorLeft          | —           | Clear hover                                 |
+| MouseWheel          | Scroll      | Smooth scroll + dispatch                    |
+| KeyboardInput       | KeyDown     | Tab/Arrow navigation, Enter/Space activate  |
+| Focused(false)      | —           | Clear hover                                 |
+| ModifiersChanged    | —           | Track modifier state                        |
 
 - `HoverState` tracks hovered tag; emits `HoverDelta` → starts 120ms EaseOut fade transitions
 - `FocusState` tracks focused tag for keyboard activation (Enter/Space)
-- Pointer click only fires on release *if* released on the same tag as pressed (web behavior)
+- Pointer click only fires on release _if_ released on the same tag as pressed (web behavior)
 - `winit_key_to_string()` / `winit_button()` / `winit_modifiers()` convert winit types → our types
 
 ### Transitions & Animations

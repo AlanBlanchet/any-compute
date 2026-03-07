@@ -6,6 +6,9 @@
 //! arena DOM and compares against equivalent work on a naive `Box<Node>` tree
 //! (the kind of heap-per-node structure that real browser DOMs use).
 
+#[cfg(feature = "window")]
+pub mod gpu;
+
 use std::time::Instant;
 
 use any_compute_core::layout::Size;

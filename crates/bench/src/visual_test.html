@@ -1,0 +1,285 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser CSS Reference</title>
+    <style>
+      /* Reset — match our engine defaults (box-sizing: border-box, flex column) */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      /* Remove all body chrome — the root IS the viewport */
+      html,
+      body {
+        width: 800px;
+        height: 600px;
+        overflow: hidden;
+        background: #1e1e2e;
+      }
+
+      /* Root container — dark Catppuccin BG, flex row */
+      .root {
+        display: flex;
+        flex-direction: row;
+        width: 800px;
+        height: 600px;
+        background: #1e1e2e;
+        font-family: sans-serif;
+      }
+
+      /* ── Sidebar ─────────────────────────────────────────────────────── */
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        width: 200px;
+        min-width: 200px;
+        background: #181825;
+        padding: 16px;
+        gap: 10px;
+      }
+      .brand-row {
+        display: flex;
+        flex-direction: row;
+        gap: 10px;
+        align-items: center;
+      }
+      .brand-icon {
+        display: flex;
+        width: 28px;
+        height: 28px;
+        min-width: 28px;
+        min-height: 28px;
+        background: #89b4fa;
+        border-radius: 6px;
+      }
+      .brand-label {
+        display: flex;
+        font-size: 14px;
+        color: #cdd2f4;
+      }
+      .nav-item {
+        display: flex;
+        height: 36px;
+        min-height: 36px;
+        border-radius: 8px;
+        padding: 0 12px;
+        align-items: center;
+        color: #9399b2;
+        font-size: 13px;
+      }
+      .nav-active {
+        background: #89b4fa;
+        color: #181825;
+      }
+      .nav-inactive {
+        background: transparent;
+        color: #9399b2;
+      }
+
+      /* ── Main area ───────────────────────────────────────────────────── */
+      .main {
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+      }
+      .header {
+        display: flex;
+        flex-direction: row;
+        height: 48px;
+        min-height: 48px;
+        background: #313244;
+        padding: 0 20px;
+        align-items: center;
+        font-size: 16px;
+        color: #cdd2f4;
+      }
+      .content {
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        padding: 20px;
+        gap: 16px;
+      }
+
+      /* ── Cards row ───────────────────────────────────────────────────── */
+      .cards-row {
+        display: flex;
+        flex-direction: row;
+        gap: 12px;
+      }
+      .card {
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        background: #313244;
+        border-radius: 12px;
+        padding: 16px;
+        gap: 8px;
+      }
+      .card-title {
+        display: flex;
+        font-size: 14px;
+        color: #89b4fa;
+      }
+      .card-body {
+        display: flex;
+        font-size: 12px;
+        color: #cdd2f4;
+      }
+
+      /* ── Border test ─────────────────────────────────────────────────── */
+      .border-box {
+        display: flex;
+        width: 120px;
+        height: 60px;
+        background: #45475a;
+        border: 2px solid #89b4fa;
+        border-radius: 8px;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: #cdd2f4;
+      }
+
+      /* ── Nested flex test ────────────────────────────────────────────── */
+      .nested-row {
+        display: flex;
+        flex-direction: row;
+        gap: 8px;
+      }
+      .color-swatch {
+        display: flex;
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+      }
+      .swatch-green {
+        background: #a6e3a1;
+      }
+      .swatch-blue {
+        background: #89b4fa;
+      }
+      .swatch-red {
+        background: #f38ba8;
+      }
+      .swatch-yellow {
+        background: #f9e2af;
+      }
+      .swatch-mauve {
+        background: #cba6f7;
+      }
+
+      /* ── Bar indicators ──────────────────────────────────────────────── */
+      .bar-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .bar-track {
+        display: flex;
+        height: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .bar-fill-green {
+        display: flex;
+        height: 8px;
+        width: 70%;
+        background: #a6e3a1;
+        border-radius: 4px;
+      }
+      .bar-fill-blue {
+        display: flex;
+        height: 8px;
+        width: 45%;
+        background: #89b4fa;
+        border-radius: 4px;
+      }
+      .bar-fill-red {
+        display: flex;
+        height: 8px;
+        width: 85%;
+        background: #f38ba8;
+        border-radius: 4px;
+      }
+
+      /* ── Opacity test ────────────────────────────────────────────────── */
+      .opacity-box {
+        display: flex;
+        width: 60px;
+        height: 40px;
+        background: #89b4fa;
+        border-radius: 6px;
+      }
+      .opacity-50 {
+        opacity: 0.5;
+      }
+      .opacity-25 {
+        opacity: 0.25;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="root">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="brand-row">
+          <div class="brand-icon"></div>
+          <span class="brand-label">any-compute</span>
+        </div>
+        <div class="nav-item nav-active">Dashboard</div>
+        <div class="nav-item nav-inactive">Settings</div>
+        <div class="nav-item nav-inactive">About</div>
+      </div>
+
+      <!-- Main area -->
+      <div class="main">
+        <div class="header">Dashboard</div>
+        <div class="content">
+          <!-- Cards -->
+          <div class="cards-row">
+            <div class="card">
+              <span class="card-title">Processor</span>
+              <span class="card-body">8 cores / 16 threads</span>
+            </div>
+            <div class="card">
+              <span class="card-title">Memory</span>
+              <span class="card-body">32 GB available</span>
+            </div>
+            <div class="card">
+              <span class="card-title">GPU</span>
+              <span class="card-body">Vulkan backend</span>
+            </div>
+          </div>
+
+          <!-- Color swatches + border box -->
+          <div class="nested-row">
+            <div class="color-swatch swatch-green"></div>
+            <div class="color-swatch swatch-blue"></div>
+            <div class="color-swatch swatch-red"></div>
+            <div class="color-swatch swatch-yellow"></div>
+            <div class="color-swatch swatch-mauve"></div>
+            <div class="border-box">bordered</div>
+          </div>
+
+          <!-- Bar indicators -->
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill-green"></div></div>
+            <div class="bar-track"><div class="bar-fill-blue"></div></div>
+            <div class="bar-track"><div class="bar-fill-red"></div></div>
+          </div>
+
+          <!-- Opacity test -->
+          <div class="nested-row">
+            <div class="opacity-box"></div>
+            <div class="opacity-box opacity-50"></div>
+            <div class="opacity-box opacity-25"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

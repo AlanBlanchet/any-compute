@@ -211,6 +211,149 @@ impl FocusState {
     }
 }
 
+// ── Scenario — scriptable interaction replay ────────────────────────────────
+
+/// A single scripted interaction step.
+///
+/// Applied to a `Tree` via `Scenario::replay()` — no real mouse, no window,
+/// no interference with the host desktop.
+#[derive(Debug, Clone)]
+pub enum Action {
+    /// Simulate a full click (pointer-down + pointer-up) at the given point.
+    Click(Point),
+    /// Simulate a hover (pointer-move) to the given point.
+    Hover(Point),
+    /// Simulate a scroll at the given point with the given delta.
+    Scroll { pos: Point, delta: Point },
+    /// Dispatch an arbitrary `InputEvent`.
+    Dispatch(InputEvent),
+    /// Assert that `tag_at(pos)` equals `expected` (for self-validating scripts).
+    AssertTag { pos: Point, expected: String },
+    /// Mark this step for screenshot capture by the host.
+    /// The host decides *how* to capture (headless GPU, pixel buffer, etc.).
+    Capture,
+}
+
+/// Result of replaying one [`Action`] against a tree.
+#[derive(Debug, Clone)]
+pub struct StepResult {
+    /// Which action was executed (index in the scenario).
+    pub index: usize,
+    /// The action that was executed.
+    pub action: Action,
+    /// Dispatch result for click/hover/dispatch actions; `None` for assert/capture.
+    pub dispatch: Option<DispatchResult>,
+    /// For `AssertTag`: `Some(true)` if matched, `Some(false)` if not, `None` otherwise.
+    pub assertion: Option<bool>,
+    /// True when this step is a `Capture` — the host should take a screenshot now.
+    pub capture: bool,
+}
+
+impl StepResult {
+    /// Build a result with only dispatch info (click, hover, dispatch actions).
+    pub fn dispatched(index: usize, action: Action, dispatch: DispatchResult) -> Self {
+        Self {
+            index,
+            action,
+            dispatch: Some(dispatch),
+            assertion: None,
+            capture: false,
+        }
+    }
+
+    /// Build a result with no output (scroll, ignored actions).
+    pub fn silent(index: usize, action: Action) -> Self {
+        Self {
+            index,
+            action,
+            dispatch: None,
+            assertion: None,
+            capture: false,
+        }
+    }
+
+    /// Build an assertion result.
+    pub fn asserted(index: usize, action: Action, pass: bool) -> Self {
+        Self {
+            index,
+            action,
+            dispatch: None,
+            assertion: Some(pass),
+            capture: false,
+        }
+    }
+
+    /// Build a capture marker.
+    pub fn captured(index: usize) -> Self {
+        Self {
+            index,
+            action: Action::Capture,
+            dispatch: None,
+            assertion: None,
+            capture: true,
+        }
+    }
+}
+
+/// Ordered sequence of [`Action`]s to replay against a tree.
+///
+/// ```ignore
+/// let scenario = Scenario::new()
+///     .click(Point::new(100.0, 50.0))
+///     .capture()
+///     .hover(Point::new(300.0, 200.0))
+///     .assert_tag(Point::new(300.0, 200.0), "card-1")
+///     .capture();
+/// ```
+///
+/// Call `scenario.replay(&tree)` to execute — returns one `StepResult` per action.
+/// The host inspects `StepResult::capture` to decide when to screenshot.
+#[derive(Debug, Clone, Default)]
+pub struct Scenario {
+    pub actions: Vec<Action>,
+}
+
+impl Scenario {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(mut self, action: Action) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn click(self, pos: impl Into<Point>) -> Self {
+        self.push(Action::Click(pos.into()))
+    }
+
+    pub fn hover(self, pos: impl Into<Point>) -> Self {
+        self.push(Action::Hover(pos.into()))
+    }
+
+    pub fn scroll(self, pos: impl Into<Point>, delta: impl Into<Point>) -> Self {
+        self.push(Action::Scroll {
+            pos: pos.into(),
+            delta: delta.into(),
+        })
+    }
+
+    pub fn dispatch(self, event: InputEvent) -> Self {
+        self.push(Action::Dispatch(event))
+    }
+
+    pub fn assert_tag(self, pos: impl Into<Point>, expected: impl Into<String>) -> Self {
+        self.push(Action::AssertTag {
+            pos: pos.into(),
+            expected: expected.into(),
+        })
+    }
+
+    pub fn capture(self) -> Self {
+        self.push(Action::Capture)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

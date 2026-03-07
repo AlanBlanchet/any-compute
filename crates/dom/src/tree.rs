@@ -4,7 +4,9 @@
 //! cache-friendly, and trivially serialisable.  Node IDs are indices.
 
 use any_compute_core::hints::Hints;
-use any_compute_core::interaction::{DispatchResult, EventContext, InputEvent, Phase};
+use any_compute_core::interaction::{
+    Action, Button, DispatchResult, EventContext, InputEvent, Phase, Scenario, StepResult,
+};
 use any_compute_core::layout::{Point, Rect, Size};
 use any_compute_core::render::{Border, Color, Primitive, RenderList};
 
@@ -134,10 +136,27 @@ impl Tree {
     /// Solve layout for the whole tree, given the viewport size.
     pub fn layout(&mut self, viewport: Size) {
         let root = self.root;
-        self.layout_node(root, viewport.w, viewport.h, 0.0, 0.0);
+        self.layout_node(
+            root, viewport.w, viewport.h, viewport.w, viewport.h, 0.0, 0.0,
+        );
     }
 
-    fn layout_node(&mut self, id: NodeId, avail_w: f64, avail_h: f64, ox: f64, oy: f64) {
+    /// Layout a single node.
+    ///
+    /// * `avail_w/h` — allocated space from flex distribution (used for auto-width
+    ///   fallback and as an upper bound).
+    /// * `resolve_w/h` — parent's content dimensions (used for resolving
+    ///   percentage / calc dimensions so they aren't double-resolved).
+    fn layout_node(
+        &mut self,
+        id: NodeId,
+        avail_w: f64,
+        avail_h: f64,
+        resolve_w: f64,
+        resolve_h: f64,
+        ox: f64,
+        oy: f64,
+    ) {
         // Skip hidden nodes entirely.
         let style = self.slot(id).style.clone();
         if style.is_hidden() {
@@ -155,8 +174,10 @@ impl Tree {
 
         // In border-box mode, width/height *include* padding + border.
         // Content area = resolved size − padding − border.
-        let outer_w = style.width.resolve(avail_w).unwrap_or(avail_w) + margin_h;
-        let outer_h_hint = style.height.resolve(avail_h);
+        // Percentages resolve against the parent's content area (resolve_w/h)
+        // so they are not double-resolved through the flex allocation.
+        let outer_w = style.width.resolve(resolve_w).unwrap_or(avail_w) + margin_h;
+        let outer_h_hint = style.height.resolve(resolve_h);
 
         let content_w = match style.box_sizing {
             BoxSizing::BorderBox => (outer_w - margin_h - pad_h - bdr_h).max(0.0),
@@ -224,7 +245,7 @@ impl Tree {
         for &cid in &flow_children {
             // Extract resolved values first, then drop the borrow so
             // intrinsic_width can read the arena without conflict.
-            let (explicit_w, explicit_h, margin_main) = {
+            let (explicit_w, explicit_h, margin_main, child_align_self) = {
                 let cs = &self.slot(cid).style;
                 (
                     cs.width.resolve(child_avail_w),
@@ -234,15 +255,25 @@ impl Tree {
                     } else {
                         cs.margin.vertical()
                     },
+                    cs.align_self,
                 )
             };
+            let cross_align = child_align_self.unwrap_or(style.align);
             let cw = if is_row {
                 explicit_w.unwrap_or_else(|| self.intrinsic_width(cid))
             } else {
-                explicit_w.unwrap_or(child_avail_w)
+                match (explicit_w, cross_align) {
+                    (Some(w), _) => w,
+                    (None, Align::Stretch) => child_avail_w,
+                    (None, _) => self.intrinsic_width(cid),
+                }
             };
             let ch = if is_row {
-                explicit_h.unwrap_or(child_avail_h)
+                match (explicit_h, cross_align) {
+                    (Some(h), _) => h,
+                    (None, Align::Stretch) => child_avail_h,
+                    (None, _) => 0.0,
+                }
             } else {
                 explicit_h.unwrap_or(0.0)
             };
@@ -268,10 +299,11 @@ impl Tree {
             }
         }
 
-        // Flex-shrink: when children overflow main axis, shrink proportionally.
-        // Without this, children would extend beyond the container and overlap.
+        // Flex-shrink: when children overflow a *definite* main axis, shrink
+        // proportionally.  If main_budget is zero the container has auto/
+        // indefinite size — it will wrap to content, so shrink must not fire.
         let overflow = used_main - main_budget;
-        if overflow > 0.0 {
+        if overflow > 0.0 && main_budget > 0.0 {
             let total_shrink: f64 = child_sizes
                 .iter()
                 .map(|(cid, _, _)| self.slot(*cid).style.flex_shrink)
@@ -368,7 +400,7 @@ impl Tree {
                 (aligned_x, cy)
             };
 
-            self.layout_node(*cid, *cw, *ch, fx, fy);
+            self.layout_node(*cid, *cw, *ch, child_avail_w, child_avail_h, fx, fy);
 
             let child_rect = self.slot(*cid).rect;
             if is_row {
@@ -390,7 +422,7 @@ impl Tree {
             let ay = inner_y + cs.top.resolve(child_avail_h).unwrap_or(0.0);
             let aw = cs.width.resolve(content_w).unwrap_or(content_w);
             let ah = cs.height.resolve(child_avail_h).unwrap_or(0.0);
-            self.layout_node(cid, aw, ah, ax, ay);
+            self.layout_node(cid, aw, ah, content_w, child_avail_h, ax, ay);
         }
 
         // Compute own height from children if auto.
@@ -403,20 +435,16 @@ impl Tree {
         };
         let final_w = style
             .width
-            .resolve(avail_w)
+            .resolve(resolve_w)
             .unwrap_or((avail_w - margin_h).max(0.0));
         let final_h = outer_h_hint.unwrap_or_else(|| {
             let content = intrinsic_h.max(if is_row { max_cross } else { children_h });
-            let v_insets = match style.box_sizing {
-                BoxSizing::BorderBox => 0.0,
-                BoxSizing::ContentBox => pad_v + bdr_v,
-            };
-            content + pad_v + bdr_v + v_insets - v_insets // simplifies: content + pad_v + bdr_v
+            (content + pad_v + bdr_v).max(avail_h)
         });
 
         // Apply min/max constraints.
-        let final_w = Dimension::clamp(final_w, style.min_width, style.max_width, avail_w);
-        let final_h = Dimension::clamp(final_h, style.min_height, style.max_height, avail_h);
+        let final_w = Dimension::clamp(final_w, style.min_width, style.max_width, resolve_w);
+        let final_h = Dimension::clamp(final_h, style.min_height, style.max_height, resolve_h);
 
         self.slot_mut(id).rect = Rect::new(ox, oy, final_w, final_h);
     }
@@ -726,6 +754,61 @@ impl Tree {
             }
         }
     }
+
+    // ── Scenario replay ─────────────────────────────────
+
+    /// Replay a [`Scenario`] against this tree with zero OS interaction.
+    ///
+    /// Each action is executed in order; for `Click` a full pointer-down →
+    /// pointer-up pair is dispatched.  Returns one [`StepResult`] per action.
+    ///
+    /// The host inspects `StepResult::capture` to know when to screenshot
+    /// (e.g. via headless GPU `Gpu::capture()`).
+    pub fn replay(&mut self, scenario: &Scenario) -> Vec<StepResult> {
+        scenario
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, action)| self.replay_step(action, i))
+            .collect()
+    }
+
+    /// Execute a single [`Action`] against this tree and return its result.
+    ///
+    /// This is the primitive that `replay()` is built on.  Use it directly
+    /// when you need to interleave layout/paint/capture between steps.
+    pub fn replay_step(&mut self, action: &Action, index: usize) -> StepResult {
+        match action {
+            Action::Click(pos) => {
+                self.dispatch(InputEvent::PointerDown {
+                    pos: *pos,
+                    button: Button::Primary,
+                });
+                let d = self.dispatch(InputEvent::PointerUp {
+                    pos: *pos,
+                    button: Button::Primary,
+                });
+                StepResult::dispatched(index, action.clone(), d)
+            }
+            Action::Hover(pos) => {
+                let d = self.dispatch(InputEvent::PointerMove { pos: *pos });
+                StepResult::dispatched(index, action.clone(), d)
+            }
+            Action::Scroll { pos, delta } => {
+                self.scroll(*pos, *delta);
+                StepResult::silent(index, action.clone())
+            }
+            Action::Dispatch(event) => {
+                let d = self.dispatch(event.clone());
+                StepResult::dispatched(index, action.clone(), d)
+            }
+            Action::AssertTag { pos, expected } => {
+                let pass = self.tag_at(*pos).as_deref() == Some(expected.as_str());
+                StepResult::asserted(index, action.clone(), pass)
+            }
+            Action::Capture => StepResult::captured(index),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -906,6 +989,282 @@ mod tests {
         let inner = tree.add_box(c, Style::default().w(100.0).h(50.0));
         tree.tag(inner, "inner-btn");
         tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(tree.tag_at(Point::new(50.0, 25.0)).as_deref(), Some("inner-btn"));
+        assert_eq!(
+            tree.tag_at(Point::new(50.0, 25.0)).as_deref(),
+            Some("inner-btn")
+        );
+    }
+
+    #[test]
+    fn row_with_fixed_and_grow_respects_min_width() {
+        // Sidebar (200px, min-width 200px) + main (flex-grow 1) in an 800px row.
+        let mut root_style = Style::default().w(800.0).h(600.0);
+        root_style.direction = Direction::Row;
+        let mut t = Tree::new(root_style);
+        let root = t.root;
+        let mut sb_style = Style::default().w(200.0);
+        sb_style.min_width = Dimension::Px(200.0);
+        let sidebar = t.add_box(root, sb_style);
+        let main = t.add_box(root, Style::default().grow(1.0));
+        // Give main a child to create intrinsic width.
+        t.add_text(main, "Dashboard", Style::default().font(16.0));
+        t.layout(Size::new(800.0, 600.0));
+        let sb_w = t.slot(sidebar).rect.size.w;
+        let mn_w = t.slot(main).rect.size.w;
+        assert!(sb_w >= 200.0, "sidebar should be >= 200px but was {sb_w}");
+        assert!(
+            (sb_w + mn_w - 800.0).abs() < 1.0,
+            "sidebar ({sb_w}) + main ({mn_w}) should sum to ~800"
+        );
+    }
+
+    /// End-to-end layout of the visual_cmp dashboard through parse_with_css.
+    #[test]
+    fn visual_cmp_layout_dimensions() {
+        use crate::css::StyleSheet;
+        use crate::parse::parse_with_css;
+
+        let css = r#"
+* { box-sizing: border-box; }
+.root { flex-direction: row; width: 800px; height: 600px; background: #1e1e2e; }
+.sidebar { width: 200px; min-width: 200px; background: #181825; padding: 16px; gap: 10px; }
+.main { flex-grow: 1; }
+.header { flex-direction: row; height: 48px; min-height: 48px; background: #313244;
+          padding: 0px 20px; align-items: center; font-size: 16px; color: #cdd2f4; }
+.content { flex-grow: 1; padding: 20px; gap: 16px; }
+.cards-row { flex-direction: row; gap: 12px; }
+.card { flex-grow: 1; background: #313244; border-radius: 12px; padding: 16px; gap: 8px; }
+.card-title { font-size: 14px; color: #89b4fa; }
+.card-body { font-size: 12px; color: #cdd2f4; }
+.bar-row { gap: 6px; }
+.bar-track { height: 8px; background: #333333; border-radius: 4px; }
+.bar-fill-green { height: 8px; width: 70%; background: #a6e3a1; border-radius: 4px; }
+.bar-fill-blue  { height: 8px; width: 45%; background: #89b4fa; border-radius: 4px; }
+.bar-fill-red   { height: 8px; width: 85%; background: #f38ba8; border-radius: 4px; }
+.color-swatch { width: 40px; height: 40px; border-radius: 6px; }
+.nested-row { flex-direction: row; gap: 8px; }
+.opacity-box { width: 60px; height: 40px; background: #89b4fa; border-radius: 6px; }
+"#;
+        let html = r#"
+<div class="root">
+  <div class="sidebar" tag="sidebar">
+    <span>Sidebar</span>
+  </div>
+  <div class="main" tag="main">
+    <div class="header" tag="header">Dashboard</div>
+    <div class="content" tag="content">
+      <div class="cards-row" tag="cards-row">
+        <div class="card" tag="card1"><span class="card-title">Title</span><span class="card-body">Body text</span></div>
+        <div class="card"><span class="card-title">Title</span><span class="card-body">Body text</span></div>
+        <div class="card"><span class="card-title">Title</span><span class="card-body">Body text</span></div>
+      </div>
+      <div class="bar-row" tag="bar-row">
+        <div class="bar-track" tag="track1"><div class="bar-fill-green" tag="fill-green"></div></div>
+        <div class="bar-track"><div class="bar-fill-blue" tag="fill-blue"></div></div>
+        <div class="bar-track"><div class="bar-fill-red" tag="fill-red"></div></div>
+      </div>
+      <div class="nested-row">
+        <div class="color-swatch" tag="swatch"></div>
+        <div class="color-swatch"></div>
+        <div class="color-swatch"></div>
+      </div>
+      <div class="nested-row">
+        <div class="opacity-box" tag="obox"></div>
+        <div class="opacity-box"></div>
+        <div class="opacity-box"></div>
+      </div>
+    </div>
+  </div>
+</div>
+"#;
+        let sheet = StyleSheet::parse(css);
+        let mut tree = parse_with_css(html, &sheet);
+        tree.layout(Size::new(800.0, 600.0));
+
+        // Walk the tree and print all node rects for debugging.
+        for (i, slot) in tree.arena.iter().enumerate() {
+            let tag = slot.tag.as_deref().unwrap_or("");
+            let r = &slot.rect;
+            let kind = match &slot.kind {
+                NodeKind::Box => "box",
+                NodeKind::Text(s) => s.as_str(),
+                NodeKind::Bar { .. } => "bar",
+            };
+            println!(
+                "[{i:2}] {tag:12} {kind:20} x={:6.1} y={:6.1} w={:6.1} h={:6.1}",
+                r.origin.x, r.origin.y, r.size.w, r.size.h,
+            );
+        }
+
+        let by_tag = |t: &str| -> &Slot {
+            tree.arena
+                .iter()
+                .find(|s| s.tag.as_deref() == Some(t))
+                .unwrap_or_else(|| panic!("missing tag '{t}'"))
+        };
+
+        let sidebar = by_tag("sidebar");
+        let header = by_tag("header");
+        let content = by_tag("content");
+        let swatch = by_tag("swatch");
+        let obox = by_tag("obox");
+        let track = by_tag("track1");
+        let fill_green = by_tag("fill-green");
+        let fill_blue = by_tag("fill-blue");
+        let fill_red = by_tag("fill-red");
+        let card = by_tag("card1");
+
+        println!("\n=== Key dimensions ===");
+        println!("sidebar: w={:.1}", sidebar.rect.size.w);
+        println!("header:  h={:.1}", header.rect.size.h);
+        println!(
+            "content: w={:.1} h={:.1}",
+            content.rect.size.w, content.rect.size.h
+        );
+        println!(
+            "swatch:  w={:.1} h={:.1}",
+            swatch.rect.size.w, swatch.rect.size.h
+        );
+        println!(
+            "opacity: w={:.1} h={:.1}",
+            obox.rect.size.w, obox.rect.size.h
+        );
+        println!(
+            "card1:   w={:.1} h={:.1}",
+            card.rect.size.w, card.rect.size.h
+        );
+        println!(
+            "bar-track w={:.1}, fills: green={:.1} ({:.1}%) blue={:.1} ({:.1}%) red={:.1} ({:.1}%)",
+            track.rect.size.w,
+            fill_green.rect.size.w,
+            fill_green.rect.size.w / track.rect.size.w * 100.0,
+            fill_blue.rect.size.w,
+            fill_blue.rect.size.w / track.rect.size.w * 100.0,
+            fill_red.rect.size.w,
+            fill_red.rect.size.w / track.rect.size.w * 100.0,
+        );
+
+        // Assertions.
+        assert!(
+            (sidebar.rect.size.w - 200.0).abs() < 1.0,
+            "sidebar should be 200px, got {:.1}",
+            sidebar.rect.size.w
+        );
+        assert!(
+            (header.rect.size.h - 48.0).abs() < 1.0,
+            "header should be 48px, got {:.1}",
+            header.rect.size.h
+        );
+        assert!(
+            (swatch.rect.size.w - 40.0).abs() < 1.0,
+            "swatch should be 40px, got {:.1}",
+            swatch.rect.size.w
+        );
+        assert!(
+            (obox.rect.size.w - 60.0).abs() < 1.0,
+            "opacity-box should be 60px, got {:.1}",
+            obox.rect.size.w
+        );
+        assert!(
+            (fill_green.rect.size.w / track.rect.size.w - 0.70).abs() < 0.02,
+            "green fill should be 70%, got {:.1}%",
+            fill_green.rect.size.w / track.rect.size.w * 100.0
+        );
+    }
+
+    // ── Scenario / replay tests ─────────────────────────────────────────
+
+    #[test]
+    fn replay_click_dispatches_and_returns_tag() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        let btn = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+        tree.tag(btn, "my-button");
+        tree.layout(Size::new(400.0, 300.0));
+
+        let scenario = Scenario::new().click(Point::new(50.0, 25.0));
+        let results = tree.replay(&scenario);
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.index, 0);
+        assert!(!r.capture);
+        let d = r.dispatch.as_ref().unwrap();
+        assert_eq!(d.target_tag(), Some("my-button"));
+    }
+
+    #[test]
+    fn replay_assert_tag_passes_and_fails() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        let _btn = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+        tree.tag(_btn, "ok-btn");
+        tree.layout(Size::new(400.0, 300.0));
+
+        let scenario = Scenario::new()
+            .assert_tag(Point::new(50.0, 25.0), "ok-btn")
+            .assert_tag(Point::new(50.0, 25.0), "wrong-tag");
+        let results = tree.replay(&scenario);
+        assert_eq!(results[0].assertion, Some(true));
+        assert_eq!(results[1].assertion, Some(false));
+    }
+
+    #[test]
+    fn replay_capture_sets_flag() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        tree.layout(Size::new(400.0, 300.0));
+
+        let scenario = Scenario::new()
+            .capture()
+            .click(Point::new(10.0, 10.0))
+            .capture();
+        let results = tree.replay(&scenario);
+        assert!(results[0].capture);
+        assert!(!results[1].capture); // click step
+        assert!(results[2].capture);
+    }
+
+    #[test]
+    fn replay_hover_dispatches_pointer_move() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        let area = tree.add_box(tree.root, Style::default().w(200.0).h(200.0));
+        tree.tag(area, "hover-zone");
+        tree.layout(Size::new(400.0, 300.0));
+
+        let scenario = Scenario::new().hover(Point::new(100.0, 100.0));
+        let results = tree.replay(&scenario);
+        let d = results[0].dispatch.as_ref().unwrap();
+        assert_eq!(d.target_tag(), Some("hover-zone"));
+    }
+
+    #[test]
+    fn replay_full_scenario_sequence() {
+        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+        let a = tree.add_box(tree.root, Style::default().w(200.0).h(150.0));
+        tree.tag(a, "box-a");
+        let b = tree.add_box(tree.root, Style::default().w(200.0).h(150.0));
+        tree.tag(b, "box-b");
+        tree.layout(Size::new(400.0, 300.0));
+
+        let scenario = Scenario::new()
+            .capture()
+            .click(Point::new(100.0, 75.0))
+            .assert_tag(Point::new(100.0, 75.0), "box-a")
+            .hover(Point::new(100.0, 225.0))
+            .assert_tag(Point::new(100.0, 225.0), "box-b")
+            .capture();
+
+        let results = tree.replay(&scenario);
+        assert_eq!(results.len(), 6);
+
+        // capture[0]
+        assert!(results[0].capture);
+        // click dispatches
+        assert!(results[1].dispatch.is_some());
+        // assert_tag passes
+        assert_eq!(results[2].assertion, Some(true));
+        // hover dispatches
+        assert!(results[3].dispatch.is_some());
+        // assert_tag passes
+        assert_eq!(results[4].assertion, Some(true));
+        // capture[5]
+        assert!(results[5].capture);
     }
 }
