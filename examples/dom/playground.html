@@ -1,0 +1,70 @@
+<div class="root">
+  <!-- Sidebar (tests: animation, transitions, hover, active, border-radius) -->
+  <div class="sidebar">
+    <div class="brand-row">
+      <div class="brand-icon"></div>
+      <span class="brand-label">any-compute</span>
+    </div>
+    <div class="nav-item nav-active" tag="nav-dash">Dashboard</div>
+    <div class="nav-item nav-inactive" tag="nav-settings">Settings</div>
+    <div class="nav-item nav-inactive" tag="nav-about">About</div>
+  </div>
+
+  <!-- Main content -->
+  <div class="main">
+    <div class="header">DOM Playground</div>
+    <div class="content">
+
+      <!-- Cards (tests: flex-grow, border on hover, gap, border-radius) -->
+      <div class="cards-row">
+        <div class="card" tag="card-cpu">
+          <span class="card-title">Processor</span>
+          <span class="card-body">8 cores / 16 threads</span>
+        </div>
+        <div class="card" tag="card-mem">
+          <span class="card-title">Memory</span>
+          <span class="card-body">32 GB available</span>
+        </div>
+        <div class="card" tag="card-gpu">
+          <span class="card-title">GPU</span>
+          <span class="card-body">Vulkan backend</span>
+        </div>
+      </div>
+
+      <!-- Buttons (tests: hover, active, transitions, outline border) -->
+      <div class="btn-row">
+        <div class="btn btn-primary" tag="btn-ok">OK</div>
+        <div class="btn btn-success" tag="btn-save">Save</div>
+        <div class="btn btn-danger" tag="btn-del">Delete</div>
+        <div class="btn btn-outline" tag="btn-out">Outline</div>
+      </div>
+
+      <!-- Animation demos (tests: @keyframes, infinite loops) -->
+      <div class="anim-row">
+        <div class="anim-box pulse-demo"></div>
+        <div class="anim-box cycle-demo"></div>
+        <span class="status">pulse + color-cycle @keyframes</span>
+      </div>
+
+      <!-- Color swatches + border box (tests: border, border-radius transition) -->
+      <div class="swatch-row">
+        <div class="color-swatch swatch-green"></div>
+        <div class="color-swatch swatch-blue"></div>
+        <div class="color-swatch swatch-red"></div>
+        <div class="color-swatch swatch-yellow"></div>
+        <div class="color-swatch swatch-mauve"></div>
+        <div class="border-box" tag="bordered">bordered</div>
+      </div>
+
+      <!-- Progress bars (tests: percentage width, nested flex) -->
+      <div class="bar-col">
+        <div class="bar-track"><div class="bar-fill-green"></div></div>
+        <div class="bar-track"><div class="bar-fill-blue"></div></div>
+        <div class="bar-track"><div class="bar-fill-red"></div></div>
+      </div>
+
+      <span class="status">Click elements, hover cards/buttons, watch animations</span>
+
+    </div>
+  </div>
+</div>

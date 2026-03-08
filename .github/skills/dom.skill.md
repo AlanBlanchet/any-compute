@@ -11,6 +11,7 @@ Lives in its own crate to keep `core` focused on compute primitives.
 | `style.rs`     | `Style` (builder pattern), `StyleOp` (pre-compiled mutations), 21 CSS enums, `Dimension` (Auto/Px/Percent/Calc), `Shadow`, `Edges`, `StyleWritten` bitmask for inheritance tracking. Every style enum has `from_css(val) -> Self` for polymorphic resolution.                                         |
 | `parse.rs`     | `parse(&str) → Tree` — zero-dep fault-tolerant HTML-like scanner + `compile_attr` / `parse_px` / `parse_dimension` / `parse_time` / `parse_angle` / `parse_shadow` / `parse_transform` / `parse_filter` / `parse_calc_expr` (single source of truth for attr→Style mapping and unit/value conversion) |
 | `css.rs`       | `StyleSheet::parse(css) → StyleSheet` — full CSS parser with transitions, @keyframes, animations, advanced selectors, CSS variables, `calc()`. O(1) HashMap lookups for simple selectors, tree-walking for complex selectors.                                                                         |
+| `ua.css`       | User-agent defaults (`include_str!` from `css.rs`) — block-level spacing, body margin, etc.                                                                                                                                                                                                          |
 | `tailwind.css` | Real compiled Tailwind v3 CSS output — parsed via `StyleSheet::parse()` at test time for visual correctness verification                                                                                                                                                                              |
 
 ## Key Patterns
@@ -226,15 +227,16 @@ Pixel-accurate comparison against Chrome headless reference:
 - `Tree::click(pos)` — hit_test + walk parents to find tagged node
 - `Tree::dispatch(event)` — full Capture → Target → Bubble propagation
 - `Tree::scroll(pos, delta)` — nearest `Overflow::Scroll` container
-- `Tree::replay(&scenario)` — scripted interaction replay, zero OS input (see `event.skill.md`)
+- Scenario replay lives in `crates/canvas/scenario.rs` — see canvas skill file
 
-### Headless GPU & Scenario Runner
+### DOM Playground (`examples/dom/`)
 
-- `Gpu::init_headless(w, h)` — no window needed, capture-only GPU renderer
-- `Gpu::capture(&mut self, &RenderList) → (w, h, rgba)` — offscreen render to RGBA bytes
-- `Gpu::capture_png(&mut self, &RenderList, path)` — capture + save as PNG (BGRA→RGBA auto-converted)
-- `Gpu::prepare()` + `Gpu::draw()` — shared helpers, `paint()` and `capture()` are thin wrappers
-- Binary `anv-scenario` — parses HTML+CSS, replays a scripted Scenario, saves PNGs at capture points
+Interactive window for testing all DOM/CSS features (run via `make dom`):
+
+- Loads CSS/HTML from external files via `include_str!` — no embedded markup
+- Full event loop: hover tracking, click detection, redraw on input
+- Exercises: @keyframes, transitions, :hover/:active, flexbox, colors, borders, gradients
+- Uses `any-compute-canvas::gpu::Gpu` for rendering
 
 ## Dependencies
 

@@ -1,0 +1,153 @@
+/* Visual comparison test — Catppuccin Mocha dashboard layout.
+ *
+ * Uses CSS variables from palette.css (prepended at parse time).
+ * Single source of truth for both the WGPU renderer and browser reference.
+ */
+
+* {
+  box-sizing: border-box;
+}
+.root {
+  flex-direction: row;
+  width: 800px;
+  height: 600px;
+  background: var(--base);
+}
+.sidebar {
+  width: 200px;
+  min-width: 200px;
+  background: var(--mantle);
+  padding: 16px;
+  gap: 10px;
+}
+.brand-row {
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+}
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  background: var(--blue);
+  border-radius: 6px;
+}
+.brand-label {
+  font-size: 14px;
+  color: var(--text);
+}
+.nav-item {
+  height: 36px;
+  min-height: 36px;
+  border-radius: 8px;
+  padding: 0px 12px;
+  align-items: center;
+  color: var(--overlay2);
+  font-size: 13px;
+}
+.nav-active {
+  background: var(--blue);
+  color: var(--mantle);
+}
+.nav-inactive {
+  background: transparent;
+  color: var(--overlay2);
+}
+.main {
+  flex-grow: 1;
+}
+.header {
+  flex-direction: row;
+  height: 48px;
+  min-height: 48px;
+  background: var(--surface0);
+  padding: 0px 20px;
+  align-items: center;
+  font-size: 16px;
+  color: var(--text);
+}
+.content {
+  flex-grow: 1;
+  padding: 20px;
+  gap: 16px;
+}
+.cards-row {
+  flex-direction: row;
+  gap: 12px;
+}
+.card {
+  flex-grow: 1;
+  background: var(--surface0);
+  border-radius: 12px;
+  padding: 16px;
+  gap: 8px;
+}
+.card-title {
+  font-size: 14px;
+  color: var(--blue);
+}
+.card-body {
+  font-size: 12px;
+  color: var(--text);
+}
+.border-box {
+  width: 120px;
+  height: 60px;
+  background: var(--surface1);
+  border: 2px solid var(--blue);
+  border-radius: 8px;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text);
+}
+.nested-row {
+  flex-direction: row;
+  gap: 8px;
+}
+.color-swatch {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+}
+.swatch-green  { background: var(--green); }
+.swatch-blue   { background: var(--blue); }
+.swatch-red    { background: var(--red); }
+.swatch-yellow { background: var(--yellow); }
+.swatch-mauve  { background: var(--mauve); }
+.bar-row {
+  gap: 6px;
+}
+.bar-track {
+  height: 8px;
+  background: rgba(255, 255, 255, 20);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.bar-fill-green {
+  height: 8px;
+  width: 70%;
+  background: var(--green);
+  border-radius: 4px;
+}
+.bar-fill-blue {
+  height: 8px;
+  width: 45%;
+  background: var(--blue);
+  border-radius: 4px;
+}
+.bar-fill-red {
+  height: 8px;
+  width: 85%;
+  background: var(--red);
+  border-radius: 4px;
+}
+.opacity-box {
+  width: 60px;
+  height: 40px;
+  background: var(--blue);
+  border-radius: 6px;
+}
+.opacity-50 { opacity: 0.5; }
+.opacity-25 { opacity: 0.25; }

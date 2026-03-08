@@ -18,8 +18,10 @@ One API. Every device. Every platform.
 ```
 crates/core/    — zero-dep primitives: compute, kernels, animation, events, layout, data, render
 crates/dom/     — arena-based scene graph, flexbox layout, fault-tolerant HTML/CSS parsers
-crates/bench/   — DOM perf comparisons, CSS visual-correctness tests, GPU dashboard
+crates/canvas/  — GPU renderer (wgpu), headless capture, scenario replay, theme
+crates/bench/   — DOM perf comparisons, GPU dashboard window
 crates/ffi/     — C ABI + codegen → Python, JS (WASM), Java, Node.js
+examples/dom/   — interactive DOM playground (make dom)
 bindings/       — generated + hand-reviewed framework adapters (React, Vue, Svelte, Angular, Python, Node)
 out/            — benchmark reports, flamegraphs, generated headers
 ```
@@ -57,5 +59,7 @@ Read the relevant skill file before touching that domain:
 - `.github/skills/event.skill.md` — `InputEvent`, propagation, `EventContext`
 - `.github/skills/performance.skill.md` — allocation, dirty tracking, visible-range rendering
 - `.github/skills/ffi.skill.md` — `FfiRegistry`, codegen, binding targets
-- `.github/skills/bench.skill.md` — DOM perf comparisons, CSS correctness tests, GPU dashboard (`crates/bench/`)
+- `.github/skills/canvas.skill.md` — GPU renderer, headless capture, scenario replay (`crates/canvas/`)
+- `.github/skills/bench.skill.md` — DOM perf comparisons, GPU dashboard (`crates/bench/`)
+- `.github/skills/dom.skill.md` — `Tree`, `Slot`, `Style`, fault-tolerant `parse()`, arena layout
 - `.github/skills/dom.skill.md` — `Tree`, `Slot`, `Style`, fault-tolerant `parse()`, arena layout

@@ -1,0 +1,15 @@
+{
+  "name": "@any-compute/react",
+  "version": "0.1.0",
+  "description": "React hooks for any-compute — high-performance WASM-backed primitives",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "bench": "vitest bench"
+  },
+  "peerDependencies": { "react": ">=18" },
+  "devDependencies": { "vitest": "^2", "typescript": "^5", "@types/react": "^18" },
+  "dependencies": { "../javascript": "*" }
+}

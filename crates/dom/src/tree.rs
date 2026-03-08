@@ -5,7 +5,7 @@
 
 use any_compute_core::hints::Hints;
 use any_compute_core::interaction::{
-    Action, Button, DispatchResult, EventContext, InputEvent, Phase, Scenario, StepResult,
+    DispatchResult, EventContext, InputEvent, Phase,
 };
 use any_compute_core::layout::{Point, Rect, Size};
 use any_compute_core::render::{Border, Color, Primitive, RenderList};
@@ -754,61 +754,6 @@ impl Tree {
             }
         }
     }
-
-    // ── Scenario replay ─────────────────────────────────
-
-    /// Replay a [`Scenario`] against this tree with zero OS interaction.
-    ///
-    /// Each action is executed in order; for `Click` a full pointer-down →
-    /// pointer-up pair is dispatched.  Returns one [`StepResult`] per action.
-    ///
-    /// The host inspects `StepResult::capture` to know when to screenshot
-    /// (e.g. via headless GPU `Gpu::capture()`).
-    pub fn replay(&mut self, scenario: &Scenario) -> Vec<StepResult> {
-        scenario
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(i, action)| self.replay_step(action, i))
-            .collect()
-    }
-
-    /// Execute a single [`Action`] against this tree and return its result.
-    ///
-    /// This is the primitive that `replay()` is built on.  Use it directly
-    /// when you need to interleave layout/paint/capture between steps.
-    pub fn replay_step(&mut self, action: &Action, index: usize) -> StepResult {
-        match action {
-            Action::Click(pos) => {
-                self.dispatch(InputEvent::PointerDown {
-                    pos: *pos,
-                    button: Button::Primary,
-                });
-                let d = self.dispatch(InputEvent::PointerUp {
-                    pos: *pos,
-                    button: Button::Primary,
-                });
-                StepResult::dispatched(index, action.clone(), d)
-            }
-            Action::Hover(pos) => {
-                let d = self.dispatch(InputEvent::PointerMove { pos: *pos });
-                StepResult::dispatched(index, action.clone(), d)
-            }
-            Action::Scroll { pos, delta } => {
-                self.scroll(*pos, *delta);
-                StepResult::silent(index, action.clone())
-            }
-            Action::Dispatch(event) => {
-                let d = self.dispatch(event.clone());
-                StepResult::dispatched(index, action.clone(), d)
-            }
-            Action::AssertTag { pos, expected } => {
-                let pass = self.tag_at(*pos).as_deref() == Some(expected.as_str());
-                StepResult::asserted(index, action.clone(), pass)
-            }
-            Action::Capture => StepResult::captured(index),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1170,101 +1115,5 @@ mod tests {
             "green fill should be 70%, got {:.1}%",
             fill_green.rect.size.w / track.rect.size.w * 100.0
         );
-    }
-
-    // ── Scenario / replay tests ─────────────────────────────────────────
-
-    #[test]
-    fn replay_click_dispatches_and_returns_tag() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let btn = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
-        tree.tag(btn, "my-button");
-        tree.layout(Size::new(400.0, 300.0));
-
-        let scenario = Scenario::new().click(Point::new(50.0, 25.0));
-        let results = tree.replay(&scenario);
-        assert_eq!(results.len(), 1);
-        let r = &results[0];
-        assert_eq!(r.index, 0);
-        assert!(!r.capture);
-        let d = r.dispatch.as_ref().unwrap();
-        assert_eq!(d.target_tag(), Some("my-button"));
-    }
-
-    #[test]
-    fn replay_assert_tag_passes_and_fails() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let _btn = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
-        tree.tag(_btn, "ok-btn");
-        tree.layout(Size::new(400.0, 300.0));
-
-        let scenario = Scenario::new()
-            .assert_tag(Point::new(50.0, 25.0), "ok-btn")
-            .assert_tag(Point::new(50.0, 25.0), "wrong-tag");
-        let results = tree.replay(&scenario);
-        assert_eq!(results[0].assertion, Some(true));
-        assert_eq!(results[1].assertion, Some(false));
-    }
-
-    #[test]
-    fn replay_capture_sets_flag() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        tree.layout(Size::new(400.0, 300.0));
-
-        let scenario = Scenario::new()
-            .capture()
-            .click(Point::new(10.0, 10.0))
-            .capture();
-        let results = tree.replay(&scenario);
-        assert!(results[0].capture);
-        assert!(!results[1].capture); // click step
-        assert!(results[2].capture);
-    }
-
-    #[test]
-    fn replay_hover_dispatches_pointer_move() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let area = tree.add_box(tree.root, Style::default().w(200.0).h(200.0));
-        tree.tag(area, "hover-zone");
-        tree.layout(Size::new(400.0, 300.0));
-
-        let scenario = Scenario::new().hover(Point::new(100.0, 100.0));
-        let results = tree.replay(&scenario);
-        let d = results[0].dispatch.as_ref().unwrap();
-        assert_eq!(d.target_tag(), Some("hover-zone"));
-    }
-
-    #[test]
-    fn replay_full_scenario_sequence() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let a = tree.add_box(tree.root, Style::default().w(200.0).h(150.0));
-        tree.tag(a, "box-a");
-        let b = tree.add_box(tree.root, Style::default().w(200.0).h(150.0));
-        tree.tag(b, "box-b");
-        tree.layout(Size::new(400.0, 300.0));
-
-        let scenario = Scenario::new()
-            .capture()
-            .click(Point::new(100.0, 75.0))
-            .assert_tag(Point::new(100.0, 75.0), "box-a")
-            .hover(Point::new(100.0, 225.0))
-            .assert_tag(Point::new(100.0, 225.0), "box-b")
-            .capture();
-
-        let results = tree.replay(&scenario);
-        assert_eq!(results.len(), 6);
-
-        // capture[0]
-        assert!(results[0].capture);
-        // click dispatches
-        assert!(results[1].dispatch.is_some());
-        // assert_tag passes
-        assert_eq!(results[2].assertion, Some(true));
-        // hover dispatches
-        assert!(results[3].dispatch.is_some());
-        // assert_tag passes
-        assert_eq!(results[4].assertion, Some(true));
-        // capture[5]
-        assert!(results[5].capture);
     }
 }

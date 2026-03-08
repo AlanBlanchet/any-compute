@@ -1,0 +1,51 @@
+/* Browser-like user-agent defaults for HTML tags.
+ *
+ * Applied as the lowest-specificity base before any CSS classes or IDs.
+ * Mimics the browser's built-in stylesheet so tags like <p>, <h1>, etc.
+ * look correct without requiring any external CSS.
+ */
+
+/* Block elements: column direction */
+div, section, article, aside, nav, header, footer, main, form, fieldset, details, summary {
+    flex-direction: column;
+}
+
+/* Headings */
+h1 { font-size: 32px; font-weight: bold; margin-top: 21.44px; margin-bottom: 21.44px; }
+h2 { font-size: 24px; font-weight: bold; margin-top: 19.92px; margin-bottom: 19.92px; }
+h3 { font-size: 18.72px; font-weight: bold; margin-top: 18.72px; margin-bottom: 18.72px; }
+h4 { font-size: 16px; font-weight: bold; margin-top: 21.28px; margin-bottom: 21.28px; }
+h5 { font-size: 13.28px; font-weight: bold; margin-top: 22.18px; margin-bottom: 22.18px; }
+h6 { font-size: 10.72px; font-weight: bold; margin-top: 24.98px; margin-bottom: 24.98px; }
+
+/* Paragraph */
+p { margin-top: 16px; margin-bottom: 16px; }
+
+/* Body */
+body { margin: 8px; }
+
+/* Lists */
+ul, ol { margin-top: 16px; margin-bottom: 16px; padding-left: 40px; }
+li { flex-direction: row; }
+
+/* Code / pre */
+pre, code { font-size: 13px; }
+pre { margin-top: 16px; margin-bottom: 16px; overflow: scroll; }
+
+/* HR */
+hr { height: 1px; margin-top: 8px; margin-bottom: 8px; }
+
+/* Table */
+table { flex-direction: column; }
+tr { flex-direction: row; }
+td, th { padding: 4px; }
+th { font-weight: bold; }
+
+/* Strong / Bold */
+strong, b { font-weight: bold; }
+
+/* Small */
+small { font-size: 13px; }
+
+/* Blockquote */
+blockquote { margin-top: 16px; margin-bottom: 16px; margin-left: 40px; margin-right: 40px; }

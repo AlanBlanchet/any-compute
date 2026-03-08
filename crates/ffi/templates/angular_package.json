@@ -1,0 +1,9 @@
+{
+  "name": "@any-compute/angular",
+  "version": "0.1.0",
+  "description": "Angular service for any-compute",
+  "main": "dist/index.js",
+  "scripts": { "build": "tsc", "test": "ng test" },
+  "peerDependencies": { "@angular/core": ">=17" },
+  "devDependencies": { "typescript": "^5", "@angular/core": "^17" }
+}

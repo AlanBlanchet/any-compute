@@ -136,6 +136,17 @@ dependencies = [
 name = "any-compute-bench"
 version = "0.1.0"
 dependencies = [
+ "any-compute-canvas",
+ "any-compute-core",
+ "any-compute-dom",
+ "env_logger",
+ "rayon",
+]
+
+[[package]]
+name = "any-compute-canvas"
+version = "0.1.0"
+dependencies = [
  "any-compute-core",
  "any-compute-dom",
  "bytemuck",
@@ -143,7 +154,6 @@ dependencies = [
  "glyphon",
  "png",
  "pollster",
- "rayon",
  "wgpu",
  "winit",
 ]
@@ -538,6 +548,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
+]
+
+[[package]]
+name = "dom-example"
+version = "0.1.0"
+dependencies = [
+ "any-compute-canvas",
+ "any-compute-core",
+ "any-compute-dom",
+ "env_logger",
 ]
 
 [[package]]

@@ -7,33 +7,23 @@ license.workspace = true
 
 [features]
 default = ["window"]
-# Enables the GPU dashboard binary
+# Enables the GPU dashboard binary (rendering via any-compute-canvas)
 window = [
     "any-compute-core/wgpu-backend",
     "any-compute-core/hwinfo",
-    "dep:wgpu",
-    "dep:glyphon",
-    "dep:pollster",
-    "dep:winit",
-    "dep:bytemuck",
+    "any-compute-canvas/gpu",
     "dep:rayon",
     "dep:env_logger",
-    "dep:png",
 ]
 
 [dependencies]
 any-compute-core = { workspace = true }
 any-compute-dom = { workspace = true }
+any-compute-canvas = { workspace = true, default-features = false }
 
-# GPU rendering (optional, behind window feature)
-wgpu = { workspace = true, optional = true }
-glyphon = { workspace = true, optional = true }
-pollster = { workspace = true, optional = true }
-winit = { workspace = true, optional = true }
-bytemuck = { workspace = true, optional = true }
+# Background threads for benchmark dashboard
 rayon = { workspace = true, optional = true }
 env_logger = { version = "0.11", optional = true }
-png = { workspace = true, optional = true }
 
 [dev-dependencies]
 any-compute-core = { workspace = true, features = ["hwinfo"] }
@@ -42,14 +32,4 @@ any-compute-dom = { workspace = true }
 [[bin]]
 name = "anv-bench-window"
 path = "src/window.rs"
-required-features = ["window"]
-
-[[bin]]
-name = "anv-visual-cmp"
-path = "src/bin/visual_cmp.rs"
-required-features = ["window"]
-
-[[bin]]
-name = "anv-scenario"
-path = "src/bin/scenario.rs"
 required-features = ["window"]

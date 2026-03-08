@@ -1,0 +1,41 @@
+[package]
+name = "any-compute-canvas"
+description = "GPU renderer, headless capture, and scenario replay for any-compute DOM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["gpu"]
+gpu = [
+    "dep:wgpu",
+    "dep:glyphon",
+    "dep:pollster",
+    "dep:winit",
+    "dep:bytemuck",
+    "dep:png",
+    "dep:env_logger",
+]
+
+[dependencies]
+any-compute-core = { workspace = true }
+any-compute-dom = { workspace = true }
+
+# GPU rendering (optional, behind gpu feature)
+wgpu = { workspace = true, optional = true }
+glyphon = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+env_logger = { version = "0.11", optional = true }
+
+[[bin]]
+name = "anv-visual-cmp"
+path = "src/bin/visual_cmp.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "anv-scenario"
+path = "src/bin/scenario.rs"
+required-features = ["gpu"]

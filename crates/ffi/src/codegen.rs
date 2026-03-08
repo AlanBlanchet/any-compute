@@ -171,6 +171,21 @@ mod tpl {
     pub const JAVA_WRAPPER: &str = include_str!("../templates/AnyCompute.java");
     pub const JAVA_TESTS: &str = include_str!("../templates/AnyComputeTest.java");
 
+    // Framework templates
+    pub const REACT_HOOKS: &str = include_str!("../templates/react_hooks.ts");
+    pub const REACT_BENCH: &str = include_str!("../templates/react_bench.ts");
+    pub const REACT_PKG: &str = include_str!("../templates/react_package.json");
+    pub const VUE_COMPOSABLES: &str = include_str!("../templates/vue_composables.ts");
+    pub const VUE_PKG: &str = include_str!("../templates/vue_package.json");
+    pub const SVELTE_STORES: &str = include_str!("../templates/svelte_stores.ts");
+    pub const SVELTE_PKG: &str = include_str!("../templates/svelte_package.json");
+    pub const ANGULAR_SERVICE: &str = include_str!("../templates/angular_service.ts");
+    pub const ANGULAR_MODULE: &str = include_str!("../templates/angular_module.ts");
+    pub const ANGULAR_PKG: &str = include_str!("../templates/angular_package.json");
+    pub const NODE_INDEX: &str = include_str!("../templates/node_index.ts");
+    pub const NODE_BENCH: &str = include_str!("../templates/node_bench.ts");
+    pub const NODE_PKG: &str = include_str!("../templates/node_package.json");
+
     /// Replace `{{KEY}}` placeholders in a template with concrete values.
     pub fn instantiate(template: &str, vars: &[(&str, &str)]) -> String {
         let mut out = template.to_string();
@@ -263,9 +278,7 @@ pub fn generate_javascript(registry: &FfiRegistry) -> JavaScriptOutput {
 
 /// Generate React TypeScript hooks wrapping the WASM module.
 pub fn generate_react(registry: &FfiRegistry) -> ReactOutput {
-    let lib = &registry.lib_name;
     let mut hook_fns = String::new();
-
     for func in &registry.functions {
         let ts_params: Vec<String> = func
             .params
@@ -286,195 +299,24 @@ pub fn generate_react(registry: &FfiRegistry) -> ReactOutput {
         .unwrap();
     }
 
-    let hooks = format!(
-        r#"/**
- * React hooks for any-compute ({lib}).
- * Auto-generated — edit FfiRegistry, not this file.
- */
-import {{ useCallback, useEffect, useRef, useState }} from 'react';
-import {{ loadAnyCompute, AnyComputeModule }} from './any_compute';
-
-// ── Module singleton ──────────────────────────────────────────────────────
-
-let _mod: AnyComputeModule | null = null;
-const _listeners: Array<() => void> = [];
-
-function notifyListeners(): void {{
-  _listeners.forEach(fn => fn());
-}}
-
-/** Load the WASM module once; resolves if already loaded. */
-export async function initAnyCompute(): Promise<AnyComputeModule> {{
-  if (_mod) return _mod;
-  _mod = await loadAnyCompute();
-  notifyListeners();
-  return _mod;
-}}
-
-// ── Core hook ────────────────────────────────────────────────────────────
-
-/** Returns the module instance or null until WASM is ready. */
-export function useAnyComputeModule(): AnyComputeModule | null {{
-  const [mod, setMod] = useState<AnyComputeModule | null>(_mod);
-
-  useEffect(() => {{
-    if (_mod) {{ setMod(_mod); return; }}
-    let cancelled = false;
-    initAnyCompute().then(m => {{ if (!cancelled) setMod(m); }});
-    return () => {{ cancelled = true; }};
-  }}, []);
-
-  return mod;
-}}
-
-// ── Generated function bindings ───────────────────────────────────────────
-
-/** Synchronous accessor — throws if module is not yet loaded. */
-export function useAnyComputeApi() {{
-  const mod = useAnyComputeModule();
-  if (!mod) throw new Error('AnyCompute WASM not loaded — call initAnyCompute() first.');
-  return {{
-{hook_fns}  }};
-}}
-
-// ── Transition hook ───────────────────────────────────────────────────────
-
-export interface UseTransitionOptions {{
-  from: number;
-  to: number;
-  durationMs: number;
-  easing?: 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out';
-}}
-
-/**
- * Drives an animated numeric value from `from` to `to` using the any-compute
- * timing engine (Rust WASM). ~50x faster than React Spring for large batches.
- */
-export function useAnyTransition(opts: UseTransitionOptions): number {{
-  const [value, setValue] = useState(opts.from);
-  const frameRef = useRef<number>(0);
-  const startRef = useRef<number | null>(null);
-  const easingFn = useCallback((t: number) => {{
-    const c = Math.max(0, Math.min(1, t));
-    switch (opts.easing) {{
-      case 'ease-in':     return c * c * c;
-      case 'ease-out':    return 1 - Math.pow(1 - c, 3);
-      case 'ease-in-out': return c < 0.5 ? 4*c*c*c : 1 - Math.pow(-2*c+2, 3)/2;
-      default:            return c;
-    }}
-  }}, [opts.easing]);
-
-  useEffect(() => {{
-    startRef.current = null;
-    const tick = (ts: number) => {{
-      if (startRef.current === null) startRef.current = ts;
-      const t = Math.min((ts - startRef.current) / opts.durationMs, 1);
-      const lerped = opts.from + (opts.to - opts.from) * easingFn(t);
-      setValue(lerped);
-      if (t < 1) frameRef.current = requestAnimationFrame(tick);
-    }};
-    frameRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameRef.current);
-  }}, [opts.from, opts.to, opts.durationMs, easingFn]);
-
-  return value;
-}}
-"#
-    );
-
-    let bench = format!(
-        r#"/**
- * React benchmark: any-compute vs React Spring / Framer Motion / GSAP.
- * Run with: `npx vitest bench`
- */
-import {{ bench, describe }} from 'vitest';
-import {{ initAnyCompute }} from './hooks';
-
-const BATCH = 10_000;
-
-describe('Animation throughput (transitions/frame)', () => {{
-  bench('any-compute useAnyTransition (WASM Rust)', async () => {{
-    const _mod = await initAnyCompute();
-    const from = 0, to = 100, dur = 300;
-    // Simulate ticking BATCH transitions for one frame (16ms)
-    const t = 8 / dur; // halfway
-    for (let i = 0; i < BATCH; i++) {{
-      const lerp = from + (to - from) * t;
-      void lerp;
-    }}
-  }});
-
-  bench('React Spring (estimated — JS spring physics)', () => {{
-    // Baseline: JS spring physics loop for comparison
-    let val = 0;
-    for (let i = 0; i < BATCH; i++) {{
-      const stiffness = 170, damping = 26;
-      val += (100 - val) * stiffness * 0.016 - val * damping * 0.016;
-    }}
-    void val;
-  }});
-
-  bench('GSAP (estimated — JS tweening engine)', () => {{
-    let val = 0;
-    for (let i = 0; i < BATCH; i++) {{
-      val += (100 - val) * 0.016;
-    }}
-    void val;
-  }});
-}});
-
-describe('Compute throughput (map over f64 array)', () => {{
-  bench('any-compute map_f64 (WASM Rust)', async () => {{
-    const _mod = await initAnyCompute();
-    const arr = new Float64Array(100_000).fill(1.5);
-    // Rust-side map — single FFI call
-    for (let i = 0; i < arr.length; i++) {{ void arr[i] * 2 + 1; }}
-  }});
-
-  bench('JS Array.map (baseline)', () => {{
-    const arr = new Array(100_000).fill(1.5);
-    void arr.map(v => v * 2 + 1);
-  }});
-
-  bench('Float64Array loop (TypedArray baseline)', () => {{
-    const arr = new Float64Array(100_000).fill(1.5);
-    for (let i = 0; i < arr.length; i++) {{ arr[i] = arr[i] * 2 + 1; }}
-  }});
-}});
-"#
-    );
-
-    let pkg = format!(
-        r#"{{
-  "name": "@any-compute/react",
-  "version": "0.1.0",
-  "description": "React hooks for any-compute — high-performance WASM-backed primitives",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {{
-    "build": "tsc",
-    "test": "vitest run",
-    "bench": "vitest bench"
-  }},
-  "peerDependencies": {{ "react": ">=18" }},
-  "devDependencies": {{ "vitest": "^2", "typescript": "^5", "@types/react": "^18" }},
-  "dependencies": {{ "../javascript": "*" }}
-}}
-"#
+    let hooks = tpl::instantiate(
+        tpl::REACT_HOOKS,
+        &[
+            ("LIB_NAME", &registry.lib_name),
+            ("GENERATED_FNS", &hook_fns),
+        ],
     );
 
     ReactOutput {
         hooks,
-        bench,
-        package_json: pkg,
+        bench: tpl::REACT_BENCH.to_string(),
+        package_json: tpl::REACT_PKG.to_string(),
     }
 }
 
 /// Generate Vue 3 TypeScript composables wrapping the WASM module.
 pub fn generate_vue(registry: &FfiRegistry) -> VueOutput {
-    let lib = &registry.lib_name;
     let mut composable_fns = String::new();
-
     for func in &registry.functions {
         let ts_params: Vec<String> = func
             .params
@@ -495,78 +337,23 @@ pub fn generate_vue(registry: &FfiRegistry) -> VueOutput {
         .unwrap();
     }
 
-    let composables = format!(
-        r#"/**
- * Vue 3 composables for any-compute ({lib}).
- * Auto-generated — edit FfiRegistry, not this file.
- */
-import {{ ref, shallowRef, onMounted, onUnmounted, watch }} from 'vue';
-import type {{ Ref }} from 'vue';
-import {{ loadAnyCompute, AnyComputeModule }} from '../javascript/any_compute';
-
-let _mod: AnyComputeModule | null = null;
-
-export async function initAnyCompute(): Promise<AnyComputeModule> {{
-  if (!_mod) _mod = await loadAnyCompute();
-  return _mod;
-}}
-
-/** Composable: reactive access to the WASM module. */
-export function useAnyCompute() {{
-  const ready = ref(!!_mod);
-  onMounted(async () => {{ await initAnyCompute(); ready.value = true; }});
-  return {{
-    ready,
-{composable_fns}  }};
-}}
-
-/** Composable: animated numeric value driven by any-compute timing engine. */
-export function useAnyTransition(
-  from: Ref<number>,
-  to: Ref<number>,
-  durationMs: number,
-): Ref<number> {{
-  const value = ref(from.value);
-  let frame = 0, startTs: number | null = null;
-
-  const animate = (ts: number) => {{
-    if (startTs === null) startTs = ts;
-    const t = Math.min((ts - startTs) / durationMs, 1);
-    value.value = from.value + (to.value - from.value) * t;
-    if (t < 1) frame = requestAnimationFrame(animate);
-  }};
-
-  watch([from, to], () => {{ startTs = null; cancelAnimationFrame(frame); frame = requestAnimationFrame(animate); }}, {{ immediate: true }});
-  onUnmounted(() => cancelAnimationFrame(frame));
-  return value;
-}}
-"#
-    );
-
-    let pkg = format!(
-        r#"{{
-  "name": "@any-compute/vue",
-  "version": "0.1.0",
-  "description": "Vue 3 composables for any-compute",
-  "main": "dist/index.js",
-  "scripts": {{ "build": "tsc", "test": "vitest run" }},
-  "peerDependencies": {{ "vue": ">=3" }},
-  "devDependencies": {{ "vitest": "^2", "typescript": "^5", "@vue/test-utils": "^2" }}
-}}
-"#
+    let composables = tpl::instantiate(
+        tpl::VUE_COMPOSABLES,
+        &[
+            ("LIB_NAME", &registry.lib_name),
+            ("GENERATED_FNS", &composable_fns),
+        ],
     );
 
     VueOutput {
         composables,
-        package_json: pkg,
+        package_json: tpl::VUE_PKG.to_string(),
     }
 }
 
 /// Generate Svelte stores and actions wrapping the WASM module.
 pub fn generate_svelte(registry: &FfiRegistry) -> SvelteOutput {
-    let lib = &registry.lib_name;
     let mut store_fns = String::new();
-
     for func in &registry.functions {
         let ts_params: Vec<String> = func
             .params
@@ -587,86 +374,23 @@ pub fn generate_svelte(registry: &FfiRegistry) -> SvelteOutput {
         .unwrap();
     }
 
-    let stores = format!(
-        r#"/**
- * Svelte stores for any-compute ({lib}).
- * Auto-generated — edit FfiRegistry, not this file.
- */
-import {{ writable, derived, get }} from 'svelte/store';
-import {{ tweened }} from 'svelte/motion';
-import {{ cubicInOut }} from 'svelte/easing';
-import {{ loadAnyCompute, AnyComputeModule }} from '../javascript/any_compute';
-
-// ── Module store ──────────────────────────────────────────────────────────
-
-export const mod = writable<AnyComputeModule | null>(null);
-
-export async function initAnyCompute(): Promise<void> {{
-  const m = await loadAnyCompute();
-  mod.set(m);
-}}
-
-export const isReady = derived(mod, $m => $m !== null);
-
-// ── Generated function store ──────────────────────────────────────────────
-
-export const anyCompute = {{
-{store_fns}}};
-
-// ── Animated value store ──────────────────────────────────────────────────
-
-/**
- * Creates an any-compute-powered animated value store.
- * Mirrors Svelte `tweened` API but driven by the Rust timing engine via WASM.
- */
-export function anyTweened(initial: number, durationMs = 300) {{
-  const value = writable(initial);
-  let frame = 0;
-
-  return {{
-    subscribe: value.subscribe,
-    set(target: number) {{
-      cancelAnimationFrame(frame);
-      let start: number | null = null;
-      const current = get(value);
-      const tick = (ts: number) => {{
-        if (start === null) start = ts;
-        const t = Math.min((ts - start) / durationMs, 1);
-        const eased = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
-        value.set(current + (target - current) * eased);
-        if (t < 1) frame = requestAnimationFrame(tick);
-      }};
-      frame = requestAnimationFrame(tick);
-    }},
-  }};
-}}
-"#
-    );
-
-    let pkg = format!(
-        r#"{{
-  "name": "@any-compute/svelte",
-  "version": "0.1.0",
-  "description": "Svelte stores for any-compute",
-  "main": "dist/index.js",
-  "scripts": {{ "build": "tsc", "test": "vitest run" }},
-  "peerDependencies": {{ "svelte": ">=4" }},
-  "devDependencies": {{ "vitest": "^2", "typescript": "^5" }}
-}}
-"#
+    let stores = tpl::instantiate(
+        tpl::SVELTE_STORES,
+        &[
+            ("LIB_NAME", &registry.lib_name),
+            ("GENERATED_FNS", &store_fns),
+        ],
     );
 
     SvelteOutput {
         stores,
-        package_json: pkg,
+        package_json: tpl::SVELTE_PKG.to_string(),
     }
 }
 
 /// Generate Angular injectable service wrapping the WASM module.
 pub fn generate_angular(registry: &FfiRegistry) -> AngularOutput {
-    let lib = &registry.lib_name;
     let mut service_methods = String::new();
-
     for func in &registry.functions {
         let ts_params: Vec<String> = func
             .params
@@ -687,95 +411,24 @@ pub fn generate_angular(registry: &FfiRegistry) -> AngularOutput {
         .unwrap();
     }
 
-    let service = format!(
-        r#"/**
- * Angular injectable service for any-compute ({lib}).
- * Auto-generated — edit FfiRegistry, not this file.
- */
-import {{ Injectable, signal, Signal }} from '@angular/core';
-import {{ loadAnyCompute, AnyComputeModule }} from '../javascript/any_compute';
-
-@Injectable({{ providedIn: 'root' }})
-export class AnyComputeService {{
-  private mod: AnyComputeModule | null = null;
-  readonly ready = signal(false);
-
-  async init(): Promise<void> {{
-    this.mod = await loadAnyCompute();
-    this.ready.set(true);
-  }}
-
-  private assertReady(): asserts this is {{ mod: AnyComputeModule }} {{
-    if (!this.mod) throw new Error('AnyComputeService: call init() first.');
-  }}
-
-{service_methods}
-  /** Animated Signal: drives a numeric value using the Rust timing engine. */
-  animate(from: number, to: number, durationMs: number): Signal<number> {{
-    const value = signal(from);
-    let frame = 0;
-    let start: number | null = null;
-    const tick = (ts: number) => {{
-      if (start === null) start = ts;
-      const t = Math.min((ts - start) / durationMs, 1);
-      const eased = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
-      value.set(from + (to - from) * eased);
-      if (t < 1) frame = requestAnimationFrame(tick);
-    }};
-    frame = requestAnimationFrame(tick);
-    return value.asReadonly();
-  }}
-}}
-"#
-    );
-
-    let module = format!(
-        r#"/**
- * Angular NgModule for any-compute — import in AppModule to provide AnyComputeService.
- * Auto-generated — edit FfiRegistry, not this file.
- */
-import {{ NgModule, APP_INITIALIZER }} from '@angular/core';
-import {{ AnyComputeService }} from './any-compute.service';
-
-export function initFactory(svc: AnyComputeService) {{
-  return () => svc.init();
-}}
-
-@NgModule({{
-  providers: [
-    AnyComputeService,
-    {{ provide: APP_INITIALIZER, useFactory: initFactory, deps: [AnyComputeService], multi: true }},
-  ],
-}})
-export class AnyComputeModule {{}}
-"#
-    );
-
-    let pkg = format!(
-        r#"{{
-  "name": "@any-compute/angular",
-  "version": "0.1.0",
-  "description": "Angular service for any-compute",
-  "main": "dist/index.js",
-  "scripts": {{ "build": "tsc", "test": "ng test" }},
-  "peerDependencies": {{ "@angular/core": ">=17" }},
-  "devDependencies": {{ "typescript": "^5", "@angular/core": "^17" }}
-}}
-"#
+    let service = tpl::instantiate(
+        tpl::ANGULAR_SERVICE,
+        &[
+            ("LIB_NAME", &registry.lib_name),
+            ("GENERATED_FNS", &service_methods),
+        ],
     );
 
     AngularOutput {
         service,
-        module,
-        package_json: pkg,
+        module: tpl::ANGULAR_MODULE.to_string(),
+        package_json: tpl::ANGULAR_PKG.to_string(),
     }
 }
 
 /// Generate Node.js native bindings (via WASM or ffi-napi).
 pub fn generate_node(registry: &FfiRegistry) -> NodeOutput {
-    let lib = &registry.lib_name;
     let mut exports = String::new();
-
     for func in &registry.functions {
         let ts_params: Vec<String> = func
             .params
@@ -796,83 +449,18 @@ pub fn generate_node(registry: &FfiRegistry) -> NodeOutput {
         .unwrap();
     }
 
-    let index = format!(
-        r#"/**
- * Node.js bindings for any-compute ({lib}).
- * Loads the native .node addon if available, falls back to WASM.
- * Auto-generated — edit FfiRegistry, not this file.
- */
-import * as path from 'path';
-import * as fs from 'fs';
-
-let _mod: any;
-
-type Backend = 'native' | 'wasm';
-
-export async function init(): Promise<Backend> {{
-  const nativePath = path.join(__dirname, '../native/index.node');
-  if (fs.existsSync(nativePath)) {{
-    _mod = require(nativePath);
-    return 'native';
-  }}
-  const wasmPath = path.join(__dirname, '../wasm/any_compute_bg.wasm');
-  const wasmBytes = fs.readFileSync(wasmPath);
-  const {{ instance }} = await WebAssembly.instantiate(wasmBytes);
-  _mod = instance.exports;
-  return 'wasm';
-}}
-
-export function isReady(): boolean {{ return !!_mod; }}
-
-{exports}
-"#
-    );
-
-    let bench = format!(
-        r#"/**
- * Node.js benchmark: any-compute vs numpy (via child_process) and native JS.
- */
-import {{ bench, describe }} from 'vitest';
-import {{ init }} from './index';
-
-await init();
-
-describe('Compute: element-wise map (100k f64)', () => {{
-  bench('any-compute (native/WASM Rust)', () => {{
-    const arr = new Float64Array(100_000).fill(1.5);
-    for (let i = 0; i < arr.length; i++) {{ void arr[i] * 2 + 1; }}
-  }});
-
-  bench('Node.js Float64Array loop', () => {{
-    const arr = new Float64Array(100_000).fill(1.5);
-    for (let i = 0; i < arr.length; i++) {{ arr[i] = arr[i] * 2 + 1; }}
-  }});
-
-  bench('Node.js Array.map', () => {{
-    const arr = new Array(100_000).fill(1.5);
-    void arr.map((v: number) => v * 2 + 1);
-  }});
-}});
-"#
-    );
-
-    let pkg = format!(
-        r#"{{
-  "name": "@any-compute/node",
-  "version": "0.1.0",
-  "description": "Node.js bindings for any-compute",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {{ "build": "tsc", "test": "vitest run", "bench": "vitest bench" }},
-  "devDependencies": {{ "vitest": "^2", "typescript": "^5", "@types/node": "^20" }}
-}}
-"#
+    let index = tpl::instantiate(
+        tpl::NODE_INDEX,
+        &[
+            ("LIB_NAME", &registry.lib_name),
+            ("GENERATED_FNS", &exports),
+        ],
     );
 
     NodeOutput {
         index,
-        bench,
-        package_json: pkg,
+        bench: tpl::NODE_BENCH.to_string(),
+        package_json: tpl::NODE_PKG.to_string(),
     }
 }
 

@@ -4,7 +4,9 @@
 //! Runs real `any_compute_core::bench` workloads on background threads and
 //! streams results into the render loop at 60+ FPS with zero stutter.
 
-use any_compute_bench::gpu::{Gpu, theme};
+use any_compute_canvas::gpu::Gpu;
+use any_compute_canvas::theme;
+use any_compute_canvas::winit;
 use any_compute_core::Lerp;
 use any_compute_core::animation::{Easing, Transition, TransitionManager};
 use any_compute_core::bench::*;

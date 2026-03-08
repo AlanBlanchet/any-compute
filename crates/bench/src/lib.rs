@@ -6,11 +6,9 @@
 //! arena DOM and compares against equivalent work on a naive `Box<Node>` tree
 //! (the kind of heap-per-node structure that real browser DOMs use).
 
-#[cfg(feature = "window")]
-pub mod gpu;
-
 use std::time::Instant;
 
+use any_compute_canvas::PALETTE_CSS;
 use any_compute_core::layout::Size;
 use any_compute_core::render::RenderList;
 use any_compute_dom::css::StyleSheet;
@@ -29,7 +27,12 @@ pub const BENCH_CSS: &str = include_str!("bench.css");
 /// provides component-level classes (sidebar, card, tab-btn, etc.).
 /// Parsed once at startup → O(1) lookups.
 pub fn combined_css() -> String {
-    format!("{}\n{}", any_compute_dom::TAILWIND_CSS, BENCH_CSS)
+    format!(
+        "{PALETTE}\n{TW}\n{BENCH}",
+        PALETTE = PALETTE_CSS,
+        TW = any_compute_dom::TAILWIND_CSS,
+        BENCH = BENCH_CSS,
+    )
 }
 
 /// Default viewport for benchmarks and the GPU dashboard.

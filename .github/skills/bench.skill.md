@@ -7,30 +7,29 @@ applyTo: "crates/bench/**"
 # Benchmarks — `crates/bench/`
 
 Standalone benchmark crate. Depends on `any-compute-core` (compute,
-layout, render) and `any-compute-dom` (CSS parsing, tree building, flexbox).
+layout, render), `any-compute-dom` (CSS parsing, tree building, flexbox),
+and `any-compute-canvas` (GPU renderer, theme) for the dashboard window.
 
 **No CSS/HTML tests here** — CSS parser correctness and fault-tolerance belong in
-`crates/dom/`. This crate only benchmarks and provides the GPU dashboard.
+`crates/dom/`. GPU rendering, scenario replay, and visual comparison belong in
+`crates/canvas/`. This crate only benchmarks and provides the dashboard window.
 
 ## Running
 
 ```sh
-make           # launches the GPU dashboard (default target)
-make bench     # CLI benchmark (core crate)
+make dashboard  # launches the GPU dashboard window
+make bench      # CLI benchmark (core crate)
 cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
 ```
 
 ## Crate Structure
 
-| File                | Purpose                                                                    |
-| ------------------- | -------------------------------------------------------------------------- |
-| `lib.rs`            | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
-| `window.rs`         | GPU dashboard binary (wgpu + glyphon + winit), feature-gated `window`      |
-| `gpu.rs`            | Reusable GPU renderer — `Gpu::init` (windowed) + `Gpu::init_headless`      |
-| `bin/visual_cmp.rs` | Visual CSS comparison against Chrome screenshots                           |
-| `bin/scenario.rs`   | Scenario runner — replay scripted interactions + capture headless PNGs     |
-| `bench.css`         | Catppuccin Mocha theme — single source of truth for all styling            |
-| `Cargo.toml`        | `window` feature (default) gates GPU deps; lib has zero optional deps      |
+| File         | Purpose                                                                    |
+| ------------ | -------------------------------------------------------------------------- |
+| `lib.rs`     | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
+| `window.rs`  | GPU dashboard binary (canvas + winit), feature-gated `window`             |
+| `bench.css`  | Catppuccin Mocha theme — single source of truth for dashboard styling     |
+| `Cargo.toml` | `window` feature (default) gates `any-compute-canvas` dep                 |
 
 ## Shared Constants (exported from `lib.rs`)
 
@@ -86,23 +85,13 @@ Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference
 
 ### GPU Renderer
 
-- WGSL shader uses **SDF rounded rectangles** (`sdf_round_rect`) for per-pixel anti-aliased corners
-- `InstanceData`: bounds, fill color, params (corner_radius, border_width), border_color — 64 bytes/instance
-- Premultiplied alpha blending (`PREMULTIPLIED_ALPHA_BLENDING` blend state)
-- Border rendering via inner SDF: distance to outer edge < border_width → border color, else fill
-- `Gpu::init(window)` — windowed mode with surface; `Gpu::init_headless(w, h)` — no window needed
-- `prepare()` + `draw()` — shared internal helpers for instance upload + render pass
-- `paint()` — renders to window surface + present; no-op in headless
-- `capture()` — renders to offscreen texture, readback to CPU RGBA bytes
-- `capture_png()` — capture + BGRA→RGBA swap + save as PNG
+Lives in `crates/canvas/` — see `canvas` skill file. The bench dashboard imports
+`any_compute_canvas::gpu::Gpu` and `any_compute_canvas::theme` for rendering.
 
-### Scenario Runner (`anv-scenario`)
+### Scenario Runner
 
-- Binary (`cargo run --bin anv-scenario --features window`) — headless interaction replay + screenshots
-- Parses HTML+CSS → Tree, builds a `Scenario` (click/hover/scroll/assert/capture), replays via `Tree::replay()`
-- At each `Capture` step, re-layouts + paints + calls `Gpu::capture_png()` → saves to `out/scenario/`
-- `AssertTag` steps verify hit-testing at coordinates — non-zero exit code on failure
-- Zero OS interaction — no mouse, no keyboard, no window focus
+Lives in `crates/canvas/` — see `canvas` skill file. Binary `anv-scenario` replays
+scripted interactions headlessly and saves PNGs at capture points.
 
 ### Event System (V8-like)
 

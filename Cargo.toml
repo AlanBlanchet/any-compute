@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "examples/dom"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 # Internal crates
 any-compute-core = { path = "crates/core" }
 any-compute-dom = { path = "crates/dom" }
+any-compute-canvas = { path = "crates/canvas", default-features = false }
 any-compute-bench = { path = "crates/bench" }
 any-compute-ffi = { path = "crates/ffi" }
 

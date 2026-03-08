@@ -1,8 +1,9 @@
 //! Reusable WGPU renderer — instanced SDF rects + glyphon text.
 //!
-//! Extracted from the benchmark dashboard so that any binary in this crate
-//! can open a window and render an `any_compute_core::render::RenderList`.
+//! Supports both windowed (`init`) and headless (`init_headless`) modes.
+//! The shader is loaded from `shaders/rect.wgsl` via `include_str!`.
 
+use crate::theme;
 use any_compute_core::render::{Color, Primitive, RenderList};
 use glyphon::{
     Attrs, Buffer as GlyphBuffer, Cache as GlyphCache, Family, FontSystem, Metrics, Resolution,
@@ -12,94 +13,12 @@ use pollster::block_on;
 use std::sync::Arc;
 use winit::window::Window;
 
-// ── Theme (Catppuccin Mocha) ────────────────────────────────────────────────
-/// Catppuccin Mocha palette constants — same values used in bench.css.
-/// CSS owns *styling*; these give Rust code fast, const-time access for
-/// dynamic color logic (bar graphs, active/inactive states, wgpu clear).
-pub mod theme {
-    use super::Color;
-    pub const BG: Color = Color::rgb(30, 30, 46);
-    pub const SURFACE_BRIGHT: Color = Color::rgb(69, 71, 90);
-    pub const TEXT_DIM: Color = Color::rgb(147, 153, 178);
-    pub const GREEN: Color = Color::rgb(166, 227, 161);
-    pub const BLUE: Color = Color::rgb(137, 180, 250);
-    pub const RED: Color = Color::rgb(243, 139, 168);
-    pub const YELLOW: Color = Color::rgb(249, 226, 175);
-    pub const MAUVE: Color = Color::rgb(203, 166, 247);
-    pub const SIDEBAR_BG: Color = Color::rgb(24, 24, 37);
-    pub const ACCENT: Color = Color::rgb(137, 180, 250);
-    pub const BAR_COLORS: [Color; 4] = [GREEN, BLUE, YELLOW, MAUVE];
-}
-
-// ── Shader ──────────────────────────────────────────────────────────────────
-pub const SHADER_CODE: &str = r#"
-struct VertexInput { @location(0) position: vec2<f32> };
-struct InstanceInput {
-    @location(1) bounds:       vec4<f32>,
-    @location(2) color:        vec4<f32>,
-    @location(3) params:       vec4<f32>,
-    @location(4) border_color: vec4<f32>,
-};
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) color:        vec4<f32>,
-    @location(1) uv:           vec2<f32>,
-    @location(2) rect_size:    vec2<f32>,
-    @location(3) params:       vec4<f32>,
-    @location(4) border_color: vec4<f32>,
-};
-struct Uniforms { screen_size: vec2<f32> }
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vs_main(model: VertexInput, instance: InstanceInput) -> VertexOutput {
-    var out: VertexOutput;
-    let pos = vec2<f32>(
-        instance.bounds.x + model.position.x * instance.bounds.z,
-        instance.bounds.y + model.position.y * instance.bounds.w
-    );
-    let clip_x = (pos.x / uniforms.screen_size.x) * 2.0 - 1.0;
-    let clip_y = 1.0 - (pos.y / uniforms.screen_size.y) * 2.0;
-    out.clip_position = vec4<f32>(clip_x, clip_y, 0.0, 1.0);
-    out.color = instance.color;
-    out.uv = model.position;
-    out.rect_size = instance.bounds.zw;
-    out.params = instance.params;
-    out.border_color = instance.border_color;
-    return out;
-}
-
-fn sdf_round_rect(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
-    let q = abs(p) - half + vec2<f32>(r);
-    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let p = in.uv * in.rect_size - in.rect_size * 0.5;
-    let half = in.rect_size * 0.5;
-    let radius = min(in.params.x, min(half.x, half.y));
-    let border_w = in.params.y;
-
-    let d = sdf_round_rect(p, half, radius);
-    if d > 0.5 { discard; }
-    let aa = 1.0 - smoothstep(-0.5, 0.5, d);
-
-    var col = in.color;
-    if border_w > 0.0 {
-        let ir = max(radius - border_w, 0.0);
-        let inner_d = sdf_round_rect(p, half - vec2<f32>(border_w), ir);
-        if inner_d > 0.0 { col = in.border_color; }
-    }
-
-    return vec4<f32>(col.rgb * col.a * aa, col.a * aa);
-}
-"#;
+/// SDF rounded-rect + border shader, loaded from file (no inline WGSL).
+const SHADER_CODE: &str = include_str!("../shaders/rect.wgsl");
 
 // ── sRGB → linear conversion ────────────────────────────────────────────────
+
 /// Convert a single sRGB 0-255 channel to linear 0.0-1.0.
-/// CSS colors are in sRGB; the GPU framebuffer is sRGB-encoded, so the
-/// hardware applies linear→sRGB on write.  We must feed *linear* values.
 #[inline]
 fn srgb_to_linear(c: u8) -> f32 {
     let s = c as f32 / 255.0;
@@ -111,7 +30,6 @@ fn srgb_to_linear(c: u8) -> f32 {
 }
 
 /// Convert an RGBA `Color` (sRGB) into `[f32; 4]` in linear space.
-/// Alpha is kept linear (not gamma-corrected).
 #[inline]
 fn color_linear(c: Color) -> [f32; 4] {
     [
@@ -123,13 +41,14 @@ fn color_linear(c: Color) -> [f32; 4] {
 }
 
 // ── GPU types ───────────────────────────────────────────────────────────────
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceData {
-    pub bounds: [f32; 4],       // x, y, w, h
-    pub color: [f32; 4],        // fill RGBA
-    pub params: [f32; 4],       // corner_radius, border_width, 0, 0
-    pub border_color: [f32; 4], // border RGBA
+    pub bounds: [f32; 4],
+    pub color: [f32; 4],
+    pub params: [f32; 4],
+    pub border_color: [f32; 4],
 }
 
 #[repr(C)]
@@ -140,12 +59,11 @@ struct GpuUniforms {
 }
 
 // ── Gpu renderer ────────────────────────────────────────────────────────────
+
 pub struct Gpu {
     surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Stores format + width/height.  For headless, `present_mode` etc. are
-    /// unused but the struct is cheap and avoids a parallel "dimensions" type.
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vb: wgpu::Buffer,
@@ -338,9 +256,6 @@ impl Gpu {
     }
 
     /// Create a GPU renderer without a window — capture-only.
-    ///
-    /// Uses whatever adapter the system provides (GPU or software fallback).
-    /// Only `capture()` and `resize()` are usable; `paint()` is a no-op.
     pub fn init_headless(w: u32, h: u32) -> Self {
         let inst = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -354,7 +269,6 @@ impl Gpu {
         .unwrap();
         let (device, queue) =
             block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
-        // Pick a common sRGB format — works on all backends without a surface.
         let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
         Self::build(device, queue, None, fmt, w, h)
     }
@@ -377,8 +291,6 @@ impl Gpu {
 
     // ── Shared helpers ─────────────────────────────────────────────────────
 
-    /// Upload instance + text data from a [`RenderList`].  Returns the
-    /// clamped instance count so the caller can issue `draw(0..4, 0..n)`.
     fn prepare(&mut self, list: &RenderList) -> usize {
         let mut instances: Vec<InstanceData> = Vec::with_capacity(list.len());
         for p in &list.primitives {
@@ -472,7 +384,6 @@ impl Gpu {
         n
     }
 
-    /// Record a render-pass into `enc` targeting `view`.
     fn draw<'a>(
         &'a self,
         enc: &'a mut wgpu::CommandEncoder,
@@ -539,10 +450,7 @@ impl Gpu {
 
     /// Render to an offscreen texture and read back as RGBA `Vec<u8>`.
     ///
-    /// Returns `(width, height, rgba_pixels)`.  No window or display needed
-    /// after the initial `Gpu::init()` — the surface is only used for format
-    /// discovery.  This is the foundation for headless screenshot comparison
-    /// and scenario-driven visual testing.
+    /// Returns `(width, height, rgba_pixels)`.
     pub fn capture(&mut self, list: &RenderList) -> (u32, u32, Vec<u8>) {
         let (w, h) = (self.config.width, self.config.height);
         let n = self.prepare(list);
@@ -568,7 +476,6 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         self.draw(&mut enc, &view, n);
 
-        // Copy texture → buffer for CPU read-back.
         let bpr = Self::aligned_bytes_per_row(w);
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
@@ -627,11 +534,8 @@ impl Gpu {
     }
 
     /// Capture and save directly to a PNG file.
-    ///
-    /// Handles BGRA→RGBA conversion (common for `Bgra8UnormSrgb` format).
     pub fn capture_png(&mut self, list: &RenderList, path: &std::path::Path) {
         let (w, h, mut pixels) = self.capture(list);
-        // BGRA→RGBA swap if the surface format is BGRA (most common).
         if self.config.format == wgpu::TextureFormat::Bgra8UnormSrgb
             || self.config.format == wgpu::TextureFormat::Bgra8Unorm
         {

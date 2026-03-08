@@ -1,0 +1,315 @@
+/* Interactive DOM playground — exercises all CSS features.
+ *
+ * Uses CSS variables from palette.css (prepended at parse time).
+ * Tests: box model, borders, border-radius, flex layout, padding, gap,
+ * colors, opacity, transitions, @keyframes animations, hover, active.
+ */
+
+/* ── Keyframes ─────────────────────────────────────────────────────────── */
+
+@keyframes pulse {
+  0%   { opacity: 0.4; }
+  50%  { opacity: 1.0; }
+  100% { opacity: 0.4; }
+}
+
+@keyframes slide-in {
+  0%   { margin-left: -200px; opacity: 0.0; }
+  100% { margin-left: 0px;    opacity: 1.0; }
+}
+
+@keyframes color-cycle {
+  0%   { background: var(--blue); }
+  33%  { background: var(--green); }
+  66%  { background: var(--red); }
+  100% { background: var(--blue); }
+}
+
+/* ── Root ──────────────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; }
+
+.root {
+  flex-direction: row;
+  width: 800px;
+  height: 600px;
+  background: var(--base);
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+
+.sidebar {
+  width: 200px;
+  min-width: 200px;
+  background: var(--mantle);
+  padding: 16px;
+  gap: 10px;
+  animation: slide-in 0.5s ease-out;
+}
+
+.brand-row {
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+}
+
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  background: var(--blue);
+  border-radius: 6px;
+  animation: color-cycle 4s ease infinite;
+}
+
+.brand-label {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.nav-item {
+  height: 36px;
+  min-height: 36px;
+  border-radius: 8px;
+  padding: 0px 12px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--overlay2);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.nav-active {
+  background: var(--blue);
+  color: var(--mantle);
+}
+
+.nav-inactive {
+  background: transparent;
+  color: var(--overlay2);
+}
+
+.nav-inactive:hover {
+  background: var(--surface0);
+  color: var(--text);
+}
+
+/* ── Main ──────────────────────────────────────────────────────────────── */
+
+.main {
+  flex-grow: 1;
+}
+
+.header {
+  flex-direction: row;
+  height: 48px;
+  min-height: 48px;
+  background: var(--surface0);
+  padding: 0px 20px;
+  align-items: center;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.content {
+  flex-grow: 1;
+  padding: 20px;
+  gap: 16px;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+
+.cards-row {
+  flex-direction: row;
+  gap: 12px;
+}
+
+.card {
+  flex-grow: 1;
+  background: var(--surface0);
+  border-radius: 12px;
+  padding: 16px;
+  gap: 8px;
+  border: 1px solid transparent;
+  transition: border-color 0.2s ease, background 0.15s ease;
+}
+
+.card:hover {
+  border-color: var(--blue);
+  background: var(--surface1);
+}
+
+.card-title {
+  font-size: 14px;
+  color: var(--blue);
+}
+
+.card-body {
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.btn-row {
+  flex-direction: row;
+  gap: 8px;
+}
+
+.btn {
+  height: 36px;
+  min-height: 36px;
+  padding: 0px 16px;
+  border-radius: 8px;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.btn-primary {
+  background: var(--blue);
+  color: var(--mantle);
+}
+
+.btn-primary:hover {
+  background: var(--lavender);
+}
+
+.btn-primary:active {
+  background: var(--sapphire);
+}
+
+.btn-success {
+  background: var(--green);
+  color: var(--mantle);
+}
+
+.btn-success:hover {
+  background: var(--teal);
+}
+
+.btn-danger {
+  background: var(--red);
+  color: var(--mantle);
+}
+
+.btn-danger:hover {
+  background: var(--maroon);
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--blue);
+  color: var(--blue);
+}
+
+.btn-outline:hover {
+  background: var(--blue);
+  color: var(--mantle);
+}
+
+/* ── Animation demos ───────────────────────────────────────────────────── */
+
+.anim-row {
+  flex-direction: row;
+  gap: 12px;
+  align-items: center;
+}
+
+.anim-box {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+}
+
+.pulse-demo {
+  background: var(--mauve);
+  animation: pulse 2s ease infinite;
+}
+
+.cycle-demo {
+  animation: color-cycle 3s linear infinite;
+}
+
+/* ── Borders & swatches ────────────────────────────────────────────────── */
+
+.swatch-row {
+  flex-direction: row;
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  transition: border-radius 0.2s ease;
+}
+
+.color-swatch:hover {
+  border-radius: 20px;
+}
+
+.swatch-green  { background: var(--green); }
+.swatch-blue   { background: var(--blue); }
+.swatch-red    { background: var(--red); }
+.swatch-yellow { background: var(--yellow); }
+.swatch-mauve  { background: var(--mauve); }
+
+.border-box {
+  width: 120px;
+  height: 60px;
+  background: var(--surface1);
+  border: 2px solid var(--blue);
+  border-radius: 8px;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text);
+  transition: border-color 0.2s ease;
+}
+
+.border-box:hover {
+  border-color: var(--red);
+}
+
+/* ── Progress bars ─────────────────────────────────────────────────────── */
+
+.bar-col {
+  gap: 6px;
+}
+
+.bar-track {
+  height: 8px;
+  background: rgba(255, 255, 255, 20);
+  border-radius: 4px;
+}
+
+.bar-fill-green {
+  height: 8px;
+  width: 70%;
+  background: var(--green);
+  border-radius: 4px;
+}
+
+.bar-fill-blue {
+  height: 8px;
+  width: 45%;
+  background: var(--blue);
+  border-radius: 4px;
+}
+
+.bar-fill-red {
+  height: 8px;
+  width: 85%;
+  background: var(--red);
+  border-radius: 4px;
+}
+
+/* ── Status label ──────────────────────────────────────────────────────── */
+
+.status {
+  font-size: 11px;
+  color: var(--surface2);
+  padding: 4px 0px;
+}

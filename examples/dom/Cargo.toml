@@ -1,0 +1,16 @@
+[package]
+name = "dom-example"
+description = "Interactive DOM playground — test buttons, hover, clicks, keyframes, animations."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-compute-core = { workspace = true }
+any-compute-dom = { workspace = true }
+any-compute-canvas = { workspace = true, features = ["gpu"] }
+env_logger = "0.11"
+
+[[bin]]
+name = "dom-example"
+path = "main.rs"
