@@ -10,18 +10,21 @@ use any_compute_canvas::winit::{
     self,
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    window::{CursorIcon, WindowBuilder},
 };
 use any_compute_canvas::{DEFAULT_VIEWPORT, PALETTE_CSS};
-use any_compute_core::interaction::{Button, HoverState, InputEvent};
+use any_compute_core::interaction::{Button, InputEvent};
 use any_compute_core::layout::Point;
 use any_compute_core::render::RenderList;
 use any_compute_dom::css::StyleSheet;
 use any_compute_dom::parse::parse_with_css;
 use std::sync::Arc;
+use std::time::Instant;
 
 const CSS: &str = include_str!("playground.css");
 const HTML: &str = include_str!("playground.html");
+/// Cap frame dt to ~30fps to prevent transitions snapping after idle.
+const MAX_FRAME_DT: f64 = 0.032;
 
 fn main() {
     env_logger::init();
@@ -31,14 +34,13 @@ fn main() {
     let sheet = StyleSheet::parse(&full_css);
     let mut tree = parse_with_css(HTML, &sheet);
     tree.layout(DEFAULT_VIEWPORT);
+    tree.start_animations();
 
-    println!(
-        "DOM playground: {} nodes",
-        tree.arena.len(),
-    );
+    println!("DOM playground: {} nodes", tree.arena.len());
 
     let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Wait);
+    // Use Poll for continuous animation ticking; falls back to Wait when idle.
+    event_loop.set_control_flow(ControlFlow::Poll);
 
     let window = Arc::new(
         WindowBuilder::new()
@@ -50,11 +52,39 @@ fn main() {
     );
 
     let mut gpu = Gpu::init(window.clone());
-    let mut hover = HoverState::default();
     let mut cursor = Point::ZERO;
+    let mut last_frame = Instant::now();
+    let mut needs_repaint = true;
+    let mut current_cursor = CursorIcon::Default;
 
     let _ = event_loop.run(move |event, elwt| match event {
-        Event::Resumed => window.request_redraw(),
+        Event::Resumed => {
+            needs_repaint = true;
+            window.request_redraw();
+        }
+        Event::AboutToWait => {
+            // Tick animations each frame
+            let now = Instant::now();
+            // Cap dt to avoid huge spikes after idle (transitions would snap-finish).
+            let dt = (now - last_frame).as_secs_f64().min(MAX_FRAME_DT);
+            last_frame = now;
+
+            // tick() auto re-layouts when animations touch layout properties.
+            if tree.tick(dt).active {
+                needs_repaint = true;
+            }
+
+            if needs_repaint {
+                window.request_redraw();
+            }
+
+            // Switch to Wait when no animations running to save CPU
+            if tree.has_active_animations() || needs_repaint {
+                elwt.set_control_flow(ControlFlow::Poll);
+            } else {
+                elwt.set_control_flow(ControlFlow::Wait);
+            }
+        }
         Event::WindowEvent {
             event: wevent,
             window_id,
@@ -64,11 +94,26 @@ fn main() {
             WindowEvent::CursorMoved { position, .. } => {
                 cursor = Point::new(position.x, position.y);
                 let result = tree.dispatch(InputEvent::PointerMove { pos: cursor });
-                if let Some(delta) = hover.update(result.target_tag().map(String::from)) {
-                    if let Some(ref tag) = delta.entered {
-                        println!("  hover → {tag}");
-                    }
-                    window.request_redraw();
+                // Apply OS cursor from dispatch result.
+                let icon = match result.cursor.as_str() {
+                    "pointer" => CursorIcon::Pointer,
+                    "text" => CursorIcon::Text,
+                    "move" => CursorIcon::Move,
+                    "not-allowed" => CursorIcon::NotAllowed,
+                    "grab" => CursorIcon::Grab,
+                    "grabbing" => CursorIcon::Grabbing,
+                    "crosshair" => CursorIcon::Crosshair,
+                    "help" => CursorIcon::Help,
+                    "wait" => CursorIcon::Wait,
+                    _ => CursorIcon::Default,
+                };
+                if icon != current_cursor {
+                    window.set_cursor_icon(icon);
+                    current_cursor = icon;
+                }
+                // Only repaint if hover target actually changed
+                if result.restyled {
+                    needs_repaint = true;
                 }
             }
 
@@ -95,14 +140,16 @@ fn main() {
                         println!("  click → {tag}");
                     }
                 }
-                window.request_redraw();
+                if result.restyled {
+                    needs_repaint = true;
+                }
             }
 
             WindowEvent::RedrawRequested => {
-                tree.layout(DEFAULT_VIEWPORT);
                 let mut list = RenderList::default();
                 tree.paint(&mut list);
                 gpu.paint(&list);
+                needs_repaint = false;
             }
             _ => {}
         },

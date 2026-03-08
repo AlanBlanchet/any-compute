@@ -1,6 +1,5 @@
 /* Interactive DOM playground — exercises all CSS features.
  *
- * Uses CSS variables from palette.css (prepended at parse time).
  * Tests: box model, borders, border-radius, flex layout, padding, gap,
  * colors, opacity, transitions, @keyframes animations, hover, active.
  */
@@ -8,26 +7,48 @@
 /* ── Keyframes ─────────────────────────────────────────────────────────── */
 
 @keyframes pulse {
-  0%   { opacity: 0.4; }
-  50%  { opacity: 1.0; }
-  100% { opacity: 0.4; }
+  0% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.4;
+  }
 }
 
 @keyframes slide-in {
-  0%   { margin-left: -200px; opacity: 0.0; }
-  100% { margin-left: 0px;    opacity: 1.0; }
+  0% {
+    margin-left: -200px;
+    opacity: 0;
+  }
+  100% {
+    margin-left: 0px;
+    opacity: 1;
+  }
 }
 
 @keyframes color-cycle {
-  0%   { background: var(--blue); }
-  33%  { background: var(--green); }
-  66%  { background: var(--red); }
-  100% { background: var(--blue); }
+  0% {
+    background: var(--blue);
+  }
+  33% {
+    background: var(--green);
+  }
+  66% {
+    background: var(--red);
+  }
+  100% {
+    background: var(--blue);
+  }
 }
 
 /* ── Root ──────────────────────────────────────────────────────────────── */
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 .root {
   flex-direction: row;
@@ -76,7 +97,10 @@
   align-items: center;
   font-size: 13px;
   color: var(--overlay2);
-  transition: background 0.2s ease, color 0.2s ease;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
 }
 
 .nav-active {
@@ -131,12 +155,19 @@
   padding: 16px;
   gap: 8px;
   border: 1px solid transparent;
-  transition: border-color 0.2s ease, background 0.15s ease;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.15s ease;
 }
 
 .card:hover {
   border-color: var(--blue);
   background: var(--surface1);
+}
+
+.card:active {
+  background: var(--surface2);
 }
 
 .card-title {
@@ -164,7 +195,10 @@
   align-items: center;
   justify-content: center;
   font-size: 13px;
-  transition: background 0.15s ease, opacity 0.15s ease;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    opacity 0.15s ease;
 }
 
 .btn-primary {
@@ -173,11 +207,11 @@
 }
 
 .btn-primary:hover {
-  background: var(--lavender);
+  background: #b4d0fb;
 }
 
 .btn-primary:active {
-  background: var(--sapphire);
+  background: #74a8f8;
 }
 
 .btn-success {
@@ -186,7 +220,11 @@
 }
 
 .btn-success:hover {
-  background: var(--teal);
+  background: #c3edbe;
+}
+
+.btn-success:active {
+  background: #8cd485;
 }
 
 .btn-danger {
@@ -195,7 +233,11 @@
 }
 
 .btn-danger:hover {
-  background: var(--maroon);
+  background: #f7aec1;
+}
+
+.btn-danger:active {
+  background: #ef6d91;
 }
 
 .btn-outline {
@@ -207,6 +249,10 @@
 .btn-outline:hover {
   background: var(--blue);
   color: var(--mantle);
+}
+
+.btn-outline:active {
+  background: #6d9eed;
 }
 
 /* ── Animation demos ───────────────────────────────────────────────────── */
@@ -250,11 +296,21 @@
   border-radius: 20px;
 }
 
-.swatch-green  { background: var(--green); }
-.swatch-blue   { background: var(--blue); }
-.swatch-red    { background: var(--red); }
-.swatch-yellow { background: var(--yellow); }
-.swatch-mauve  { background: var(--mauve); }
+.swatch-green {
+  background: var(--green);
+}
+.swatch-blue {
+  background: var(--blue);
+}
+.swatch-red {
+  background: var(--red);
+}
+.swatch-yellow {
+  background: var(--yellow);
+}
+.swatch-mauve {
+  background: var(--mauve);
+}
 
 .border-box {
   width: 120px;

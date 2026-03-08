@@ -11,17 +11,18 @@ Separated from bench so any consumer (examples, tests, CI) can render a `RenderL
 
 ## Crate Structure
 
-| File/Dir              | Purpose                                                        |
-| --------------------- | -------------------------------------------------------------- |
-| `src/gpu.rs`          | wgpu renderer — windowed + headless, paint + capture           |
-| `src/scenario.rs`     | Action/StepResult/Scenario, replay free functions, 5 tests     |
-| `src/theme.rs`        | Catppuccin Mocha palette constants (single source of truth)    |
-| `src/lib.rs`          | Module declarations, re-exports `winit`, `PALETTE_CSS`, `DEFAULT_VIEWPORT` |
-| `shaders/rect.wgsl`   | SDF rounded-rect + border shader (loaded via `include_str!`)   |
-| `fixtures/palette.css` | Catppuccin Mocha `:root` CSS variables — canonical color source |
-| `fixtures/`           | External CSS/HTML for visual comparison + scenario binaries    |
-| `src/bin/visual_cmp.rs` | Visual CSS comparison against Chrome screenshots             |
-| `src/bin/scenario.rs` | Headless scenario runner — replay + capture PNGs               |
+| File/Dir                | Purpose                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `src/gpu.rs`            | wgpu renderer — windowed + headless, paint + capture                       |
+| `src/scenario.rs`       | Action/StepResult/Scenario, replay free functions, 5 tests                 |
+| `src/harness.rs`        | `TestHarness` + `Capture` — headless test driver: parse→layout→events→GPU  |
+| `src/theme.rs`          | Catppuccin Mocha palette constants (single source of truth)                |
+| `src/lib.rs`            | Module declarations, re-exports `winit`, `PALETTE_CSS`, `DEFAULT_VIEWPORT` |
+| `shaders/rect.wgsl`     | SDF rounded-rect + border shader (loaded via `include_str!`)               |
+| `fixtures/palette.css`  | Catppuccin Mocha `:root` CSS variables — canonical color source            |
+| `fixtures/`             | External CSS/HTML for visual comparison + scenario binaries                |
+| `src/bin/visual_cmp.rs` | Visual CSS comparison against Chrome screenshots                           |
+| `src/bin/scenario.rs`   | Headless scenario runner — replay + capture PNGs                           |
 
 ## GPU Renderer (`gpu.rs`)
 
@@ -48,6 +49,35 @@ Import as `use any_compute_canvas::theme;`.
 - `replay_step(tree, action, index)` — single action → StepResult
 - `replay(tree, scenario)` — full sequence → Vec<StepResult>
 - 5 unit tests covering all action types
+
+## TestHarness (`harness.rs`)
+
+Headless integration test driver — combines CSS/HTML parsing, layout, scenario replay,
+event dispatch, and GPU capture in one API. No visible window needed.
+
+```rust
+let mut h = TestHarness::from_css_html(css, html, (800, 600));
+h.hover((100.0, 50.0));  // triggers restyle via dispatch
+let cap = h.capture();   // headless GPU → RGBA pixel buffer
+assert!(cap.pixel(100, 50) != Color::TRANSPARENT);
+```
+
+- `TestHarness::from_css_html(css, html, (w, h))` — full pipeline: parse→tree→layout→GPU init
+- `TestHarness::from_tree(tree, (w, h))` — from pre-built tree
+- `.hover(pos)` / `.click(pos)` / `.pointer_down(pos)` / `.pointer_up(pos)` — dispatch + re-layout
+- `.replay(&Scenario)` — full scenario sequence
+- `.capture() → Capture` — headless GPU render to RGBA bytes
+- `.capture_png(path)` — save to file for visual inspection
+- `.style_at(pos)` / `.tag_at(pos)` / `.is_hovered(pos)` — query helpers
+- `.render_list()` — get `RenderList` without GPU (for unit tests)
+
+`Capture` utilities:
+
+- `.pixel(x, y) → Color` — read single pixel
+- `.region_uniform(x, y, w, h, color, tol)` — check solid region
+- `.count_color(x, y, w, h, color, tol)` — count matching pixels
+- `.diff_count(other, tol)` — pixel difference between captures
+- `.save_png(path)` — write to file (requires `gpu` feature)
 
 ## Fixtures
 

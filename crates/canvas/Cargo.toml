@@ -39,3 +39,8 @@ required-features = ["gpu"]
 name = "anv-scenario"
 path = "src/bin/scenario.rs"
 required-features = ["gpu"]
+
+[[bin]]
+name = "anv-snapshot"
+path = "src/bin/snapshot.rs"
+required-features = ["gpu"]

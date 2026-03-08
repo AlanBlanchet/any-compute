@@ -22,8 +22,6 @@ shader = ["dep:naga"]
 hwinfo = ["dep:sysinfo", "dep:num_cpus"]
 
 [dependencies]
-winit = { workspace = true }
-pollster = { workspace = true }
 env_logger = "0.11"
 thiserror.workspace = true
 smallvec.workspace = true

@@ -171,7 +171,6 @@ dependencies = [
  "naga",
  "num_cpus",
  "parking_lot",
- "pollster",
  "rayon",
  "serde",
  "serde_json",
@@ -179,7 +178,6 @@ dependencies = [
  "sysinfo",
  "thiserror 2.0.18",
  "wgpu",
- "winit",
 ]
 
 [[package]]

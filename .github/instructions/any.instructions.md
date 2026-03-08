@@ -28,11 +28,11 @@ out/            — benchmark reports, flamegraphs, generated headers
 
 ## Platforms
 
-| Target | Status |
-|--------|--------|
-| Linux / macOS / Windows (x64, ARM) | Native |
-| Web (WASM) | `wasm-pack` via `crates/ffi` |
-| Android / iOS | C ABI via NDK / Swift interop |
+| Target                             | Status                        |
+| ---------------------------------- | ----------------------------- |
+| Linux / macOS / Windows (x64, ARM) | Native                        |
+| Web (WASM)                         | `wasm-pack` via `crates/ffi`  |
+| Android / iOS                      | C ABI via NDK / Swift interop |
 
 ## UI Frameworks
 
@@ -40,15 +40,15 @@ Web (React, Vue, Svelte, Angular, vanilla JS) — Desktop (Dioxus, egui, iced, w
 
 ## Feature Flags (`crates/core/Cargo.toml`)
 
-| Flag | Purpose |
-|------|---------|
+| Flag           | Purpose                                             |
+| -------------- | --------------------------------------------------- |
 | `wgpu-backend` | Cross-platform GPU (Vulkan / Metal / DX12 / WebGPU) |
-| `cuda` | NVIDIA CUDA (stub — requires vendor SDK) |
-| `rocm` | AMD ROCm / HIP (stub) |
-| `mkl` | Intel oneMKL (stub) |
-| `metal` | Apple Metal (stub) |
-| `shader` | Shader compilation via naga (WGSL / GLSL / SPIR-V) |
-| `hwinfo` | Hardware detection for benchmarks |
+| `cuda`         | NVIDIA CUDA (stub — requires vendor SDK)            |
+| `rocm`         | AMD ROCm / HIP (stub)                               |
+| `mkl`          | Intel oneMKL (stub)                                 |
+| `metal`        | Apple Metal (stub)                                  |
+| `shader`       | Shader compilation via naga (WGSL / GLSL / SPIR-V)  |
+| `hwinfo`       | Hardware detection for benchmarks                   |
 
 ## Skills
 

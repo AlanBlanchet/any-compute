@@ -73,7 +73,9 @@ pub fn parse(input: &str) -> Tree {
 /// Fault-tolerant: malformed markup is silently skipped.  Never panics.
 pub fn parse_with_css(input: &str, sheet: &StyleSheet) -> Tree {
     let tokens = tokenize(input);
-    build_tree(&tokens, Some(sheet))
+    let mut tree = build_tree(&tokens, Some(sheet));
+    tree.set_sheet(std::sync::Arc::new(sheet.clone()));
+    tree
 }
 
 // ── Tokenizer ───────────────────────────────────────────────────────────────
@@ -99,6 +101,12 @@ fn tokenize(input: &str) -> Vec<Token> {
 
     while i < bytes.len() {
         if bytes[i] == b'<' {
+            // Skip markup declarations and processing instructions:
+            //   <!-- comment -->   |   <!DOCTYPE ...>   |   <?xml ...?>
+            if let Some(skip) = skip_markup_special(&input[i..]) {
+                i += skip;
+                continue;
+            }
             if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
                 // Close tag.
                 i += 2;
@@ -216,6 +224,32 @@ fn tokenize(input: &str) -> Vec<Token> {
     tokens
 }
 
+/// Skip HTML comments (`<!-- -->`), declarations (`<!DOCTYPE>`, `<![CDATA[]]>`),
+/// and processing instructions (`<?...?>`).  Returns bytes consumed, or `None`.
+fn skip_markup_special(s: &str) -> Option<usize> {
+    if s.starts_with("<!--") {
+        return Some(find_end(s, 4, "-->"));
+    }
+    if s.starts_with("<![CDATA[") {
+        return Some(find_end(s, 9, "]]>"));
+    }
+    if s.starts_with("<!") {
+        return Some(find_end(s, 2, ">"));
+    }
+    if s.starts_with("<?") {
+        return Some(find_end(s, 2, "?>"));
+    }
+    None
+}
+
+/// Scan forward from `start` in `s` for `end_marker`, returning total bytes consumed.
+fn find_end(s: &str, start: usize, end_marker: &str) -> usize {
+    match s[start..].find(end_marker) {
+        Some(pos) => start + pos + end_marker.len(),
+        None => s.len(), // unterminated — consume rest
+    }
+}
+
 // ── Tree builder ────────────────────────────────────────────────────────────
 
 fn build_tree(tokens: &[Token], sheet: Option<&StyleSheet>) -> Tree {
@@ -245,6 +279,7 @@ fn build_tree(tokens: &[Token], sheet: Option<&StyleSheet>) -> Tree {
     // Transform root kind if it maps to text/bar (rare but possible).
     set_kind(&mut tree, root_id, &root_name, &root_attrs);
     apply_tag(&mut tree, root_id, &root_attrs);
+    populate_identity(&mut tree, root_id, &root_name, &root_attrs);
 
     if root_self_closing {
         return tree;
@@ -321,6 +356,17 @@ fn map_tag(name: &str) -> TagMapping {
 }
 
 /// Create a child node from tag + attributes and apply tag/data-tag.
+/// Extract bar fraction + fill from element attributes.
+fn bar_from_attrs(attrs: &[(String, String)]) -> (f64, Color) {
+    let frac = find_attr(attrs, "value")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let fill = find_attr(attrs, "color")
+        .and_then(|v| parse_color(&v))
+        .unwrap_or(Color::WHITE);
+    (frac, fill)
+}
+
 fn spawn_child(
     tree: &mut Tree,
     parent: NodeId,
@@ -336,17 +382,27 @@ fn spawn_child(
             tree.add_text(parent, text, style)
         }
         TagMapping::Bar => {
-            let frac: f64 = find_attr(attrs, "value")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-            let fill = find_attr(attrs, "color")
-                .and_then(|v| parse_color(&v))
-                .unwrap_or(Color::WHITE);
+            let (frac, fill) = bar_from_attrs(attrs);
             tree.add_bar(parent, frac, fill, style)
         }
     };
     apply_tag(tree, id, attrs);
+
+    // Store identity for restyle matching
+    populate_identity(tree, id, tag, attrs);
+
     id
+}
+
+/// Store element tag name + class list + id on a slot for runtime restyle matching.
+fn populate_identity(tree: &mut Tree, id: NodeId, tag: &str, attrs: &[(String, String)]) {
+    let slot = tree.slot_mut(id);
+    slot.element = tag.to_string();
+    slot.class_list = find_attr(attrs, "class")
+        .map(|c| c.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+    slot.id = find_attr(attrs, "id").map(|s| s.to_string());
+    slot.base_style = slot.style.clone();
 }
 
 /// Set kind on an existing node (used for the root which Tree::new always creates as Box).
@@ -357,12 +413,7 @@ fn set_kind(tree: &mut Tree, id: NodeId, tag: &str, attrs: &[(String, String)]) 
             tree.slot_mut(id).kind = NodeKind::Text(text);
         }
         TagMapping::Bar => {
-            let frac: f64 = find_attr(attrs, "value")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-            let fill = find_attr(attrs, "color")
-                .and_then(|v| parse_color(&v))
-                .unwrap_or(Color::WHITE);
+            let (frac, fill) = bar_from_attrs(attrs);
             tree.slot_mut(id).kind = NodeKind::Bar {
                 fraction: frac,
                 fill,
@@ -514,9 +565,16 @@ pub(crate) fn compile_attr(key: &str, val: &str) -> Option<StyleOp> {
         "filter-opacity" => val.parse().ok().map(FilterOpacity),
 
         // ── Text ────────────────────────────────────────
+        "font-family" => {
+            let family = val
+                .trim()
+                .trim_matches(|c| c == '\'' || c == '"')
+                .to_string();
+            Some(FontFamily(family))
+        }
         "font" | "font-size" => parse_px(val).map(FontSize),
         "font-weight" => crate::style::FontWeight::from_css(val).map(FontWeight),
-        "line-height" => parse_line_height(val).map(LineHeight),
+        "line-height" => parse_line_height(val),
         "color" => parse_color(val).map(TextColor),
         "text-align" => Some(TextAlign(crate::style::TextAlign::from_css(val))),
         "white-space" => Some(WhiteSpace(crate::style::WhiteSpace::from_css(val))),
@@ -542,20 +600,26 @@ pub(crate) fn compile_attr(key: &str, val: &str) -> Option<StyleOp> {
 }
 
 /// Parse line-height: bare number (multiplier) or px value.
-fn parse_line_height(val: &str) -> Option<f64> {
+fn parse_line_height(val: &str) -> Option<StyleOp> {
     let val = val.trim();
-    // "normal" → use default
+    // "normal" → use default multiplier
     if val == "normal" {
-        return Some(1.3);
+        return Some(StyleOp::LineHeight(DEFAULT_LINE_HEIGHT));
     }
-    // Try as px/rem first, then as bare multiplier
+    // Absolute: px/rem/em → store as LineHeightPx
     if val.ends_with("px") || val.ends_with("rem") || val.ends_with("em") {
-        // Absolute value — convert to multiplier later at layout time
-        // For now, just store the number (font_size-relative)
-        return parse_px(val);
+        return parse_px(val).map(StyleOp::LineHeightPx);
+    }
+    // Percentage: e.g. "150%" → 1.5 multiplier
+    if let Some(pct) = val.strip_suffix('%') {
+        return pct
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| StyleOp::LineHeight(v / 100.0));
     }
     // Bare number = multiplier
-    val.parse().ok()
+    val.parse::<f64>().ok().map(StyleOp::LineHeight)
 }
 
 // ── Value parsers ───────────────────────────────────────────────────────────
@@ -749,22 +813,18 @@ pub(crate) fn parse_shadow(val: &str) -> Option<crate::style::Shadow> {
     })
 }
 
-/// Parse CSS `transform` shorthand into individual ops.
-pub(crate) fn parse_transform(val: &str) -> Vec<StyleOp> {
-    use StyleOp::*;
-    let mut ops = Vec::new();
-    let val = val.trim();
-    let mut i = 0;
+/// Iterate over CSS function calls in a value string, yielding `(name, args)` pairs.
+/// E.g. `"blur(4px) brightness(1.2)"` yields `[("blur","4px"), ("brightness","1.2")]`.
+fn scan_css_functions(val: &str, mut cb: impl FnMut(&str, &str)) {
     let bytes = val.as_bytes();
+    let mut i = 0;
     while i < bytes.len() {
-        // Skip whitespace
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= bytes.len() {
             break;
         }
-        // Read function name
         let fn_start = i;
         while i < bytes.len() && bytes[i] != b'(' {
             i += 1;
@@ -772,7 +832,7 @@ pub(crate) fn parse_transform(val: &str) -> Vec<StyleOp> {
         if i >= bytes.len() {
             break;
         }
-        let name = &val[fn_start..i].trim();
+        let name = val[fn_start..i].trim();
         i += 1; // skip '('
         let arg_start = i;
         while i < bytes.len() && bytes[i] != b')' {
@@ -781,10 +841,19 @@ pub(crate) fn parse_transform(val: &str) -> Vec<StyleOp> {
         if i >= bytes.len() {
             break;
         }
-        let args = &val[arg_start..i];
+        let args = val[arg_start..i].trim();
         i += 1; // skip ')'
+        cb(name, args);
+    }
+}
+
+/// Parse CSS `transform` shorthand into individual ops.
+pub(crate) fn parse_transform(val: &str) -> Vec<StyleOp> {
+    use StyleOp::*;
+    let mut ops = Vec::new();
+    scan_css_functions(val.trim(), |name, args| {
         let parts: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
-        match *name {
+        match name {
             "translateX" => {
                 if let Some(v) = parse_px(parts[0]) {
                     ops.push(TranslateX(v));
@@ -848,8 +917,16 @@ pub(crate) fn parse_transform(val: &str) -> Vec<StyleOp> {
             }
             _ => {} // matrix, perspective, etc. — silently ignored
         }
-    }
+    });
     ops
+}
+
+/// Parse a percentage-or-number argument from a CSS filter function.
+fn parse_filter_amount(arg: &str) -> Option<f64> {
+    arg.strip_suffix('%')
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| v / 100.0)
+        .or_else(|| arg.parse().ok())
 }
 
 /// Parse CSS `filter` shorthand into individual ops.
@@ -860,72 +937,31 @@ pub(crate) fn parse_filter(val: &str) -> Vec<StyleOp> {
     if val == "none" {
         return ops;
     }
-    let mut i = 0;
-    let bytes = val.as_bytes();
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-        let fn_start = i;
-        while i < bytes.len() && bytes[i] != b'(' {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-        let name = &val[fn_start..i].trim();
-        i += 1;
-        let arg_start = i;
-        while i < bytes.len() && bytes[i] != b')' {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-        let arg = val[arg_start..i].trim();
-        i += 1;
-        match *name {
+    scan_css_functions(val, |name, arg| {
+        match name {
             "blur" => {
                 if let Some(v) = parse_px(arg) {
                     ops.push(FilterBlur(v));
                 }
             }
             "brightness" => {
-                if let Some(v) = arg
-                    .strip_suffix('%')
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .map(|v| v / 100.0)
-                    .or_else(|| arg.parse().ok())
-                {
+                if let Some(v) = parse_filter_amount(arg) {
                     ops.push(FilterBrightness(v));
                 }
             }
             "contrast" => {
-                if let Some(v) = arg
-                    .strip_suffix('%')
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .map(|v| v / 100.0)
-                    .or_else(|| arg.parse().ok())
-                {
+                if let Some(v) = parse_filter_amount(arg) {
                     ops.push(FilterContrast(v));
                 }
             }
             "opacity" => {
-                if let Some(v) = arg
-                    .strip_suffix('%')
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .map(|v| v / 100.0)
-                    .or_else(|| arg.parse().ok())
-                {
+                if let Some(v) = parse_filter_amount(arg) {
                     ops.push(FilterOpacity(v));
                 }
             }
             _ => {} // saturate, grayscale, sepia, hue-rotate, invert, drop-shadow — silently ignored
         }
-    }
+    });
     ops
 }
 
@@ -944,19 +980,54 @@ pub(crate) fn parse_color(val: &str) -> Option<Color> {
         .or_else(|| val.strip_prefix("rgba("))
     {
         let inner = inner.strip_suffix(')')?.trim();
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+        // Modern CSS also supports space-separated `rgb(r g b / a)` syntax.
+        let parts: Vec<&str> = if inner.contains(',') {
+            inner.split(',').map(|s| s.trim()).collect()
+        } else {
+            // `rgb(r g b / a)` or `rgb(r g b)`
+            let (rgb_part, alpha_part) = if let Some(idx) = inner.find('/') {
+                (&inner[..idx], Some(inner[idx + 1..].trim()))
+            } else {
+                (inner, None)
+            };
+            let mut v: Vec<&str> = rgb_part.split_whitespace().collect();
+            if let Some(a) = alpha_part {
+                v.push(a);
+            }
+            v
+        };
         return match parts.len() {
             3 => Some(Color::rgb(
                 parts[0].parse().ok()?,
                 parts[1].parse().ok()?,
                 parts[2].parse().ok()?,
             )),
-            4 => Some(Color::rgba(
-                parts[0].parse().ok()?,
-                parts[1].parse().ok()?,
-                parts[2].parse().ok()?,
-                parts[3].parse().ok()?,
-            )),
+            4 => {
+                let r: u8 = parts[0].parse().ok()?;
+                let g: u8 = parts[1].parse().ok()?;
+                let b: u8 = parts[2].parse().ok()?;
+                // CSS spec: alpha is 0.0-1.0 (float) or 0%-100%.
+                // Legacy engines also accept 0-255 integer.
+                let a_str = parts[3].trim();
+                let a: u8 = if a_str.contains('.') {
+                    // Float 0.0-1.0 → map to 0-255
+                    let f: f64 = a_str.parse().ok()?;
+                    (f.clamp(0.0, 1.0) * 255.0).round() as u8
+                } else if let Some(pct) = a_str.strip_suffix('%') {
+                    let f: f64 = pct.trim().parse().ok()?;
+                    (f.clamp(0.0, 100.0) / 100.0 * 255.0).round() as u8
+                } else {
+                    // Integer: if > 1 treat as 0-255 directly (legacy),
+                    // if 0 or 1 treat as literal (CSS clamps > 1 to 1).
+                    let v: f64 = a_str.parse().ok()?;
+                    if v > 1.0 {
+                        (v.clamp(0.0, 255.0)).round() as u8
+                    } else {
+                        (v.clamp(0.0, 1.0) * 255.0).round() as u8
+                    }
+                };
+                Some(Color::rgba(r, g, b, a))
+            }
             _ => None,
         };
     }

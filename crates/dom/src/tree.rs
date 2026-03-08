@@ -4,15 +4,223 @@
 //! cache-friendly, and trivially serialisable.  Node IDs are indices.
 
 use any_compute_core::hints::Hints;
-use any_compute_core::interaction::{
-    DispatchResult, EventContext, InputEvent, Phase,
-};
+use any_compute_core::interaction::{DispatchResult, EventContext, InputEvent, Phase};
 use any_compute_core::layout::{Point, Rect, Size};
 use any_compute_core::render::{Border, Color, Primitive, RenderList};
 
+use super::css::{AnimationDirection, AnimationFillMode, AnimationIterCount, Keyframe, StyleSheet};
 use super::style::*;
 // Re-import specific items we use in match arms for clarity.
-use super::style::{BoxSizing, Overflow, Visibility};
+use super::style::{
+    BoxSizing, Cursor, Overflow, PointerEvents, TextDecoration, TextOverflow, Visibility,
+    WhiteSpace,
+};
+
+use std::sync::Arc;
+
+// ── Animation runtime state ─────────────────────────────────────────────────
+
+/// Shared timing fields for transitions and keyframe animations.
+///
+/// Both [`ActiveTransition`] and [`ActiveAnimation`] embed this so
+/// delay/duration/easing logic is defined exactly once.
+#[derive(Debug, Clone)]
+pub struct Timing {
+    pub elapsed: f64,
+    pub duration: f64,
+    pub delay: f64,
+    pub easing: any_compute_core::animation::Easing,
+}
+
+impl Timing {
+    /// Seconds of active playback (after delay has passed).
+    #[inline]
+    pub fn active_time(&self) -> f64 {
+        (self.elapsed - self.delay).max(0.0)
+    }
+
+    /// Whether enough time has elapsed to be past the delay.
+    #[inline]
+    pub fn started(&self) -> bool {
+        self.elapsed >= self.delay
+    }
+
+    /// Linear progress in [0,1] — delay-aware, clamped, **no** easing.
+    pub fn raw_progress(&self) -> f64 {
+        if !self.started() {
+            return 0.0;
+        }
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        (self.active_time() / self.duration).clamp(0.0, 1.0)
+    }
+
+    /// Progress with easing curve applied.
+    pub fn eased_progress(&self) -> f64 {
+        self.easing.apply(self.raw_progress())
+    }
+
+    /// True when the single iteration is complete.
+    pub fn finished(&self) -> bool {
+        self.elapsed >= self.delay + self.duration
+    }
+}
+
+/// Result of a [`Tree::tick`] call.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TickResult {
+    /// Any animations/transitions still running — caller should redraw.
+    pub active: bool,
+    /// Layout-affecting properties were changed — caller should re-layout.
+    pub needs_layout: bool,
+}
+
+/// Active CSS property transition — interpolates one `StyleOp` from→to.
+#[derive(Debug, Clone)]
+pub struct ActiveTransition {
+    pub property: String,
+    pub from: Style,
+    pub to: Style,
+    pub timing: Timing,
+}
+
+impl ActiveTransition {
+    /// Normalized progress \in [0,1] with easing applied.
+    pub fn progress(&self) -> f64 {
+        self.timing.eased_progress()
+    }
+
+    /// True if this transition has completed.
+    pub fn finished(&self) -> bool {
+        self.timing.finished()
+    }
+
+    /// Build from a `TransitionSpec` + before/after snapshots.
+    fn from_spec(spec: &super::css::TransitionSpec, from: Style, to: Style) -> Self {
+        Self {
+            property: spec.property.clone(),
+            from,
+            to,
+            timing: Timing {
+                elapsed: 0.0,
+                duration: spec.duration_secs,
+                delay: spec.delay_secs,
+                easing: spec.easing,
+            },
+        }
+    }
+}
+
+/// Active CSS @keyframes animation on a node.
+#[derive(Debug, Clone)]
+pub struct ActiveAnimation {
+    pub name: String,
+    pub keyframes: Vec<Keyframe>,
+    pub timing: Timing,
+    pub iteration_count: AnimationIterCount,
+    pub direction: AnimationDirection,
+    pub fill_mode: AnimationFillMode,
+    pub iterations_done: f64,
+}
+
+impl ActiveAnimation {
+    /// Current normalized progress \in [0,1] within the current iteration.
+    pub fn progress(&self) -> f64 {
+        if !self.timing.started() {
+            return match self.fill_mode {
+                AnimationFillMode::Backwards | AnimationFillMode::Both => 0.0,
+                _ => 0.0,
+            };
+        }
+        let active = self.timing.active_time();
+        if self.timing.duration <= 0.0 {
+            return 1.0;
+        }
+        let raw_iter = active / self.timing.duration;
+        let iter_frac = raw_iter.fract();
+        let iter_num = raw_iter.floor();
+
+        // Check if finished
+        match self.iteration_count {
+            AnimationIterCount::Count(n) if iter_num >= n => {
+                return match self.fill_mode {
+                    AnimationFillMode::Forwards | AnimationFillMode::Both => 1.0,
+                    _ => 0.0,
+                };
+            }
+            _ => {}
+        }
+
+        let t = match self.direction {
+            AnimationDirection::Normal => iter_frac,
+            AnimationDirection::Reverse => 1.0 - iter_frac,
+            AnimationDirection::Alternate => {
+                if (iter_num as u64) % 2 == 0 {
+                    iter_frac
+                } else {
+                    1.0 - iter_frac
+                }
+            }
+            AnimationDirection::AlternateReverse => {
+                if (iter_num as u64) % 2 == 0 {
+                    1.0 - iter_frac
+                } else {
+                    iter_frac
+                }
+            }
+        };
+        self.timing.easing.apply(t)
+    }
+
+    /// True if this animation has completed all iterations.
+    pub fn finished(&self) -> bool {
+        if !self.timing.started() {
+            return false;
+        }
+        match self.iteration_count {
+            AnimationIterCount::Infinite => false,
+            AnimationIterCount::Count(n) => self.timing.active_time() >= self.timing.duration * n,
+        }
+    }
+
+    /// Apply current keyframe interpolation to a style.
+    pub fn apply_to(&self, style: &mut Style) {
+        let t = self.progress();
+        if self.keyframes.is_empty() {
+            return;
+        }
+
+        // Single-pass keyframe bracket search: find largest stop <= t (prev)
+        // and smallest stop >= t (next).
+        let mut prev = &self.keyframes[0];
+        let mut next = self.keyframes.last().unwrap();
+        for kf in &self.keyframes {
+            if kf.stop <= t {
+                prev = kf;
+            }
+            if kf.stop >= t && kf.stop < next.stop {
+                next = kf;
+            }
+        }
+
+        if (next.stop - prev.stop).abs() < f64::EPSILON {
+            // Exact match — apply directly
+            apply_ops(style, &prev.ops);
+        } else {
+            // Interpolate between surrounding keyframes via full Style::lerp.
+            // Clone the base style, apply each keyframe's ops independently,
+            // then lerp.  Properties not touched by keyframes stay identical
+            // in both copies, so the lerp is a no-op for them.
+            let local_t = (t - prev.stop) / (next.stop - prev.stop);
+            let mut prev_style = style.clone();
+            apply_ops(&mut prev_style, &prev.ops);
+            let mut next_style = style.clone();
+            apply_ops(&mut next_style, &next.ops);
+            *style = prev_style.lerp(&next_style, local_t);
+        }
+    }
+}
 
 // ── Node identity ───────────────────────────────────────────────────────────
 
@@ -39,6 +247,8 @@ pub enum NodeKind {
 pub struct Slot {
     pub kind: NodeKind,
     pub style: Style,
+    /// Style before any pseudo-class overrides — reset target for restyle.
+    pub base_style: Style,
     pub hints: Hints,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
@@ -48,6 +258,22 @@ pub struct Slot {
     pub scroll: Point,
     /// Optional click handler tag — matched by the host.
     pub tag: Option<String>,
+    /// HTML `id` attribute — for CSS `#id` selector matching.
+    pub id: Option<String>,
+    /// HTML element tag name (e.g. "div", "span") — for CSS restyle.
+    pub element: String,
+    /// CSS class list — for CSS restyle on pseudo-class changes.
+    pub class_list: Vec<String>,
+    /// Current hover state — set by dispatch, used for `:hover` restyle.
+    pub hovered: bool,
+    /// Current active (pressed) state — set by dispatch, used for `:active` restyle.
+    pub active: bool,
+    /// Current focused state — set by `Tree::focus()`, used for `:focus` restyle.
+    pub focused: bool,
+    /// Active CSS transitions (property-level interpolation on style change).
+    pub transitions: Vec<ActiveTransition>,
+    /// Active CSS @keyframes animations.
+    pub animations: Vec<ActiveAnimation>,
 }
 
 impl Slot {
@@ -55,6 +281,7 @@ impl Slot {
     pub fn new(kind: NodeKind, style: Style, parent: Option<NodeId>) -> Self {
         Self {
             kind,
+            base_style: style.clone(),
             style,
             hints: Hints::default(),
             parent,
@@ -62,16 +289,32 @@ impl Slot {
             rect: Rect::ZERO,
             scroll: Point::ZERO,
             tag: None,
+            id: None,
+            element: String::new(),
+            class_list: Vec::new(),
+            hovered: false,
+            active: false,
+            focused: false,
+            transitions: Vec::new(),
+            animations: Vec::new(),
         }
     }
 }
 
 // ── Tree ────────────────────────────────────────────────────────────────────
 
-/// The DOM — a flat arena of [`Slot`]s.
+/// The DOM — a flat arena of [`Slot`]s with optional CSS for live restyle.
 pub struct Tree {
     pub arena: Vec<Slot>,
     pub root: NodeId,
+    /// Shared stylesheet — when present, enables live hover/active restyle.
+    pub sheet: Option<Arc<StyleSheet>>,
+    /// Last viewport used by `layout()` — reused by `tick()` for auto re-layout.
+    viewport: Size,
+    /// Currently hovered node (if any).
+    hovered: Option<NodeId>,
+    /// Currently focused node (if any).
+    focused: Option<NodeId>,
 }
 
 impl Tree {
@@ -86,6 +329,18 @@ impl Tree {
     pub fn slot_mut(&mut self, id: NodeId) -> &mut Slot {
         &mut self.arena[id.0]
     }
+
+    /// Walk from `start` to root, calling `f` on each slot along the path.
+    fn walk_ancestors(&mut self, start: NodeId, mut f: impl FnMut(&mut Slot)) {
+        let mut id = start;
+        loop {
+            f(&mut self.arena[id.0]);
+            match self.arena[id.0].parent {
+                Some(p) => id = p,
+                None => break,
+            }
+        }
+    }
 }
 
 impl Tree {
@@ -94,7 +349,135 @@ impl Tree {
         Self {
             arena: vec![Slot::new(NodeKind::Box, root_style, None)],
             root: NodeId(0),
+            sheet: None,
+            viewport: Size::ZERO,
+            hovered: None,
+            focused: None,
         }
+    }
+
+    /// Attach a stylesheet for live restyle (hover/active pseudo-class updates).
+    pub fn set_sheet(&mut self, sheet: Arc<StyleSheet>) {
+        self.sheet = Some(sheet);
+    }
+
+    /// Initialize CSS @keyframes animations for all nodes that have animation specs.
+    ///
+    /// Call once after parse + layout to start animation playback.
+    pub fn start_animations(&mut self) {
+        let sheet = match &self.sheet {
+            Some(s) => Arc::clone(s),
+            None => return,
+        };
+
+        for i in 0..self.arena.len() {
+            let slot = &self.arena[i];
+            let mut anims = Vec::new();
+
+            // Collect animation specs from all classes on this node
+            for cls in &slot.class_list {
+                for spec in sheet.class_animations(cls) {
+                    if let Some(kfs) = sheet.keyframes(&spec.name) {
+                        anims.push(ActiveAnimation {
+                            name: spec.name.clone(),
+                            keyframes: kfs.to_vec(),
+                            timing: Timing {
+                                elapsed: 0.0,
+                                duration: spec.duration_secs,
+                                delay: spec.delay_secs,
+                                easing: spec.easing,
+                            },
+                            iteration_count: spec.iteration_count,
+                            direction: spec.direction,
+                            fill_mode: spec.fill_mode,
+                            iterations_done: 0.0,
+                        });
+                    }
+                }
+            }
+
+            self.arena[i].animations = anims;
+        }
+    }
+
+    /// Advance all active transitions and animations by `dt` seconds.
+    ///
+    /// When animations modify layout-affecting properties the tree is
+    /// automatically re-laid-out using the last viewport from `layout()`.
+    /// Returns a [`TickResult`] so the caller knows whether to redraw.
+    pub fn tick(&mut self, dt: f64) -> TickResult {
+        let mut result = TickResult::default();
+
+        for i in 0..self.arena.len() {
+            let slot = &mut self.arena[i];
+
+            // ── Transitions ─────────────────────────────────────────
+            if !slot.transitions.is_empty() {
+                // Start from the target (to) style — completed properties stay at target.
+                let to_style = slot.transitions[0].to.clone();
+                let mut blended_result = to_style;
+                let mut all_done = true;
+
+                for tr in &mut slot.transitions {
+                    tr.timing.elapsed += dt;
+                    if !tr.finished() {
+                        all_done = false;
+                        result.active = true;
+                        result.needs_layout = true;
+                        let blended = tr.from.lerp(&tr.to, tr.progress());
+                        super::style::copy_css_property(
+                            &mut blended_result,
+                            &blended,
+                            &tr.property,
+                        );
+                    }
+                }
+
+                slot.style = blended_result;
+                if all_done {
+                    slot.transitions.clear();
+                }
+            }
+
+            // ── Animations ──────────────────────────────────────────
+            let mut anim_dirty = false;
+            for anim in &mut slot.animations {
+                if !anim.finished() {
+                    anim.timing.elapsed += dt;
+                    anim_dirty = true;
+                    result.active = true;
+                    result.needs_layout = true;
+                }
+            }
+
+            // Apply keyframe ops on top of the current style
+            if anim_dirty {
+                for anim in &slot.animations {
+                    if !anim.finished()
+                        || matches!(
+                            anim.fill_mode,
+                            AnimationFillMode::Forwards | AnimationFillMode::Both
+                        )
+                    {
+                        anim.apply_to(&mut slot.style);
+                    }
+                }
+            }
+        }
+
+        // Auto re-layout when animations changed layout-affecting properties.
+        if result.needs_layout && self.viewport != Size::ZERO {
+            self.layout(self.viewport);
+        }
+
+        result
+    }
+
+    /// Whether any node has active animations/transitions (use for redraw scheduling).
+    pub fn has_active_animations(&self) -> bool {
+        self.arena
+            .iter()
+            .any(|s| !s.transitions.is_empty() || s.animations.iter().any(|a| !a.finished()))
     }
 
     // ── Mutation ─────────────────────────────────────────
@@ -124,6 +507,33 @@ impl Tree {
         self.slot_mut(id).hints = hints;
     }
 
+    /// Focus a node (for `:focus` pseudo-class). Blurs the previous node.
+    pub fn focus(&mut self, id: NodeId) {
+        if let Some(old) = self.focused {
+            self.arena[old.0].focused = false;
+        }
+        self.arena[id.0].focused = true;
+        self.focused = Some(id);
+        if let Some(sheet) = self.sheet.clone() {
+            self.restyle_node(id, &sheet);
+            if let Some(old) = self.focused {
+                if old != id {
+                    self.restyle_node(old, &sheet);
+                }
+            }
+        }
+    }
+
+    /// Remove focus from the currently focused node.
+    pub fn blur(&mut self) {
+        if let Some(old) = self.focused.take() {
+            self.arena[old.0].focused = false;
+            if let Some(sheet) = self.sheet.clone() {
+                self.restyle_node(old, &sheet);
+            }
+        }
+    }
+
     fn add_node(&mut self, parent: NodeId, kind: NodeKind, style: Style) -> NodeId {
         let id = NodeId(self.arena.len());
         self.arena.push(Slot::new(kind, style, Some(parent)));
@@ -135,6 +545,7 @@ impl Tree {
 
     /// Solve layout for the whole tree, given the viewport size.
     pub fn layout(&mut self, viewport: Size) {
+        self.viewport = viewport;
         let root = self.root;
         self.layout_node(
             root, viewport.w, viewport.h, viewport.w, viewport.h, 0.0, 0.0,
@@ -177,7 +588,10 @@ impl Tree {
         // Percentages resolve against the parent's content area (resolve_w/h)
         // so they are not double-resolved through the flex allocation.
         let outer_w = style.width.resolve(resolve_w).unwrap_or(avail_w) + margin_h;
-        let outer_h_hint = style.height.resolve(resolve_h);
+        let outer_h_hint = style.height.resolve(resolve_h).or_else(|| {
+            // aspect-ratio: derive height from width when height is auto
+            style.aspect_ratio.map(|ar| (outer_w - margin_h) / ar)
+        });
 
         let content_w = match style.box_sizing {
             BoxSizing::BorderBox => (outer_w - margin_h - pad_h - bdr_h).max(0.0),
@@ -187,18 +601,26 @@ impl Tree {
         // Determine intrinsic height for text / bar.
         let intrinsic_h = match &self.slot(id).kind {
             NodeKind::Text(s) => {
-                let font = style.font_size;
-                let chars = s.len().max(1) as f64;
-                let lines = (chars * font * 0.55 / content_w.max(1.0)).ceil().max(1.0);
-                lines * font * style.line_height
+                let text_w = style.text_width(s) + style.text_indent;
+                let lines = if style.white_space == WhiteSpace::NoWrap {
+                    1.0
+                } else {
+                    (text_w / content_w.max(1.0)).ceil().max(1.0)
+                };
+                let lh = if style.line_height_absolute {
+                    style.line_height
+                } else {
+                    style.font_size * style.line_height
+                };
+                lines * lh
             }
-            NodeKind::Bar { .. } => style.font_size.max(8.0),
+            NodeKind::Bar { .. } => style.font_size.max(MIN_BAR_HEIGHT),
             NodeKind::Box => 0.0,
         };
 
         // Recursively layout children to know content height.
         let children: Vec<NodeId> = self.slot(id).children.clone();
-        let flow_children: Vec<NodeId> = children
+        let mut flow_children: Vec<NodeId> = children
             .iter()
             .copied()
             .filter(|c| {
@@ -206,6 +628,8 @@ impl Tree {
                 !cs.is_out_of_flow() && !cs.is_hidden()
             })
             .collect();
+        // CSS `order` property: sort by order (stable — preserves DOM order for ties).
+        flow_children.sort_by_key(|c| self.slot(*c).style.order);
 
         let is_row = style.direction == Direction::Row;
         let child_avail_w = content_w;
@@ -226,41 +650,24 @@ impl Tree {
             style.row_gap.unwrap_or(style.gap)
         };
 
-        // First pass: measure children.
-        let total_gap = if flow_children.len() > 1 {
-            main_gap * (flow_children.len() - 1) as f64
-        } else {
-            0.0
-        };
-
-        // Compute flex totals.
-        let total_grow: f64 = flow_children
-            .iter()
-            .map(|c| self.slot(*c).style.flex_grow)
-            .sum();
-
+        // First pass: measure children (initial sizes before grow/shrink).
         let mut child_sizes: Vec<(NodeId, f64, f64)> = Vec::with_capacity(flow_children.len());
-        let mut used_main = total_gap;
-
         for &cid in &flow_children {
-            // Extract resolved values first, then drop the borrow so
-            // intrinsic_width can read the arena without conflict.
-            let (explicit_w, explicit_h, margin_main, child_align_self) = {
+            let (explicit_w, explicit_h, flex_basis, child_align_self) = {
                 let cs = &self.slot(cid).style;
+                let basis_ctx = if is_row { child_avail_w } else { child_avail_h };
                 (
                     cs.width.resolve(child_avail_w),
                     cs.height.resolve(child_avail_h),
-                    if is_row {
-                        cs.margin.horizontal()
-                    } else {
-                        cs.margin.vertical()
-                    },
+                    cs.flex_basis.resolve(basis_ctx),
                     cs.align_self,
                 )
             };
             let cross_align = child_align_self.unwrap_or(style.align);
             let cw = if is_row {
-                explicit_w.unwrap_or_else(|| self.intrinsic_width(cid))
+                flex_basis
+                    .or(explicit_w)
+                    .unwrap_or_else(|| self.intrinsic_width(cid))
             } else {
                 match (explicit_w, cross_align) {
                     (Some(w), _) => w,
@@ -275,141 +682,251 @@ impl Tree {
                     (None, _) => 0.0,
                 }
             } else {
-                explicit_h.unwrap_or(0.0)
+                flex_basis.or(explicit_h).unwrap_or(0.0)
             };
             child_sizes.push((cid, cw, ch));
-            used_main += if is_row { cw } else { ch } + margin_main;
         }
 
-        // Distribute remaining space among flex-grow children.
+        // Break children into flex lines.
         let main_budget = if is_row { child_avail_w } else { child_avail_h };
-        let remaining = (main_budget - used_main).max(0.0);
+        let wraps = style.flex_wrap != FlexWrap::NoWrap;
+        let mut lines: Vec<Vec<usize>> = vec![vec![]];
 
-        if total_grow > 0.0 && remaining > 0.0 {
-            for (cid, cw, ch) in &mut child_sizes {
-                let grow = self.slot(*cid).style.flex_grow;
-                if grow > 0.0 {
-                    let share = remaining * grow / total_grow;
-                    if is_row {
-                        *cw += share;
-                    } else {
-                        *ch += share;
-                    }
+        if wraps && main_budget > 0.0 {
+            let mut line_used = 0.0_f64;
+            for (i, &(cid, cw, ch)) in child_sizes.iter().enumerate() {
+                let cs = &self.slot(cid).style;
+                let m = if is_row {
+                    cs.margin.horizontal()
+                } else {
+                    cs.margin.vertical()
+                };
+                let child_main = if is_row { cw } else { ch } + m;
+                let gap_add = if lines.last().unwrap().is_empty() {
+                    0.0
+                } else {
+                    main_gap
+                };
+                if !lines.last().unwrap().is_empty()
+                    && line_used + gap_add + child_main > main_budget
+                {
+                    lines.push(vec![]);
+                    line_used = 0.0;
                 }
+                let gap_add = if lines.last().unwrap().is_empty() {
+                    0.0
+                } else {
+                    main_gap
+                };
+                line_used += child_main + gap_add;
+                lines.last_mut().unwrap().push(i);
             }
+        } else {
+            lines[0] = (0..child_sizes.len()).collect();
+        }
+        if style.flex_wrap == FlexWrap::WrapReverse {
+            lines.reverse();
         }
 
-        // Flex-shrink: when children overflow a *definite* main axis, shrink
-        // proportionally.  If main_budget is zero the container has auto/
-        // indefinite size — it will wrap to content, so shrink must not fire.
-        let overflow = used_main - main_budget;
-        if overflow > 0.0 && main_budget > 0.0 {
-            let total_shrink: f64 = child_sizes
-                .iter()
-                .map(|(cid, _, _)| self.slot(*cid).style.flex_shrink)
-                .sum();
-            if total_shrink > 0.0 {
-                for (cid, cw, ch) in &mut child_sizes {
-                    let shrink = self.slot(*cid).style.flex_shrink;
-                    if shrink > 0.0 {
-                        let share = overflow * shrink / total_shrink;
-                        // Respect min-width / min-height constraints.
+        // Per-line: grow/shrink + position children.
+        let inner_x = ox + style.margin.left + style.padding.left + bdr.left;
+        let inner_y = oy + style.margin.top + style.padding.top + bdr.top;
+        let scroll = self.slot(id).scroll;
+        let cross_gap = if is_row {
+            style.row_gap.unwrap_or(style.gap)
+        } else {
+            style.column_gap.unwrap_or(style.gap)
+        };
+        let mut cross_cursor = if is_row {
+            inner_y - scroll.y
+        } else {
+            inner_x - scroll.x
+        };
+        let mut total_cross = 0.0_f64;
+        let mut last_cursor_main = if is_row {
+            inner_x - scroll.x
+        } else {
+            inner_y - scroll.y
+        };
+
+        for line_indices in &lines {
+            if line_indices.is_empty() {
+                continue;
+            }
+
+            // Grow/shrink within this line.
+            let line_gap = if line_indices.len() > 1 {
+                main_gap * (line_indices.len() - 1) as f64
+            } else {
+                0.0
+            };
+            let mut line_used = line_gap;
+            let mut line_grow = 0.0_f64;
+            for &idx in line_indices {
+                let (cid, cw, ch) = child_sizes[idx];
+                let cs = &self.slot(cid).style;
+                let m = if is_row {
+                    cs.margin.horizontal()
+                } else {
+                    cs.margin.vertical()
+                };
+                line_used += if is_row { cw } else { ch } + m;
+                line_grow += cs.flex_grow;
+            }
+
+            let remaining = (main_budget - line_used).max(0.0);
+            if line_grow > 0.0 && remaining > 0.0 {
+                for &idx in line_indices {
+                    let grow = self.slot(child_sizes[idx].0).style.flex_grow;
+                    if grow > 0.0 {
+                        let share = remaining * grow / line_grow;
                         if is_row {
-                            let min = self
-                                .slot(*cid)
-                                .style
-                                .min_width
-                                .resolve(child_avail_w)
-                                .unwrap_or(0.0);
-                            *cw = (*cw - share).max(min);
+                            child_sizes[idx].1 += share;
                         } else {
-                            let min = self
-                                .slot(*cid)
-                                .style
-                                .min_height
-                                .resolve(child_avail_h)
-                                .unwrap_or(0.0);
-                            *ch = (*ch - share).max(min);
+                            child_sizes[idx].2 += share;
                         }
                     }
                 }
             }
-        }
 
-        // Second pass: position children.
-        let inner_x = ox + style.margin.left + style.padding.left + bdr.left;
-        let inner_y = oy + style.margin.top + style.padding.top + bdr.top;
-        let scroll = self.slot(id).scroll;
-        let mut cursor_x = inner_x - scroll.x;
-        let mut cursor_y = inner_y - scroll.y;
-
-        // Justify offset.
-        let total_child_main: f64 = child_sizes
-            .iter()
-            .map(|(cid, w, h)| {
-                let cs = &self.slot(*cid).style;
-                if is_row {
-                    *w + cs.margin.horizontal()
-                } else {
-                    *h + cs.margin.vertical()
+            // Flex-shrink (only for non-wrapping — wrapped lines don't overflow main axis).
+            let overflow = line_used - main_budget;
+            if overflow > 0.0 && main_budget > 0.0 && !wraps {
+                let total_shrink: f64 = line_indices
+                    .iter()
+                    .map(|&idx| self.slot(child_sizes[idx].0).style.flex_shrink)
+                    .sum();
+                if total_shrink > 0.0 {
+                    for &idx in line_indices {
+                        let cid = child_sizes[idx].0;
+                        let shrink = self.slot(cid).style.flex_shrink;
+                        if shrink > 0.0 {
+                            let share = overflow * shrink / total_shrink;
+                            if is_row {
+                                let min = self
+                                    .slot(cid)
+                                    .style
+                                    .min_width
+                                    .resolve(child_avail_w)
+                                    .unwrap_or(0.0);
+                                child_sizes[idx].1 = (child_sizes[idx].1 - share).max(min);
+                            } else {
+                                let min = self
+                                    .slot(cid)
+                                    .style
+                                    .min_height
+                                    .resolve(child_avail_h)
+                                    .unwrap_or(0.0);
+                                child_sizes[idx].2 = (child_sizes[idx].2 - share).max(min);
+                            }
+                        }
+                    }
                 }
-            })
-            .sum::<f64>()
-            + total_gap;
-
-        let justify_offset = match style.justify {
-            Justify::Center => {
-                ((if is_row { child_avail_w } else { child_avail_h }) - total_child_main).max(0.0)
-                    / 2.0
             }
-            Justify::End => {
-                ((if is_row { child_avail_w } else { child_avail_h }) - total_child_main).max(0.0)
-            }
-            _ => 0.0,
-        };
 
-        if is_row {
-            cursor_x += justify_offset;
-        } else {
-            cursor_y += justify_offset;
-        }
+            // Justify: compute per-line offsets.
+            let line_child_main: f64 = line_indices
+                .iter()
+                .map(|&idx| {
+                    let (cid, cw, ch) = child_sizes[idx];
+                    let cs = &self.slot(cid).style;
+                    if is_row {
+                        cw + cs.margin.horizontal()
+                    } else {
+                        ch + cs.margin.vertical()
+                    }
+                })
+                .sum();
+            let line_total_with_gap = line_child_main + line_gap;
+            let n = line_indices.len() as f64;
+            let line_remaining = (main_budget - line_child_main).max(0.0);
 
-        let mut max_cross = 0.0_f64;
-        for (cid, cw, ch) in &child_sizes {
-            let cs = &self.slot(*cid).style;
-            let cm = cs.margin;
-            let cx = cursor_x + cm.left;
-            let cy = cursor_y + cm.top;
-
-            // Cross-axis alignment.
-            // Per-child align-self overrides parent align.
-            let effective_align = cs.align_self.unwrap_or(style.align);
-            let (fx, fy) = if is_row {
-                let aligned_y = match effective_align {
-                    Align::Center => cy + (child_avail_h - ch) / 2.0,
-                    Align::End => cy + child_avail_h - ch,
-                    _ => cy,
-                };
-                (cx, aligned_y)
-            } else {
-                let aligned_x = match effective_align {
-                    Align::Center => cx + (child_avail_w - cw) / 2.0,
-                    Align::End => cx + child_avail_w - cw,
-                    _ => cx,
-                };
-                (aligned_x, cy)
+            let (j_offset, j_gap) = match style.justify {
+                Justify::Center => ((main_budget - line_total_with_gap).max(0.0) / 2.0, main_gap),
+                Justify::End => ((main_budget - line_total_with_gap).max(0.0), main_gap),
+                Justify::SpaceBetween if n > 1.0 => (0.0, line_remaining / (n - 1.0)),
+                Justify::SpaceAround if n > 0.0 => {
+                    let g = line_remaining / n;
+                    (g / 2.0, g)
+                }
+                Justify::SpaceEvenly if n > 0.0 => {
+                    let g = line_remaining / (n + 1.0);
+                    (g, g)
+                }
+                _ => (0.0, main_gap),
             };
 
-            self.layout_node(*cid, *cw, *ch, child_avail_w, child_avail_h, fx, fy);
-
-            let child_rect = self.slot(*cid).rect;
-            if is_row {
-                cursor_x += child_rect.size.w + cm.horizontal() + main_gap;
-                max_cross = max_cross.max(child_rect.size.h + cm.vertical());
+            let main_start = if is_row {
+                inner_x - scroll.x
             } else {
-                cursor_y += child_rect.size.h + cm.vertical() + main_gap;
-                max_cross = max_cross.max(child_rect.size.w + cm.horizontal());
+                inner_y - scroll.y
+            };
+            let mut cursor_main = main_start + j_offset;
+            let mut line_max_cross = 0.0_f64;
+
+            // Pre-compute actual line cross dimension for correct Center/End alignment.
+            // Without this, auto-height containers would use parent-given avail (often 0).
+            let line_cross: f64 = line_indices
+                .iter()
+                .map(|&idx| {
+                    let (cid, cw, ch) = child_sizes[idx];
+                    let cs = &self.slot(cid).style;
+                    if is_row {
+                        ch + cs.margin.vertical()
+                    } else {
+                        cw + cs.margin.horizontal()
+                    }
+                })
+                .fold(0.0_f64, f64::max);
+
+            for &idx in line_indices {
+                let (cid, cw, ch) = child_sizes[idx];
+                let cs = &self.slot(cid).style;
+                let cm = cs.margin;
+                let effective_align = cs.align_self.unwrap_or(style.align);
+
+                let (fx, fy) = if is_row {
+                    let cx = cursor_main + cm.left;
+                    let align_cross = line_cross - cm.vertical();
+                    let cy = cross_cursor + cm.top;
+                    let aligned_y = match effective_align {
+                        Align::Center => cy + (align_cross - ch) / 2.0,
+                        Align::End => cy + align_cross - ch,
+                        _ => cy,
+                    };
+                    (cx, aligned_y)
+                } else {
+                    let cy = cursor_main + cm.top;
+                    let align_cross = line_cross - cm.horizontal();
+                    let cx = cross_cursor + cm.left;
+                    let aligned_x = match effective_align {
+                        Align::Center => cx + (align_cross - cw) / 2.0,
+                        Align::End => cx + align_cross - cw,
+                        _ => cx,
+                    };
+                    (aligned_x, cy)
+                };
+
+                self.layout_node(cid, cw, ch, child_avail_w, child_avail_h, fx, fy);
+
+                let child_rect = self.slot(cid).rect;
+                if is_row {
+                    cursor_main += child_rect.size.w + cm.horizontal() + j_gap;
+                    line_max_cross = line_max_cross.max(child_rect.size.h + cm.vertical());
+                } else {
+                    cursor_main += child_rect.size.h + cm.vertical() + j_gap;
+                    line_max_cross = line_max_cross.max(child_rect.size.w + cm.horizontal());
+                }
             }
+
+            last_cursor_main = cursor_main;
+            cross_cursor += line_max_cross + cross_gap;
+            total_cross += line_max_cross;
+        }
+
+        // Add cross gaps between lines.
+        if lines.len() > 1 {
+            total_cross += cross_gap * (lines.len() - 1) as f64;
         }
 
         // Layout out-of-flow children (absolute / fixed).
@@ -426,19 +943,20 @@ impl Tree {
         }
 
         // Compute own height from children if auto.
-        let children_h = cursor_y - (inner_y - scroll.y) - main_gap.max(0.0);
-        let _children_w = cursor_x - (inner_x - scroll.x) - main_gap.max(0.0);
+        let children_main = last_cursor_main
+            - (if is_row {
+                inner_x - scroll.x
+            } else {
+                inner_y - scroll.y
+            })
+            - main_gap.max(0.0);
 
-        let _insets = match style.box_sizing {
-            BoxSizing::BorderBox => pad_h + bdr_h,
-            BoxSizing::ContentBox => 0.0,
-        };
         let final_w = style
             .width
             .resolve(resolve_w)
             .unwrap_or((avail_w - margin_h).max(0.0));
         let final_h = outer_h_hint.unwrap_or_else(|| {
-            let content = intrinsic_h.max(if is_row { max_cross } else { children_h });
+            let content = intrinsic_h.max(if is_row { total_cross } else { children_main });
             (content + pad_v + bdr_v).max(avail_h)
         });
 
@@ -458,7 +976,7 @@ impl Tree {
         let s = &slot.style;
         let pad_h = s.padding.horizontal();
         match &slot.kind {
-            NodeKind::Text(t) => t.len() as f64 * s.font_size * 0.55 + pad_h,
+            NodeKind::Text(t) => s.text_width(t) + s.text_indent + pad_h,
             NodeKind::Bar { .. } => pad_h,
             NodeKind::Box => {
                 let row = s.direction == Direction::Row;
@@ -521,21 +1039,44 @@ impl Tree {
             return;
         }
 
+        // Apply transform to bounds (translate + scale around center).
+        let r = if s.has_transform() {
+            s.transform_rect(r)
+        } else {
+            r
+        };
+
         // Clip for scrollable containers.
         let needs_clip = !matches!(s.overflow, Overflow::Visible);
         if needs_clip {
             list.push(Primitive::PushClip { bounds: r });
         }
 
-        // Background.
-        if s.background.a > 0 {
-            let bw = s.effective_border();
-            let has_border = s.border_color.a > 0
-                && (bw.top > 0.0 || bw.right > 0.0 || bw.bottom > 0.0 || bw.left > 0.0);
+        // Box-shadow (drawn before the main rect).
+        if let Some(sh) = &s.box_shadow {
+            let shadow_bounds = Rect::new(
+                r.origin.x + sh.x - sh.spread,
+                r.origin.y + sh.y - sh.spread,
+                r.size.w + sh.spread * 2.0,
+                r.size.h + sh.spread * 2.0,
+            );
+            list.push(Primitive::Rect {
+                bounds: shadow_bounds,
+                fill: s.apply_opacity(sh.color),
+                border: None,
+                corner_radius: s.corner_radius + sh.spread,
+            });
+        }
+
+        // Background + border.
+        let bg = s.apply_opacity(s.background);
+        let bw = s.effective_border();
+        let has_border = s.has_visible_border();
+        if bg.a > 0 || has_border {
             let border = if has_border {
                 let max_bw = bw.top.max(bw.right).max(bw.bottom).max(bw.left);
                 Some(Border {
-                    color: s.border_color,
+                    color: s.apply_opacity(s.border_color),
                     width: max_bw,
                 })
             } else {
@@ -543,23 +1084,98 @@ impl Tree {
             };
             list.push(Primitive::Rect {
                 bounds: r,
-                fill: s.background,
+                fill: bg,
                 border,
                 corner_radius: s.corner_radius,
+            });
+        }
+
+        // Outline (drawn outside the border box, after background).
+        if s.outline_width > 0.0 && s.outline_color.a > 0 {
+            let ow = s.outline_width;
+            let outline_bounds = Rect::new(
+                r.origin.x - ow,
+                r.origin.y - ow,
+                r.size.w + ow * 2.0,
+                r.size.h + ow * 2.0,
+            );
+            list.push(Primitive::Rect {
+                bounds: outline_bounds,
+                fill: Color::TRANSPARENT,
+                border: Some(Border {
+                    color: s.apply_opacity(s.outline_color),
+                    width: ow,
+                }),
+                corner_radius: s.corner_radius + ow,
             });
         }
 
         // Kind-specific paint.
         match &slot.kind {
             NodeKind::Text(content) => {
-                let tx = r.origin.x + s.padding.left;
-                let ty = r.origin.y + s.padding.top + s.font_size * 0.85;
+                let display_text = s.transform_text(content);
+                let text_w = s.text_width(&display_text);
+                let avail_w = r.size.w - s.padding.left - s.padding.right;
+
+                // text-overflow: ellipsis — truncate when text overflows
+                let final_text = if s.text_overflow == TextOverflow::Ellipsis
+                    && text_w > avail_w
+                    && avail_w > 0.0
+                {
+                    let char_w = s.char_width();
+                    let max_chars = ((avail_w - char_w * 3.0).max(0.0) / char_w) as usize;
+                    let truncated: String = display_text.chars().take(max_chars).collect();
+                    std::borrow::Cow::Owned(format!("{}...", truncated))
+                } else {
+                    display_text
+                };
+
+                // text-align: compute horizontal offset
+                let align_offset = match s.text_align {
+                    TextAlign::Center => (avail_w - text_w).max(0.0) / 2.0,
+                    TextAlign::Right => (avail_w - text_w).max(0.0),
+                    TextAlign::Left => 0.0,
+                };
+
+                let tx = r.origin.x + s.padding.left + s.text_indent + align_offset;
+                let ty = r.origin.y + s.padding.top + s.font_size * TEXT_BASELINE_RATIO;
+                let painted_text = final_text.into_owned();
+
+                // text-shadow (drawn behind text)
+                if let Some(sh) = &s.text_shadow {
+                    list.push(Primitive::Text {
+                        anchor: Point::new(tx + sh.x, ty + sh.y),
+                        content: painted_text.clone(),
+                        font_size: s.font_size,
+                        color: s.apply_opacity(sh.color),
+                    });
+                }
+
                 list.push(Primitive::Text {
                     anchor: Point::new(tx, ty),
-                    content: content.clone(),
+                    content: painted_text,
                     font_size: s.font_size,
-                    color: s.color,
+                    color: s.apply_opacity(s.color),
                 });
+
+                // text-decoration
+                if s.text_decoration != TextDecoration::None {
+                    let line_y = match s.text_decoration {
+                        TextDecoration::Underline => {
+                            ty + s.font_size * (1.0 - TEXT_BASELINE_RATIO) + 1.0
+                        }
+                        TextDecoration::Overline => r.origin.y + s.padding.top,
+                        TextDecoration::LineThrough => ty - s.font_size * 0.3,
+                        TextDecoration::None => unreachable!(),
+                    };
+                    let line_end = tx + text_w.min(avail_w);
+                    list.push(Primitive::Line {
+                        from: Point::new(tx, line_y),
+                        to: Point::new(line_end, line_y),
+                        stroke: s.apply_opacity(s.color),
+                        width: 1.0,
+                    });
+                }
             }
             NodeKind::Bar { fraction, fill } => {
                 let bar_h = (r.size.h - s.padding.vertical()).max(0.0);
@@ -569,7 +1185,7 @@ impl Tree {
                 // Track background.
                 list.push(Primitive::Rect {
                     bounds: Rect::new(bx, by, track_w, bar_h),
-                    fill: Color::rgba(255, 255, 255, 20),
+                    fill: BAR_TRACK_BG,
                     border: None,
                     corner_radius: s.corner_radius,
                 });
@@ -597,27 +1213,22 @@ impl Tree {
 
     /// Paint children sorted by z-index. Children without z-index use
     /// insertion order (stable sort preserves source order for equal z).
-    fn paint_children(&self, id: NodeId, list: &mut RenderList) {
+    /// Return children sorted by z-index (ascending). If no child has z-index
+    /// set, returns a simple clone in insertion order (no allocation for fast path).
+    fn z_sorted_children(&self, id: NodeId) -> Vec<NodeId> {
         let children = &self.slot(id).children;
-        if children.is_empty() {
-            return;
-        }
-
-        // Fast path: if no child has a z-index set, paint in insertion order.
         let any_z = children
             .iter()
             .any(|c| self.slot(*c).style.z_index.is_some());
-        if !any_z {
-            for &child_id in children {
-                self.paint_node(child_id, list);
-            }
-            return;
-        }
-
-        // Sort by z-index (stable — preserves insertion order for equal z).
         let mut sorted: Vec<NodeId> = children.clone();
-        sorted.sort_by_key(|c| self.slot(*c).style.z_index.unwrap_or(0));
-        for child_id in sorted {
+        if any_z {
+            sorted.sort_by_key(|c| self.slot(*c).style.z_index.unwrap_or(0));
+        }
+        sorted
+    }
+
+    fn paint_children(&self, id: NodeId, list: &mut RenderList) {
+        for child_id in self.z_sorted_children(id) {
             self.paint_node(child_id, list);
         }
     }
@@ -631,11 +1242,25 @@ impl Tree {
 
     fn hit_test_node(&self, id: NodeId, pos: Point) -> Option<NodeId> {
         let slot = self.slot(id);
-        if !slot.rect.contains(pos) {
+        let s = &slot.style;
+
+        // pointer-events: none → skip this node and its children
+        if s.pointer_events == PointerEvents::None {
             return None;
         }
-        // Deepest child wins (reverse for z-order: last child = on top).
-        for &child_id in slot.children.iter().rev() {
+
+        // Apply transform to bounds for hit-testing
+        let test_rect = if s.has_transform() {
+            s.transform_rect(slot.rect)
+        } else {
+            slot.rect
+        };
+
+        if !test_rect.contains(pos) {
+            return None;
+        }
+        // Highest z-index first (reverse z-sorted order) — last painted = first hit.
+        for &child_id in self.z_sorted_children(id).iter().rev() {
             if let Some(hit) = self.hit_test_node(child_id, pos) {
                 return Some(hit);
             }
@@ -643,16 +1268,21 @@ impl Tree {
         Some(id)
     }
 
-    /// Dispatch a click and return the tag of the clicked node (if any).
-    pub fn click(&self, pos: Point) -> Option<&str> {
+    /// Walk up from the hit node to find the nearest tagged ancestor.
+    fn find_tag_node(&self, pos: Point) -> Option<NodeId> {
         let mut id = self.hit_test(pos)?;
-        // Walk up until we find a tagged node.
         loop {
-            if let Some(ref tag) = self.slot(id).tag {
-                return Some(tag.as_str());
+            if self.slot(id).tag.is_some() {
+                return Some(id);
             }
             id = self.slot(id).parent?;
         }
+    }
+
+    /// Dispatch a click and return the tag of the clicked node (if any).
+    pub fn click(&self, pos: Point) -> Option<&str> {
+        self.find_tag_node(pos)
+            .and_then(|id| self.slot(id).tag.as_deref())
     }
 
     /// Build the ancestor path (root → target) for a given node.
@@ -674,26 +1304,86 @@ impl Tree {
             .collect()
     }
 
-    /// Find the deepest tagged node from target upward (same as `click` walk).
+    /// Like `click`, but returns an owned String.
     pub fn tag_at(&self, pos: Point) -> Option<String> {
-        let mut id = self.hit_test(pos)?;
-        loop {
-            if let Some(ref tag) = self.slot(id).tag {
-                return Some(tag.clone());
-            }
-            id = self.slot(id).parent?;
-        }
+        self.click(pos).map(str::to_string)
     }
 
     /// Full capture → target → bubble dispatch.
     ///
-    /// For pointer events, hit-tests to find the target.
+    /// For pointer events, hit-tests to find the target, then automatically
+    /// updates `:hover` / `:active` state on the affected nodes and restyles.
     /// Returns a [`DispatchResult`] with the tag chain from root → target.
-    /// The host inspects `result.target_tag()` or `result.bubble_tags()` to dispatch actions.
-    pub fn dispatch(&self, event: InputEvent) -> DispatchResult {
+    /// `result.restyled` is `true` only when visual state actually changed.
+    pub fn dispatch(&mut self, event: InputEvent) -> DispatchResult {
         let target = event.pos().and_then(|p| self.hit_test(p));
+        let mut restyled = false;
+
+        // ── Update hover / active state ─────────────────────────────
+        match &event {
+            InputEvent::PointerMove { .. } => {
+                let prev = self.hovered;
+                let next = target;
+                if prev != next {
+                    // Un-hover previous path
+                    if let Some(old) = prev {
+                        self.walk_ancestors(old, |s| s.hovered = false);
+                    }
+                    // Hover new path
+                    if let Some(new) = next {
+                        self.walk_ancestors(new, |s| s.hovered = true);
+                    }
+                    self.hovered = next;
+                    // Restyle affected paths
+                    if let Some(old) = prev {
+                        self.restyle_path(old);
+                    }
+                    if let Some(new) = next {
+                        self.restyle_path(new);
+                    }
+                    restyled = true;
+                }
+            }
+            InputEvent::PointerDown { .. } => {
+                if let Some(t) = target {
+                    self.walk_ancestors(t, |s| s.active = true);
+                    self.restyle_path(t);
+                    restyled = true;
+                }
+            }
+            InputEvent::PointerUp { .. } => {
+                // Collect all nodes that were active — we need to restyle each
+                let active_ids: Vec<NodeId> = self
+                    .arena
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.active)
+                    .map(|(i, _)| NodeId(i))
+                    .collect();
+
+                if !active_ids.is_empty() {
+                    // Clear active flag first
+                    for &id in &active_ids {
+                        self.arena[id.0].active = false;
+                    }
+                    // Restyle every node that lost :active — not just the target path
+                    if let Some(sheet) = self.sheet.clone() {
+                        for &id in &active_ids {
+                            self.restyle_node(id, &sheet);
+                        }
+                    }
+                    restyled = true;
+                }
+            }
+            _ => {}
+        }
+
+        // ── Standard dispatch ───────────────────────────────────────
         let Some(target) = target else {
-            return DispatchResult::default();
+            return DispatchResult {
+                restyled,
+                ..Default::default()
+            };
         };
 
         let path = self.ancestor_path(target);
@@ -706,9 +1396,6 @@ impl Tree {
             if ctx.stopped {
                 break;
             }
-            // Per-node handler hook point: if handlers were stored on Slot,
-            // we would invoke them here.  For tag-based dispatch the host
-            // processes the returned DispatchResult instead.
             let _ = id;
         }
 
@@ -729,11 +1416,255 @@ impl Tree {
             }
         }
 
+        // Resolve cursor: walk from target up, find first non-default
+        let cursor = {
+            let mut cursor_str = String::new();
+            let mut cid = target;
+            loop {
+                let c = self.slot(cid).style.cursor;
+                if c != Cursor::Default {
+                    cursor_str = c.to_css().to_string();
+                    break;
+                }
+                match self.slot(cid).parent {
+                    Some(p) => cid = p,
+                    None => break,
+                }
+            }
+            cursor_str
+        };
+
         DispatchResult {
             tags,
             stopped: ctx.stopped,
             default_prevented: ctx.default_prevented,
+            restyled,
+            cursor,
         }
+    }
+
+    /// Restyle a node and its ancestor path — re-resolve base style + pseudo-class overrides.
+    fn restyle_path(&mut self, leaf: NodeId) {
+        let sheet = match &self.sheet {
+            Some(s) => Arc::clone(s),
+            None => return,
+        };
+        let mut id = leaf;
+        loop {
+            self.restyle_node(id, &sheet);
+            match self.slot(id).parent {
+                Some(p) => id = p,
+                None => break,
+            }
+        }
+    }
+
+    /// Re-resolve a single node's style: base + pseudo-class overrides from complex rules.
+    /// If the node has CSS transition specs, property changes become animated transitions
+    /// instead of instant snaps.
+    fn restyle_node(&mut self, id: NodeId, sheet: &StyleSheet) {
+        let slot = &self.arena[id.0];
+        let old_style = slot.style.clone();
+        let mut new_style = slot.base_style.clone();
+        let hovered = slot.hovered;
+        let active = slot.active;
+
+        // Apply matching complex rules (pseudo-classes)
+        for rule in sheet.complex_rules() {
+            if self.matches_complex_rule(id, rule, hovered, active) {
+                apply_ops(&mut new_style, &rule.payload.ops);
+            }
+        }
+
+        if old_style == new_style {
+            return;
+        }
+
+        // Collect transition specs from all classes on this node
+        let slot = &self.arena[id.0];
+        let mut transition_specs = Vec::new();
+        for cls in &slot.class_list {
+            for spec in sheet.class_transitions(cls) {
+                transition_specs.push(spec.clone());
+            }
+        }
+
+        if transition_specs.is_empty() {
+            // No transitions — snap directly
+            self.arena[id.0].style = new_style;
+            self.arena[id.0].transitions.clear();
+        } else {
+            // Create one ActiveTransition per spec, each with its own timing.
+            // If an "all" spec exists, it covers every property; individual specs
+            // override the "all" timing for their specific property.
+            let all_spec = transition_specs.iter().find(|s| s.property == "all");
+
+            let mut transitions = Vec::new();
+            // Gather the set of individually-specified properties
+            let specific: Vec<_> = transition_specs
+                .iter()
+                .filter(|s| s.property != "all")
+                .collect();
+
+            if !specific.is_empty() {
+                for spec in &specific {
+                    transitions.push(ActiveTransition::from_spec(
+                        spec,
+                        old_style.clone(),
+                        new_style.clone(),
+                    ));
+                }
+                // If there's also an "all" spec, add it for remaining properties
+                if let Some(a) = all_spec {
+                    transitions.push(ActiveTransition::from_spec(a, old_style, new_style));
+                }
+            } else if let Some(a) = all_spec {
+                // Only "all" — single transition
+                transitions.push(ActiveTransition::from_spec(a, old_style, new_style));
+            }
+
+            self.arena[id.0].transitions = transitions;
+        }
+    }
+
+    /// Check if a node matches a complex selector rule given current pseudo-class state.
+    fn matches_complex_rule(
+        &self,
+        id: NodeId,
+        rule: &super::css::ComplexRule,
+        hovered: bool,
+        active: bool,
+    ) -> bool {
+        use super::css::{Combinator, PseudoClass};
+
+        let segs = &rule.selector.segments;
+        if segs.is_empty() {
+            return false;
+        }
+
+        // Match from right to left (last segment must match the target node)
+        let (_, ref last_seg) = segs[segs.len() - 1];
+
+        // Check pseudo-classes on the final segment
+        for pc in &last_seg.pseudos {
+            match pc {
+                PseudoClass::Hover if !hovered => return false,
+                PseudoClass::Active if !active => return false,
+                PseudoClass::Focus => {
+                    if !self.slot(id).focused {
+                        return false;
+                    }
+                }
+                PseudoClass::FirstChild => {
+                    if let Some(pid) = self.slot(id).parent {
+                        let children = &self.slot(pid).children;
+                        if children.first() != Some(&id) {
+                            return false;
+                        }
+                    }
+                }
+                PseudoClass::LastChild => {
+                    if let Some(pid) = self.slot(id).parent {
+                        let children = &self.slot(pid).children;
+                        if children.last() != Some(&id) {
+                            return false;
+                        }
+                    }
+                }
+                PseudoClass::NthChild(a, b) => {
+                    if let Some(pid) = self.slot(id).parent {
+                        let children = &self.slot(pid).children;
+                        // CSS nth-child is 1-indexed
+                        let idx = children
+                            .iter()
+                            .position(|&c| c == id)
+                            .map(|i| i as i32 + 1)
+                            .unwrap_or(0);
+                        let matches = if *a == 0 {
+                            idx == *b
+                        } else {
+                            let diff = idx - b;
+                            diff % a == 0 && diff / a >= 0
+                        };
+                        if !matches {
+                            return false;
+                        }
+                    }
+                }
+                _ => {} // :visited, :hover/active already handled
+            }
+        }
+
+        // Check tag/class/id on the final segment
+        if !self.segment_matches_node(id, last_seg) {
+            return false;
+        }
+
+        // Walk remaining segments right-to-left
+        if segs.len() == 1 {
+            return true;
+        }
+
+        let mut cur = id;
+        for i in (0..segs.len() - 1).rev() {
+            let (ref comb, ref seg) = segs[i];
+            match comb {
+                Combinator::Child => {
+                    let Some(pid) = self.slot(cur).parent else {
+                        return false;
+                    };
+                    if !self.segment_matches_node(pid, seg) {
+                        return false;
+                    }
+                    cur = pid;
+                }
+                Combinator::Descendant | Combinator::None => {
+                    let mut found = false;
+                    let mut ancestor = self.slot(cur).parent;
+                    while let Some(aid) = ancestor {
+                        if self.segment_matches_node(aid, seg) {
+                            cur = aid;
+                            found = true;
+                            break;
+                        }
+                        ancestor = self.slot(aid).parent;
+                    }
+                    if !found {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Check if a single selector segment matches a node (tag/class/id, not pseudos).
+    fn segment_matches_node(&self, id: NodeId, seg: &super::css::SelectorSegment) -> bool {
+        let slot = &self.arena[id.0];
+
+        if seg.universal {
+            // `*` matches everything
+        } else if let Some(ref tag) = seg.tag {
+            if slot.element != *tag {
+                return false;
+            }
+        }
+
+        for cls in &seg.classes {
+            if !slot.class_list.iter().any(|c| c == cls) {
+                return false;
+            }
+        }
+
+        if let Some(ref seg_id) = seg.id {
+            match &slot.id {
+                Some(node_id) if node_id == seg_id => {}
+                _ => return false,
+            }
+        }
+
+        true
     }
 
     /// Apply a scroll delta to a node (or the nearest scrollable ancestor).
@@ -757,363 +1688,5 @@ impl Tree {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn basic_tree_layout() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0).bg(Color::BLACK));
-        let child = tree.add_box(
-            tree.root,
-            Style::default().w(200.0).h(100.0).bg(Color::WHITE),
-        );
-        tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(tree.slot(child).rect.size.w, 200.0);
-        assert_eq!(tree.slot(child).rect.size.h, 100.0);
-    }
-
-    #[test]
-    fn text_node_has_intrinsic_height() {
-        let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
-        let txt = tree.add_text(tree.root, "Hello world", Style::default().font(16.0));
-        tree.layout(Size::new(300.0, 200.0));
-        assert!(tree.slot(txt).rect.size.h > 0.0);
-    }
-
-    #[test]
-    fn hit_test_finds_child() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let child = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
-        tree.layout(Size::new(400.0, 300.0));
-        let hit = tree.hit_test(Point::new(50.0, 25.0));
-        assert_eq!(hit, Some(child));
-    }
-
-    #[test]
-    fn click_returns_tag() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let child = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
-        tree.tag(child, "my-button");
-        tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(tree.click(Point::new(50.0, 25.0)), Some("my-button"));
-        assert_eq!(tree.click(Point::new(350.0, 250.0)), None);
-    }
-
-    #[test]
-    fn flex_grow_distributes_space() {
-        let mut tree = Tree::new(Style::default().w(300.0).h(100.0).row());
-        let _a = tree.add_box(tree.root, Style::default().w(50.0).h(100.0));
-        let b = tree.add_box(tree.root, Style::default().h(100.0).grow(1.0));
-        tree.layout(Size::new(300.0, 100.0));
-        let bw = tree.slot(b).rect.size.w;
-        assert!(
-            bw > 200.0,
-            "flex child should consume remaining space, got {}",
-            bw
-        );
-    }
-
-    #[test]
-    fn paint_produces_primitives() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0).bg(Color::BLACK));
-        tree.add_text(
-            tree.root,
-            "Hi",
-            Style::default().font(14.0).color(Color::WHITE),
-        );
-        tree.add_bar(
-            tree.root,
-            0.5,
-            Color::rgb(0, 255, 0),
-            Style::default().h(10.0),
-        );
-        tree.layout(Size::new(400.0, 300.0));
-        let mut list = RenderList::default();
-        tree.paint(&mut list);
-        assert!(
-            list.len() >= 3,
-            "expected ≥3 primitives, got {}",
-            list.len()
-        );
-    }
-
-    /// Regression: row-direction tab buttons inside a column sidebar must
-    /// stretch to the sidebar width so clicks anywhere on the row register.
-    #[test]
-    fn row_button_in_column_stretches_width() {
-        // Sidebar: column, 220×600, padding 16 12
-        let mut tree = Tree::new(Style::default().w(800.0).h(600.0).row());
-        let sidebar = tree.add_box(
-            tree.root,
-            Style {
-                width: Dimension::Px(220.0),
-                padding: Edges::xy(12.0, 16.0),
-                gap: 8.0,
-                ..Style::default()
-            },
-        );
-        // Tab button: row with height=36, no explicit width.
-        let btn = tree.add_box(
-            sidebar,
-            Style {
-                height: Dimension::Px(36.0),
-                direction: Direction::Row,
-                padding: Edges::xy(12.0, 0.0),
-                align: Align::Center,
-                ..Style::default()
-            },
-        );
-        tree.add_text(btn, "Hardware", Style::default().font(13.0));
-        tree.tag(btn, "tab-0");
-
-        tree.layout(Size::new(800.0, 600.0));
-
-        let btn_r = tree.slot(btn).rect;
-        // Button must fill the sidebar's inner width (220 − 12 − 12 = 196).
-        assert!(
-            (btn_r.size.w - 196.0).abs() < 1.0,
-            "tab button should stretch to 196px, got {}",
-            btn_r.size.w
-        );
-        // Click in the middle of the button must return the tag.
-        let mid_x = btn_r.origin.x + btn_r.size.w / 2.0;
-        let mid_y = btn_r.origin.y + btn_r.size.h / 2.0;
-        assert_eq!(tree.click(Point::new(mid_x, mid_y)), Some("tab-0"));
-        // Click near the right edge (x ≈ 190) must also work.
-        assert_eq!(
-            tree.click(Point::new(btn_r.origin.x + 180.0, mid_y)),
-            Some("tab-0")
-        );
-    }
-
-    /// Text in a row parent must get intrinsic width, not 0.
-    #[test]
-    fn text_in_row_has_intrinsic_width() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(100.0).row());
-        let txt = tree.add_text(tree.root, "Hello", Style::default().font(14.0));
-        tree.layout(Size::new(400.0, 100.0));
-        let w = tree.slot(txt).rect.size.w;
-        assert!(w > 10.0, "text in row should have intrinsic width, got {w}");
-    }
-
-    #[test]
-    fn dispatch_returns_tag_chain() {
-        use any_compute_core::interaction::{Button, InputEvent};
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let sidebar = tree.add_box(tree.root, Style::default().w(200.0).h(300.0));
-        tree.tag(sidebar, "sidebar");
-        let btn = tree.add_box(sidebar, Style::default().w(100.0).h(50.0));
-        tree.tag(btn, "tab-0");
-        tree.layout(Size::new(400.0, 300.0));
-
-        let result = tree.dispatch(InputEvent::PointerDown {
-            pos: Point::new(50.0, 25.0),
-            button: Button::Primary,
-        });
-        assert_eq!(result.tags, vec!["sidebar", "tab-0"]);
-        assert_eq!(result.target_tag(), Some("tab-0"));
-    }
-
-    #[test]
-    fn dispatch_miss_returns_empty() {
-        use any_compute_core::interaction::{Button, InputEvent};
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        tree.layout(Size::new(400.0, 300.0));
-        let result = tree.dispatch(InputEvent::PointerDown {
-            pos: Point::new(500.0, 500.0),
-            button: Button::Primary,
-        });
-        assert!(result.tags.is_empty());
-    }
-
-    #[test]
-    fn tag_at_finds_deepest() {
-        let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
-        let c = tree.add_box(tree.root, Style::default().w(200.0).h(100.0));
-        tree.tag(c, "container");
-        let inner = tree.add_box(c, Style::default().w(100.0).h(50.0));
-        tree.tag(inner, "inner-btn");
-        tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(
-            tree.tag_at(Point::new(50.0, 25.0)).as_deref(),
-            Some("inner-btn")
-        );
-    }
-
-    #[test]
-    fn row_with_fixed_and_grow_respects_min_width() {
-        // Sidebar (200px, min-width 200px) + main (flex-grow 1) in an 800px row.
-        let mut root_style = Style::default().w(800.0).h(600.0);
-        root_style.direction = Direction::Row;
-        let mut t = Tree::new(root_style);
-        let root = t.root;
-        let mut sb_style = Style::default().w(200.0);
-        sb_style.min_width = Dimension::Px(200.0);
-        let sidebar = t.add_box(root, sb_style);
-        let main = t.add_box(root, Style::default().grow(1.0));
-        // Give main a child to create intrinsic width.
-        t.add_text(main, "Dashboard", Style::default().font(16.0));
-        t.layout(Size::new(800.0, 600.0));
-        let sb_w = t.slot(sidebar).rect.size.w;
-        let mn_w = t.slot(main).rect.size.w;
-        assert!(sb_w >= 200.0, "sidebar should be >= 200px but was {sb_w}");
-        assert!(
-            (sb_w + mn_w - 800.0).abs() < 1.0,
-            "sidebar ({sb_w}) + main ({mn_w}) should sum to ~800"
-        );
-    }
-
-    /// End-to-end layout of the visual_cmp dashboard through parse_with_css.
-    #[test]
-    fn visual_cmp_layout_dimensions() {
-        use crate::css::StyleSheet;
-        use crate::parse::parse_with_css;
-
-        let css = r#"
-* { box-sizing: border-box; }
-.root { flex-direction: row; width: 800px; height: 600px; background: #1e1e2e; }
-.sidebar { width: 200px; min-width: 200px; background: #181825; padding: 16px; gap: 10px; }
-.main { flex-grow: 1; }
-.header { flex-direction: row; height: 48px; min-height: 48px; background: #313244;
-          padding: 0px 20px; align-items: center; font-size: 16px; color: #cdd2f4; }
-.content { flex-grow: 1; padding: 20px; gap: 16px; }
-.cards-row { flex-direction: row; gap: 12px; }
-.card { flex-grow: 1; background: #313244; border-radius: 12px; padding: 16px; gap: 8px; }
-.card-title { font-size: 14px; color: #89b4fa; }
-.card-body { font-size: 12px; color: #cdd2f4; }
-.bar-row { gap: 6px; }
-.bar-track { height: 8px; background: #333333; border-radius: 4px; }
-.bar-fill-green { height: 8px; width: 70%; background: #a6e3a1; border-radius: 4px; }
-.bar-fill-blue  { height: 8px; width: 45%; background: #89b4fa; border-radius: 4px; }
-.bar-fill-red   { height: 8px; width: 85%; background: #f38ba8; border-radius: 4px; }
-.color-swatch { width: 40px; height: 40px; border-radius: 6px; }
-.nested-row { flex-direction: row; gap: 8px; }
-.opacity-box { width: 60px; height: 40px; background: #89b4fa; border-radius: 6px; }
-"#;
-        let html = r#"
-<div class="root">
-  <div class="sidebar" tag="sidebar">
-    <span>Sidebar</span>
-  </div>
-  <div class="main" tag="main">
-    <div class="header" tag="header">Dashboard</div>
-    <div class="content" tag="content">
-      <div class="cards-row" tag="cards-row">
-        <div class="card" tag="card1"><span class="card-title">Title</span><span class="card-body">Body text</span></div>
-        <div class="card"><span class="card-title">Title</span><span class="card-body">Body text</span></div>
-        <div class="card"><span class="card-title">Title</span><span class="card-body">Body text</span></div>
-      </div>
-      <div class="bar-row" tag="bar-row">
-        <div class="bar-track" tag="track1"><div class="bar-fill-green" tag="fill-green"></div></div>
-        <div class="bar-track"><div class="bar-fill-blue" tag="fill-blue"></div></div>
-        <div class="bar-track"><div class="bar-fill-red" tag="fill-red"></div></div>
-      </div>
-      <div class="nested-row">
-        <div class="color-swatch" tag="swatch"></div>
-        <div class="color-swatch"></div>
-        <div class="color-swatch"></div>
-      </div>
-      <div class="nested-row">
-        <div class="opacity-box" tag="obox"></div>
-        <div class="opacity-box"></div>
-        <div class="opacity-box"></div>
-      </div>
-    </div>
-  </div>
-</div>
-"#;
-        let sheet = StyleSheet::parse(css);
-        let mut tree = parse_with_css(html, &sheet);
-        tree.layout(Size::new(800.0, 600.0));
-
-        // Walk the tree and print all node rects for debugging.
-        for (i, slot) in tree.arena.iter().enumerate() {
-            let tag = slot.tag.as_deref().unwrap_or("");
-            let r = &slot.rect;
-            let kind = match &slot.kind {
-                NodeKind::Box => "box",
-                NodeKind::Text(s) => s.as_str(),
-                NodeKind::Bar { .. } => "bar",
-            };
-            println!(
-                "[{i:2}] {tag:12} {kind:20} x={:6.1} y={:6.1} w={:6.1} h={:6.1}",
-                r.origin.x, r.origin.y, r.size.w, r.size.h,
-            );
-        }
-
-        let by_tag = |t: &str| -> &Slot {
-            tree.arena
-                .iter()
-                .find(|s| s.tag.as_deref() == Some(t))
-                .unwrap_or_else(|| panic!("missing tag '{t}'"))
-        };
-
-        let sidebar = by_tag("sidebar");
-        let header = by_tag("header");
-        let content = by_tag("content");
-        let swatch = by_tag("swatch");
-        let obox = by_tag("obox");
-        let track = by_tag("track1");
-        let fill_green = by_tag("fill-green");
-        let fill_blue = by_tag("fill-blue");
-        let fill_red = by_tag("fill-red");
-        let card = by_tag("card1");
-
-        println!("\n=== Key dimensions ===");
-        println!("sidebar: w={:.1}", sidebar.rect.size.w);
-        println!("header:  h={:.1}", header.rect.size.h);
-        println!(
-            "content: w={:.1} h={:.1}",
-            content.rect.size.w, content.rect.size.h
-        );
-        println!(
-            "swatch:  w={:.1} h={:.1}",
-            swatch.rect.size.w, swatch.rect.size.h
-        );
-        println!(
-            "opacity: w={:.1} h={:.1}",
-            obox.rect.size.w, obox.rect.size.h
-        );
-        println!(
-            "card1:   w={:.1} h={:.1}",
-            card.rect.size.w, card.rect.size.h
-        );
-        println!(
-            "bar-track w={:.1}, fills: green={:.1} ({:.1}%) blue={:.1} ({:.1}%) red={:.1} ({:.1}%)",
-            track.rect.size.w,
-            fill_green.rect.size.w,
-            fill_green.rect.size.w / track.rect.size.w * 100.0,
-            fill_blue.rect.size.w,
-            fill_blue.rect.size.w / track.rect.size.w * 100.0,
-            fill_red.rect.size.w,
-            fill_red.rect.size.w / track.rect.size.w * 100.0,
-        );
-
-        // Assertions.
-        assert!(
-            (sidebar.rect.size.w - 200.0).abs() < 1.0,
-            "sidebar should be 200px, got {:.1}",
-            sidebar.rect.size.w
-        );
-        assert!(
-            (header.rect.size.h - 48.0).abs() < 1.0,
-            "header should be 48px, got {:.1}",
-            header.rect.size.h
-        );
-        assert!(
-            (swatch.rect.size.w - 40.0).abs() < 1.0,
-            "swatch should be 40px, got {:.1}",
-            swatch.rect.size.w
-        );
-        assert!(
-            (obox.rect.size.w - 60.0).abs() < 1.0,
-            "opacity-box should be 60px, got {:.1}",
-            obox.rect.size.w
-        );
-        assert!(
-            (fill_green.rect.size.w / track.rect.size.w - 0.70).abs() < 0.02,
-            "green fill should be 70%, got {:.1}%",
-            fill_green.rect.size.w / track.rect.size.w * 100.0
-        );
-    }
-}
+#[path = "tree_tests.rs"]
+mod tests;

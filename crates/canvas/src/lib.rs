@@ -11,6 +11,7 @@
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
+pub mod harness;
 pub mod scenario;
 pub mod theme;
 

@@ -111,11 +111,21 @@
   height: 40px;
   border-radius: 6px;
 }
-.swatch-green  { background: var(--green); }
-.swatch-blue   { background: var(--blue); }
-.swatch-red    { background: var(--red); }
-.swatch-yellow { background: var(--yellow); }
-.swatch-mauve  { background: var(--mauve); }
+.swatch-green {
+  background: var(--green);
+}
+.swatch-blue {
+  background: var(--blue);
+}
+.swatch-red {
+  background: var(--red);
+}
+.swatch-yellow {
+  background: var(--yellow);
+}
+.swatch-mauve {
+  background: var(--mauve);
+}
 .bar-row {
   gap: 6px;
 }
@@ -149,5 +159,9 @@
   background: var(--blue);
   border-radius: 6px;
 }
-.opacity-50 { opacity: 0.5; }
-.opacity-25 { opacity: 0.25; }
+.opacity-50 {
+  opacity: 0.5;
+}
+.opacity-25 {
+  opacity: 0.25;
+}

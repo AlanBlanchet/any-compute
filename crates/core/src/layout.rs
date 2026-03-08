@@ -34,6 +34,12 @@ impl Lerp for Point {
     }
 }
 
+impl From<(f64, f64)> for Point {
+    fn from((x, y): (f64, f64)) -> Self {
+        Self { x, y }
+    }
+}
+
 impl std::ops::Add for Point {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {

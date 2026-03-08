@@ -27,9 +27,27 @@ cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
 | File         | Purpose                                                                    |
 | ------------ | -------------------------------------------------------------------------- |
 | `lib.rs`     | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
-| `window.rs`  | GPU dashboard binary (canvas + winit), feature-gated `window`             |
-| `bench.css`  | Catppuccin Mocha theme — single source of truth for dashboard styling     |
-| `Cargo.toml` | `window` feature (default) gates `any-compute-canvas` dep                 |
+| `window.rs`  | GPU dashboard binary (canvas + winit), feature-gated `window`              |
+| `bench.css`  | Catppuccin Mocha theme — single source of truth for dashboard styling      |
+| `Cargo.toml` | `window` feature (default) gates `any-compute-canvas` dep                  |
+
+## Core Benchmark Library (`crates/core/src/bench.rs`)
+
+| File                  | Purpose                                                                  |
+| --------------------- | ------------------------------------------------------------------------ |
+| `bench.rs`            | Categories, hardware detection, runners, comparison tables, live metrics |
+| `bench_references.rs` | Static reference comparison data (80+ library comparison entries)        |
+
+### `bench_categories!` Macro
+
+Declares the `BenchCategory` enum + all metadata + dispatch from a single declarative block.
+Each entry provides: id, label, group, domain, desc, runner function.
+The macro generates: enum variants (with optional doc comments), `ALL` const, five accessor
+methods (`id`, `label`, `group`, `domain`, `description`), and `run_category()` dispatch.
+Adding a new benchmark = one block. No match arms to update elsewhere.
+
+`all_domains()` and `for_domain()` stay manual in a separate `impl` block since they need
+curated domain ordering.
 
 ## Shared Constants (exported from `lib.rs`)
 

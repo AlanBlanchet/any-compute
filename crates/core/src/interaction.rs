@@ -145,6 +145,12 @@ pub struct DispatchResult {
     pub stopped: bool,
     /// Whether `prevent_default()` was called during dispatch.
     pub default_prevented: bool,
+    /// Whether any node was restyled (hover/active state changed).
+    /// Callers can skip repaint when `false`.
+    pub restyled: bool,
+    /// CSS cursor resolved from the hit node (empty = default).
+    /// Walk up from the target until a non-default cursor is found.
+    pub cursor: String,
 }
 
 impl DispatchResult {

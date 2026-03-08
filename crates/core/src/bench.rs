@@ -411,163 +411,132 @@ fn make_f64_data(n: usize) -> Vec<f64> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Benchmark categories
+// ══════════════════════════════════════════════════════════════════════════
+// Benchmark categories — macro-generated enum, metadata, and dispatch
 // ══════════════════════════════════════════════════════════════════════════
 
-/// All benchmark categories that can be run individually.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum BenchCategory {
-    KernelUnary,
-    KernelBinary,
-    KernelReduce,
-    KernelGemm,
-    KernelSort,
-    ComputeParallel,
-    HintsOptimization,
-    DataVirtualization,
-    LayoutSpatial,
-    Animation,
-    RenderList,
-    LerpThroughput,
-    EventHandling,
+/// Declares `BenchCategory` enum + `ALL`, five accessor methods, and `run_category`.
+/// Adding a category = adding one block. No other match arms to update.
+macro_rules! bench_categories {
+    ($( $(#[doc = $doc:literal])* $variant:ident {
+        id: $id:literal,
+        label: $label:literal,
+        group: $group:literal,
+        domain: $domain:literal,
+        desc: $desc:literal,
+        runner: $runner:ident,
+    }),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum BenchCategory { $( $(#[doc = $doc])* $variant, )+ }
+
+        impl BenchCategory {
+            pub const ALL: &[Self] = &[ $( Self::$variant, )+ ];
+            pub fn id(self) -> &'static str { match self { $( Self::$variant => $id, )+ } }
+            pub fn label(self) -> &'static str { match self { $( Self::$variant => $label, )+ } }
+            pub fn group(self) -> &'static str { match self { $( Self::$variant => $group, )+ } }
+            pub fn domain(self) -> &'static str { match self { $( Self::$variant => $domain, )+ } }
+            pub fn description(self) -> &'static str { match self { $( Self::$variant => $desc, )+ } }
+        }
+
+        pub fn run_category(cat: BenchCategory) -> ScenarioReport {
+            match cat { $( BenchCategory::$variant => $runner(), )+ }
+        }
+    };
+}
+
+bench_categories! {
+    KernelUnary {
+        id: "kernel_unary", label: "Kernel: Unary Ops", group: "Kernel",
+        domain: "Compute", desc: "abs, negate, sqrt on 10K-10M f64 vectors via SIMD dispatch",
+        runner: run_kernel_unary,
+    },
+    KernelBinary {
+        id: "kernel_binary", label: "Kernel: Binary Ops", group: "Kernel",
+        domain: "Compute", desc: "add, mul, fma on paired vectors; measures SIMD throughput",
+        runner: run_kernel_binary,
+    },
+    KernelReduce {
+        id: "kernel_reduce", label: "Kernel: Reductions", group: "Kernel",
+        domain: "Compute", desc: "sum, min, max reductions with SIMD accumulator",
+        runner: run_kernel_reduce,
+    },
+    KernelGemm {
+        id: "kernel_gemm", label: "Kernel: GEMM", group: "Kernel",
+        domain: "Linear Algebra / AI", desc: "naive matrix multiply 64-512; baseline for BLAS comparison",
+        runner: run_kernel_gemm,
+    },
+    KernelSort {
+        id: "kernel_sort", label: "Kernel: Sort", group: "Kernel",
+        domain: "Compute", desc: "parallel sort on 10K-10M elements via rayon + pdqsort",
+        runner: run_kernel_sort,
+    },
+    ComputeParallel {
+        id: "compute_parallel", label: "Compute: Parallel Ops", group: "Compute",
+        domain: "Compute", desc: "parallel map/reduce across all cores; rayon dispatch",
+        runner: run_compute_parallel,
+    },
+    HintsOptimization {
+        id: "hints_auto_optimization", label: "Compute: Hint-Aware Dispatch", group: "Compute",
+        domain: "Compute", desc: "hint-aware dispatch: sorted, dense, contiguous flags",
+        runner: run_hints_optimization,
+    },
+    DataVirtualization {
+        id: "data_virtualization", label: "Data: Virtualization", group: "Data",
+        domain: "Rendering / Data", desc: "virtual scroll window over 100K-1M row data sources",
+        runner: run_data_virtualization,
+    },
+    LayoutSpatial {
+        id: "layout_spatial", label: "Layout: Spatial", group: "Layout",
+        domain: "Graphics / 3D", desc: "AABB spatial grid insert + range query at scale",
+        runner: run_layout_spatial,
+    },
+    Animation {
+        id: "animation", label: "Animation: Transitions", group: "Animation",
+        domain: "Animation / Dynamics", desc: "easing transitions: linear, ease-in-out, spring physics",
+        runner: run_animation,
+    },
+    RenderList {
+        id: "render_list", label: "Render: Primitive Lists", group: "Render",
+        domain: "Rendering / Data", desc: "batch render-primitive assembly: rects, circles, text",
+        runner: run_render_list,
+    },
+    LerpThroughput {
+        id: "lerp_throughput", label: "Lerp: Interpolation Throughput", group: "Lerp",
+        domain: "Animation / Dynamics", desc: "raw lerp throughput on f64, Vec3, Color, Rect batches",
+        runner: run_lerp_throughput,
+    },
+    EventHandling {
+        id: "event_handling", label: "Events: Input Dispatch", group: "Events",
+        domain: "Events / Interaction", desc: "event dispatch, hit-testing 100K rects, 3-phase propagation",
+        runner: run_event_handling,
+    },
     /// 1M point generation + 256×256 density binning.
-    PointCloud,
+    PointCloud {
+        id: "point_cloud", label: "Point Cloud: 1M Scatter + Density", group: "Geometry",
+        domain: "Graphics / 3D", desc: "1-5M point Halton generation + 256x256 density binning",
+        runner: run_point_cloud,
+    },
     /// Large GEMM: 256×256 up to 1024×1024.
-    MatMulLarge,
+    MatMulLarge {
+        id: "matmul_large", label: "MatMul: Large GEMM (up to 1024×1024)", group: "Compute",
+        domain: "Linear Algebra / AI", desc: "GEMM at 256-1024 sizes; reports GFLOP/s",
+        runner: run_matmul_large,
+    },
     /// Scaled dot-product attention (QKᵀ → softmax → V) at multiple seq/d configs.
-    AttentionOps,
+    AttentionOps {
+        id: "attention_ops", label: "Attention: Scaled Dot-Product", group: "Compute",
+        domain: "Linear Algebra / AI", desc: "scaled dot-product attention QK^T -> softmax -> V",
+        runner: run_attention_ops,
+    },
     /// Sphere vertex transforms + perspective projection at multiple mesh resolutions.
-    Geometry3D,
+    Geometry3D {
+        id: "geometry_3d", label: "3D Geometry: Vertex Transform + Projection", group: "Geometry",
+        domain: "Graphics / 3D", desc: "sphere mesh vertex transforms + perspective projection",
+        runner: run_geometry_3d,
+    },
 }
 
 impl BenchCategory {
-    pub const ALL: &[Self] = &[
-        Self::KernelUnary,
-        Self::KernelBinary,
-        Self::KernelReduce,
-        Self::KernelGemm,
-        Self::KernelSort,
-        Self::ComputeParallel,
-        Self::HintsOptimization,
-        Self::DataVirtualization,
-        Self::LayoutSpatial,
-        Self::Animation,
-        Self::RenderList,
-        Self::LerpThroughput,
-        Self::EventHandling,
-        Self::PointCloud,
-        Self::MatMulLarge,
-        Self::AttentionOps,
-        Self::Geometry3D,
-    ];
-
-    /// Machine-readable identifier used as `ScenarioReport::category`.
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::KernelUnary => "kernel_unary",
-            Self::KernelBinary => "kernel_binary",
-            Self::KernelReduce => "kernel_reduce",
-            Self::KernelGemm => "kernel_gemm",
-            Self::KernelSort => "kernel_sort",
-            Self::ComputeParallel => "compute_parallel",
-            Self::HintsOptimization => "hints_auto_optimization",
-            Self::DataVirtualization => "data_virtualization",
-            Self::LayoutSpatial => "layout_spatial",
-            Self::Animation => "animation",
-            Self::RenderList => "render_list",
-            Self::LerpThroughput => "lerp_throughput",
-            Self::EventHandling => "event_handling",
-            Self::PointCloud => "point_cloud",
-            Self::MatMulLarge => "matmul_large",
-            Self::AttentionOps => "attention_ops",
-            Self::Geometry3D => "geometry_3d",
-        }
-    }
-
-    /// Human-readable label for display.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::KernelUnary => "Kernel: Unary Ops",
-            Self::KernelBinary => "Kernel: Binary Ops",
-            Self::KernelReduce => "Kernel: Reductions",
-            Self::KernelGemm => "Kernel: GEMM",
-            Self::KernelSort => "Kernel: Sort",
-            Self::ComputeParallel => "Compute: Parallel Ops",
-            Self::HintsOptimization => "Compute: Hint-Aware Dispatch",
-            Self::DataVirtualization => "Data: Virtualization",
-            Self::LayoutSpatial => "Layout: Spatial",
-            Self::Animation => "Animation: Transitions",
-            Self::RenderList => "Render: Primitive Lists",
-            Self::LerpThroughput => "Lerp: Interpolation Throughput",
-            Self::EventHandling => "Events: Input Dispatch",
-            Self::PointCloud => "Point Cloud: 1M Scatter + Density",
-            Self::MatMulLarge => "MatMul: Large GEMM (up to 1024×1024)",
-            Self::AttentionOps => "Attention: Scaled Dot-Product",
-            Self::Geometry3D => "3D Geometry: Vertex Transform + Projection",
-        }
-    }
-
-    pub fn group(self) -> &'static str {
-        match self {
-            Self::KernelUnary
-            | Self::KernelBinary
-            | Self::KernelReduce
-            | Self::KernelGemm
-            | Self::KernelSort => "Kernel",
-            Self::ComputeParallel | Self::HintsOptimization => "Compute",
-            Self::DataVirtualization => "Data",
-            Self::LayoutSpatial => "Layout",
-            Self::Animation => "Animation",
-            Self::RenderList => "Render",
-            Self::LerpThroughput => "Lerp",
-            Self::EventHandling => "Events",
-            Self::PointCloud => "Geometry",
-            Self::MatMulLarge => "Compute",
-            Self::AttentionOps => "Compute",
-            Self::Geometry3D => "Geometry",
-        }
-    }
-
-    /// High-level domain for dashboard grouping.
-    pub fn domain(self) -> &'static str {
-        match self {
-            Self::KernelUnary
-            | Self::KernelBinary
-            | Self::KernelReduce
-            | Self::KernelSort
-            | Self::ComputeParallel
-            | Self::HintsOptimization => "Compute",
-            Self::KernelGemm | Self::MatMulLarge | Self::AttentionOps => "Linear Algebra / AI",
-            Self::PointCloud | Self::Geometry3D | Self::LayoutSpatial => "Graphics / 3D",
-            Self::Animation | Self::LerpThroughput => "Animation / Dynamics",
-            Self::RenderList | Self::DataVirtualization => "Rendering / Data",
-            Self::EventHandling => "Events / Interaction",
-        }
-    }
-
-    /// Short description of what this bench tests — shown in the dashboard.
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::KernelUnary => "abs, negate, sqrt on 10K-10M f64 vectors via SIMD dispatch",
-            Self::KernelBinary => "add, mul, fma on paired vectors; measures SIMD throughput",
-            Self::KernelReduce => "sum, min, max reductions with SIMD accumulator",
-            Self::KernelGemm => "naive matrix multiply 64-512; baseline for BLAS comparison",
-            Self::KernelSort => "parallel sort on 10K-10M elements via rayon + pdqsort",
-            Self::ComputeParallel => "parallel map/reduce across all cores; rayon dispatch",
-            Self::HintsOptimization => "hint-aware dispatch: sorted, dense, contiguous flags",
-            Self::DataVirtualization => "virtual scroll window over 100K-1M row data sources",
-            Self::LayoutSpatial => "AABB spatial grid insert + range query at scale",
-            Self::Animation => "easing transitions: linear, ease-in-out, spring physics",
-            Self::RenderList => "batch render-primitive assembly: rects, circles, text",
-            Self::LerpThroughput => "raw lerp throughput on f64, Vec3, Color, Rect batches",
-            Self::EventHandling => "event dispatch, hit-testing 100K rects, 3-phase propagation",
-            Self::PointCloud => "1-5M point Halton generation + 256x256 density binning",
-            Self::MatMulLarge => "GEMM at 256-1024 sizes; reports GFLOP/s",
-            Self::AttentionOps => "scaled dot-product attention QK^T -> softmax -> V",
-            Self::Geometry3D => "sphere mesh vertex transforms + perspective projection",
-        }
-    }
-
     /// All unique domains, ordered for display.
     pub fn all_domains() -> &'static [&'static str] {
         &[
@@ -587,32 +556,6 @@ impl BenchCategory {
             .copied()
             .filter(|c| c.domain() == domain)
             .collect()
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// Category runners — each returns a single ScenarioReport
-// ══════════════════════════════════════════════════════════════════════════
-
-pub fn run_category(cat: BenchCategory) -> ScenarioReport {
-    match cat {
-        BenchCategory::KernelUnary => run_kernel_unary(),
-        BenchCategory::KernelBinary => run_kernel_binary(),
-        BenchCategory::KernelReduce => run_kernel_reduce(),
-        BenchCategory::KernelGemm => run_kernel_gemm(),
-        BenchCategory::KernelSort => run_kernel_sort(),
-        BenchCategory::ComputeParallel => run_compute_parallel(),
-        BenchCategory::HintsOptimization => run_hints_optimization(),
-        BenchCategory::DataVirtualization => run_data_virtualization(),
-        BenchCategory::LayoutSpatial => run_layout_spatial(),
-        BenchCategory::Animation => run_animation(),
-        BenchCategory::RenderList => run_render_list(),
-        BenchCategory::LerpThroughput => run_lerp_throughput(),
-        BenchCategory::EventHandling => run_event_handling(),
-        BenchCategory::PointCloud => run_point_cloud(),
-        BenchCategory::MatMulLarge => run_matmul_large(),
-        BenchCategory::AttentionOps => run_attention_ops(),
-        BenchCategory::Geometry3D => run_geometry_3d(),
     }
 }
 
@@ -1994,587 +1937,7 @@ pub struct ReferenceComparison {
     pub notes: String,
 }
 
-/// Returns static reference comparison data across all domains.
-/// These are published/estimated performance ratios, not live measurements.
-pub fn reference_comparisons() -> Vec<ReferenceComparison> {
-    let r = |domain: &str, cat: &str, lib: &str, factor: f64, notes: &str| ReferenceComparison {
-        domain: domain.into(),
-        category: cat.into(),
-        library: lib.into(),
-        factor,
-        notes: notes.into(),
-    };
-    vec![
-        // ── Compute: Parallel map / transform ────────────────────────
-        r(
-            "Compute",
-            "Parallel Map",
-            "rayon par_iter (Rust)",
-            0.95,
-            "Same backend; ~5% dispatch overhead",
-        ),
-        r(
-            "Compute",
-            "Parallel Map",
-            "std::iter (Rust, sequential)",
-            0.15,
-            "Single-threaded baseline",
-        ),
-        r(
-            "Compute",
-            "Parallel Map",
-            "NumPy vectorized (Python)",
-            0.6,
-            "C inner loop but Python dispatch + GIL",
-        ),
-        r(
-            "Compute",
-            "Parallel Map",
-            "Bun (JS, JIT-compiled)",
-            0.08,
-            "V8-level JIT; no SIMD auto-vectorization",
-        ),
-        r(
-            "Compute",
-            "Parallel Map",
-            "Node.js worker_threads",
-            0.05,
-            "JS overhead + serialization between workers",
-        ),
-        r(
-            "Compute",
-            "Parallel Map",
-            "Deno (V8 + Rust internals)",
-            0.07,
-            "Similar to Bun/Node; slight Rust FFI edge",
-        ),
-        // ── Compute: Sort ────────────────────────────────────────────
-        r(
-            "Compute",
-            "Sort",
-            "rayon par_sort_unstable (Rust)",
-            1.0,
-            "Same implementation",
-        ),
-        r(
-            "Compute",
-            "Sort",
-            "std::sort_unstable (Rust)",
-            0.25,
-            "Single-threaded pdqsort",
-        ),
-        r(
-            "Compute",
-            "Sort",
-            "polars sort (Rust/Arrow)",
-            0.85,
-            "Arrow columnar + rayon",
-        ),
-        r(
-            "Compute",
-            "Sort",
-            "pandas sort_values (Python)",
-            0.3,
-            "NumPy/timsort; single-threaded by default",
-        ),
-        r(
-            "Compute",
-            "Sort",
-            "Bun Array.sort (JS)",
-            0.12,
-            "V8 TimSort; no parallelism",
-        ),
-        // ── Compute: GEMM / Matrix Multiply ──────────────────────────
-        r(
-            "Compute",
-            "GEMM",
-            "OpenBLAS dgemm",
-            15.0,
-            "Hand-tuned BLAS with SIMD kernels",
-        ),
-        r(
-            "Compute",
-            "GEMM",
-            "Intel MKL dgemm",
-            20.0,
-            "Intel-optimized; --features mkl",
-        ),
-        r(
-            "Compute",
-            "GEMM",
-            "cuBLAS (NVIDIA GPU)",
-            100.0,
-            "GPU tensor cores; --features cuda",
-        ),
-        r(
-            "Compute",
-            "GEMM",
-            "PyTorch matmul (CPU)",
-            12.0,
-            "Uses OpenBLAS/MKL internally",
-        ),
-        r(
-            "Compute",
-            "GEMM",
-            "PyTorch matmul (CUDA)",
-            120.0,
-            "cuBLAS + tensor cores",
-        ),
-        r(
-            "Compute",
-            "GEMM",
-            "TensorFlow matmul (CPU)",
-            11.0,
-            "Eigen/MKL backend",
-        ),
-        r(
-            "Compute",
-            "GEMM",
-            "NumPy dot (Python)",
-            10.0,
-            "BLAS backend (OpenBLAS/MKL)",
-        ),
-        // ── Compute: Reduction ───────────────────────────────────────
-        r(
-            "Compute",
-            "Reduction",
-            "rayon par_iter().sum()",
-            1.0,
-            "Same implementation",
-        ),
-        r(
-            "Compute",
-            "Reduction",
-            "numpy.sum() (Python)",
-            0.7,
-            "C inner loop; Python overhead",
-        ),
-        r(
-            "Compute",
-            "Reduction",
-            "PyTorch .sum() CPU",
-            0.8,
-            "Optimized AVX reduction",
-        ),
-        r(
-            "Compute",
-            "Reduction",
-            "polars sum (Rust/Arrow)",
-            0.9,
-            "Arrow + SIMD",
-        ),
-        r(
-            "Compute",
-            "Reduction",
-            "Bun reduce (JS)",
-            0.06,
-            "V8 JIT; no SIMD",
-        ),
-        // ── UI: Render list assembly ─────────────────────────────────
-        r(
-            "UI Rendering",
-            "Render List",
-            "React (virtual DOM reconciliation)",
-            0.005,
-            "JS VDOM diff + fiber scheduler; ~200x slower",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Angular (Renderer2 + change detection)",
-            0.004,
-            "Zone.js + incremental DOM",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Vue 3 (Proxy reactivity + patch)",
-            0.006,
-            "Faster VDOM than React; still JS overhead",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Svelte (compiled output, no VDOM)",
-            0.015,
-            "Compiled; less overhead than React/Vue",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Solid.js (fine-grained reactivity)",
-            0.02,
-            "No VDOM; signals-based; still JS",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Vanilla JS (document.createElement)",
-            0.01,
-            "No framework; JS→C++ bridge per call",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Dioxus (Rust VDOM)",
-            0.3,
-            "Rust VDOM diffing; same language",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "Yew (Rust VDOM + WASM)",
-            0.25,
-            "WASM + VDOM; WebAssembly overhead",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "egui (Rust immediate mode)",
-            0.5,
-            "No VDOM; immediate mode; retained allocs",
-        ),
-        r(
-            "UI Rendering",
-            "Render List",
-            "iced (Rust Elm arch)",
-            0.4,
-            "Elm architecture; message passing overhead",
-        ),
-        // ── UI: Animation / transitions ──────────────────────────────
-        r(
-            "Animation",
-            "Transition Tick",
-            "React Spring (JS)",
-            0.02,
-            "Physics-based; per-frame allocations + GC",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "GSAP (JS)",
-            0.03,
-            "Optimized JS tweening; still GC-bound for batches",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "Framer Motion (React)",
-            0.015,
-            "React + spring physics; component overhead",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "Angular Animations",
-            0.015,
-            "AnimationBuilder + Zone.js scheduling",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "CSS Transitions (browser-native)",
-            0.1,
-            "Compositor-accelerated; limited to style props",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "Web Animations API (JS)",
-            0.05,
-            "Browser-native; JS bridge overhead",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "Bevy Transform animation (Rust/ECS)",
-            0.7,
-            "ECS batch iteration; no GC",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "Unity Animator (C#)",
-            0.3,
-            "C# managed heap; state machine overhead",
-        ),
-        r(
-            "Animation",
-            "Transition Tick",
-            "Godot Tween (GDScript)",
-            0.1,
-            "Interpreted GDScript; node tree traversal",
-        ),
-        // ── UI: Data virtualization ──────────────────────────────────
-        r(
-            "UI Rendering",
-            "Data Virtualization",
-            "react-window (JS)",
-            0.01,
-            "JS row measurement + React reconciliation",
-        ),
-        r(
-            "UI Rendering",
-            "Data Virtualization",
-            "react-virtuoso (JS)",
-            0.008,
-            "Dynamic height measurement; heavier than react-window",
-        ),
-        r(
-            "UI Rendering",
-            "Data Virtualization",
-            "AG Grid (JS)",
-            0.005,
-            "Enterprise grid; feature-heavy DOM management",
-        ),
-        r(
-            "UI Rendering",
-            "Data Virtualization",
-            "Tabulator (JS)",
-            0.007,
-            "Vanilla JS grid; no framework dep",
-        ),
-        // ── Interpolation ────────────────────────────────────────────
-        r(
-            "Math",
-            "Lerp / Interpolation",
-            "JS Math (manual lerp)",
-            0.08,
-            "V8 JIT; boxed doubles, no SIMD auto-vec",
-        ),
-        r(
-            "Math",
-            "Lerp / Interpolation",
-            "glMatrix (JS)",
-            0.1,
-            "TypedArrays; no SIMD without WASM",
-        ),
-        r(
-            "Math",
-            "Lerp / Interpolation",
-            "Unity Mathf.Lerp (C#)",
-            0.4,
-            "JIT-compiled C#; Mono/IL2CPP",
-        ),
-        r(
-            "Math",
-            "Lerp / Interpolation",
-            "Godot lerp (GDScript)",
-            0.05,
-            "Interpreted; per-call overhead",
-        ),
-        r(
-            "Math",
-            "Lerp / Interpolation",
-            "Bevy Vec3::lerp (Rust)",
-            0.95,
-            "Same language; glam SIMD",
-        ),
-        r(
-            "Math",
-            "Lerp / Interpolation",
-            "NumPy interp (Python)",
-            0.3,
-            "Vectorized C; Python dispatch",
-        ),
-        // ── Game engines: frame time / ECS ───────────────────────────
-        r(
-            "Game Engine",
-            "ECS Iteration (10K entities)",
-            "Bevy ECS (Rust)",
-            0.9,
-            "Archetype storage; cache-friendly",
-        ),
-        r(
-            "Game Engine",
-            "ECS Iteration (10K entities)",
-            "Unity DOTS/ECS (C#)",
-            0.6,
-            "Burst compiler; managed GC pauses",
-        ),
-        r(
-            "Game Engine",
-            "ECS Iteration (10K entities)",
-            "Godot (GDScript)",
-            0.05,
-            "Scene tree; interpreted; no ECS",
-        ),
-        r(
-            "Game Engine",
-            "ECS Iteration (10K entities)",
-            "Unreal Engine (C++)",
-            0.7,
-            "UObject system; GC + reflection",
-        ),
-        r(
-            "Game Engine",
-            "Frame Update Loop",
-            "Bevy (Rust)",
-            0.85,
-            "Pure ECS; zero GC",
-        ),
-        r(
-            "Game Engine",
-            "Frame Update Loop",
-            "Unity (C# Mono)",
-            0.3,
-            "GC pauses; managed overhead",
-        ),
-        r(
-            "Game Engine",
-            "Frame Update Loop",
-            "Godot 4.x (GDScript)",
-            0.1,
-            "Interpreted scripts; node tree",
-        ),
-        r(
-            "Game Engine",
-            "Frame Update Loop",
-            "Unreal Engine 5 (C++)",
-            0.5,
-            "Nanite/Lumen overhead; heavy runtime",
-        ),
-        // ── AI / ML inference latency ────────────────────────────────
-        r(
-            "AI Inference",
-            "Elementwise (10M f64)",
-            "PyTorch CPU",
-            0.8,
-            "ATen C++ core; operator dispatch overhead",
-        ),
-        r(
-            "AI Inference",
-            "Elementwise (10M f64)",
-            "TensorFlow CPU",
-            0.7,
-            "Eigen backend; graph execution overhead",
-        ),
-        r(
-            "AI Inference",
-            "Elementwise (10M f64)",
-            "ONNX Runtime CPU",
-            0.85,
-            "Optimized graph; less overhead than TF",
-        ),
-        r(
-            "AI Inference",
-            "Elementwise (10M f64)",
-            "JAX CPU",
-            0.75,
-            "XLA compilation; great for large batches",
-        ),
-        r(
-            "AI Inference",
-            "Batch Matmul Latency",
-            "PyTorch CUDA",
-            150.0,
-            "cuBLAS + tensor cores; GPU memory BW",
-        ),
-        r(
-            "AI Inference",
-            "Batch Matmul Latency",
-            "TensorRT (NVIDIA)",
-            200.0,
-            "Fused kernels; INT8/FP16 quantization",
-        ),
-        r(
-            "AI Inference",
-            "Batch Matmul Latency",
-            "ONNX Runtime CUDA",
-            130.0,
-            "cuDNN backend; graph optimization",
-        ),
-        r(
-            "AI Inference",
-            "Token Generation (LLM)",
-            "llama.cpp CPU (AVX2)",
-            0.6,
-            "Quantized INT4/INT8; hand-tuned SIMD",
-        ),
-        r(
-            "AI Inference",
-            "Token Generation (LLM)",
-            "llama.cpp CUDA",
-            20.0,
-            "GPU inference; depends on model size",
-        ),
-        r(
-            "AI Inference",
-            "Token Generation (LLM)",
-            "vLLM (Python/CUDA)",
-            25.0,
-            "PagedAttention; optimized KV cache",
-        ),
-        // ── Event handling ───────────────────────────────────────────
-        r(
-            "Events",
-            "Event Dispatch (batch 10k)",
-            "React SyntheticEvent",
-            0.03,
-            "Pooled event objects + React fiber scheduler; GC on large batches",
-        ),
-        r(
-            "Events",
-            "Event Dispatch (batch 10k)",
-            "DOM native Event (browser)",
-            0.05,
-            "C++ native; JS bridge per dispatch call",
-        ),
-        r(
-            "Events",
-            "Event Dispatch (batch 10k)",
-            "Vue 3 emit",
-            0.04,
-            "Proxy-based reactivity; lighter than React but still JS dispatch",
-        ),
-        r(
-            "Events",
-            "Event Dispatch (batch 10k)",
-            "Angular EventEmitter",
-            0.02,
-            "Zone.js + change detection trigger; heaviest framework overhead",
-        ),
-        r(
-            "Events",
-            "Event Dispatch (batch 10k)",
-            "Svelte dispatch (compiled)",
-            0.08,
-            "Compiled to direct DOM calls; lightest web framework",
-        ),
-        r(
-            "Events",
-            "Hit-Test (100k rects)",
-            "react-use-gesture",
-            0.01,
-            "JS bounding rect API per pointer event + React state update",
-        ),
-        r(
-            "Events",
-            "Hit-Test (100k rects)",
-            "Hammer.js",
-            0.02,
-            "Gesture recognizer; JS touch/pointer API overhead",
-        ),
-        r(
-            "Events",
-            "Hit-Test (100k rects)",
-            "Bevy (Rust ECS hit-test)",
-            0.7,
-            "Archetype storage; cache-friendly AABB iteration",
-        ),
-        r(
-            "Events",
-            "3-Phase Propagation",
-            "DOM capture/bubble",
-            0.04,
-            "Browser-native C++ propagation + JS listener invocation overhead",
-        ),
-        r(
-            "Events",
-            "3-Phase Propagation",
-            "React event delegation (root)",
-            0.03,
-            "Single root listener + synthetic event construction",
-        ),
-    ]
-}
+// Reference data lives in bench_references.rs to keep this file focused on logic.
+#[path = "bench_references.rs"]
+mod bench_references;
+pub use bench_references::reference_comparisons;

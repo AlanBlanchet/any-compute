@@ -697,7 +697,7 @@ pub fn main() {
                     }
                 };
                 // Full dispatch through tree.
-                if let Some(tree) = &last_tree {
+                if let Some(tree) = &mut last_tree {
                     let _result = tree.dispatch(event);
                 }
             }
@@ -705,7 +705,7 @@ pub fn main() {
             WindowEvent::CursorMoved { position, .. } => {
                 cursor_pos = Point::new(position.x, position.y);
                 // Hover tracking: find the tag under cursor.
-                if let Some(tree) = &last_tree {
+                if let Some(tree) = &mut last_tree {
                     let tag = tree.tag_at(cursor_pos);
                     handle_hover(&state, tag);
                     // Full dispatch.
@@ -726,7 +726,7 @@ pub fn main() {
                 };
                 state.write(|d| d.scroll_target = (d.scroll_target - dy).max(0.0));
                 // Dispatch scroll event through tree.
-                if let Some(tree) = &last_tree {
+                if let Some(tree) = &mut last_tree {
                     let _result = tree.dispatch(InputEvent::Scroll {
                         delta: Point::new(0.0, dy),
                     });
