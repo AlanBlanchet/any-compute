@@ -23,6 +23,12 @@ pub const TEXT_BASELINE_RATIO: f64 = 0.85;
 pub const MIN_BAR_HEIGHT: f64 = 8.0;
 /// Default bar track background (subtle white overlay).
 pub const BAR_TRACK_BG: Color = Color::rgba(255, 255, 255, 20);
+/// Line-through vertical offset as a fraction of font_size (≈ middle of x-height).
+pub const LINE_THROUGH_RATIO: f64 = 0.3;
+/// Extra pixel offset below baseline for underline decoration.
+pub const UNDERLINE_OFFSET_PX: f64 = 1.0;
+/// Number of characters reserved for ellipsis ("...").
+pub const ELLIPSIS_CHARS: f64 = 3.0;
 /// Default easing for transitions/animations when none specified.
 pub const DEFAULT_EASING: Easing = Easing::EaseInOut;
 
@@ -163,8 +169,10 @@ impl FontWeight {
         }
     }
 
-    /// Interpolate font weight (rounds to nearest integer).
-    pub fn lerp(self, other: Self, t: f64) -> Self {
+}
+
+impl Lerp for FontWeight {
+    fn lerp(self, other: Self, t: f64) -> Self {
         Self((self.0 as f64 + (other.0 as f64 - self.0 as f64) * t).round() as u16)
     }
 }
@@ -213,8 +221,10 @@ impl Dimension {
         value.clamp(lo, hi)
     }
 
-    /// Interpolate between two dimensions. Same-variant pairs blend; mixed snap at t=0.5.
-    pub fn lerp(self, other: Self, t: f64) -> Self {
+}
+
+impl Lerp for Dimension {
+    fn lerp(self, other: Self, t: f64) -> Self {
         match (self, other) {
             (Self::Px(a), Self::Px(b)) => Self::Px(a.lerp(b, t)),
             (Self::Percent(a), Self::Percent(b)) => Self::Percent(a.lerp(b, t)),
@@ -288,8 +298,10 @@ impl Edges {
         self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0 || self.left > 0.0
     }
 
-    /// Component-wise linear interpolation.
-    pub fn lerp(self, other: Self, t: f64) -> Self {
+}
+
+impl Lerp for Edges {
+    fn lerp(self, other: Self, t: f64) -> Self {
         Self {
             top: self.top.lerp(other.top, t),
             right: self.right.lerp(other.right, t),
@@ -310,9 +322,8 @@ pub struct Shadow {
     pub inset: bool,
 }
 
-impl Shadow {
-    /// Component-wise linear interpolation.
-    pub fn lerp(self, other: Self, t: f64) -> Self {
+impl Lerp for Shadow {
+    fn lerp(self, other: Self, t: f64) -> Self {
         Self {
             x: self.x.lerp(other.x, t),
             y: self.y.lerp(other.y, t),
@@ -340,40 +351,108 @@ impl StyleWritten {
     }
 }
 
-// ── Inheritance bit constants ─────────────────────
-// Properties that inherit from parent by default in CSS:
-pub const INHERIT_COLOR: u64 = 1 << 0;
-pub const INHERIT_FONT_SIZE: u64 = 1 << 1;
-pub const INHERIT_FONT_WEIGHT: u64 = 1 << 2;
-pub const INHERIT_LINE_HEIGHT: u64 = 1 << 3;
-pub const INHERIT_TEXT_ALIGN: u64 = 1 << 4;
-pub const INHERIT_WHITE_SPACE: u64 = 1 << 5;
-pub const INHERIT_VISIBILITY: u64 = 1 << 6;
-pub const INHERIT_CURSOR: u64 = 1 << 7;
-pub const INHERIT_LETTER_SPACING: u64 = 1 << 8;
-pub const INHERIT_WORD_SPACING: u64 = 1 << 9;
-pub const INHERIT_TEXT_TRANSFORM: u64 = 1 << 10;
-pub const INHERIT_TEXT_INDENT: u64 = 1 << 11;
-pub const INHERIT_WORD_BREAK: u64 = 1 << 12;
-pub const INHERIT_DIRECTION: u64 = 1 << 13;
-pub const INHERIT_FONT_FAMILY: u64 = 1 << 14;
+// ── Inheritance system ─────────────────────────────────────────────────────
+//
+// THE property list lives in `for_each_inheritable!` — the single source of
+// truth.  It feeds the list to any `$callback!` macro, so adding a new
+// inheritable property means editing exactly ONE place.
 
-/// Mask of all inheritable properties.
-pub const INHERIT_ALL: u64 = INHERIT_COLOR
-    | INHERIT_FONT_SIZE
-    | INHERIT_FONT_WEIGHT
-    | INHERIT_LINE_HEIGHT
-    | INHERIT_TEXT_ALIGN
-    | INHERIT_WHITE_SPACE
-    | INHERIT_VISIBILITY
-    | INHERIT_CURSOR
-    | INHERIT_LETTER_SPACING
-    | INHERIT_WORD_SPACING
-    | INHERIT_TEXT_TRANSFORM
-    | INHERIT_TEXT_INDENT
-    | INHERIT_WORD_BREAK
-    | INHERIT_DIRECTION
-    | INHERIT_FONT_FAMILY;
+/// Single source of truth: invokes `$callback!(CONST => field, …)` for every
+/// inheritable CSS property.
+macro_rules! for_each_inheritable {
+    ($callback:ident) => {
+        $callback! {
+            INHERIT_COLOR => color,
+            INHERIT_FONT_SIZE => font_size,
+            INHERIT_FONT_WEIGHT => font_weight,
+            INHERIT_LINE_HEIGHT => line_height,
+            INHERIT_TEXT_ALIGN => text_align,
+            INHERIT_WHITE_SPACE => white_space,
+            INHERIT_VISIBILITY => visibility,
+            INHERIT_CURSOR => cursor,
+            INHERIT_LETTER_SPACING => letter_spacing,
+            INHERIT_WORD_SPACING => word_spacing,
+            INHERIT_TEXT_TRANSFORM => text_transform,
+            INHERIT_TEXT_INDENT => text_indent,
+            INHERIT_WORD_BREAK => word_break,
+            INHERIT_DIRECTION => direction,
+            INHERIT_FONT_FAMILY => font_family,
+        }
+    };
+}
+
+/// Generates `pub const INHERIT_*: u64` bit constants and the combined `INHERIT_ALL` mask.
+macro_rules! gen_inherit_consts {
+    ( $( $C:ident => $f:ident ),* $(,)? ) => {
+        gen_inherit_consts!(@bits 0u32; $($C => $f,)*);
+        /// Mask of all inheritable properties.
+        pub const INHERIT_ALL: u64 = $($C)|*;
+    };
+    (@bits $n:expr; $C:ident => $f:ident, $($rest:tt)*) => {
+        pub const $C: u64 = 1u64 << $n;
+        gen_inherit_consts!(@bits $n + 1u32; $($rest)*);
+    };
+    (@bits $_n:expr;) => {};
+}
+
+for_each_inheritable!(gen_inherit_consts);
+
+// ── Style interpolation macro ─────────────────────────────────────────────
+//
+// Each field is tagged with its interpolation kind:
+//   num      — f64 linear interpolation
+//   snap     — discrete snap at t=0.5 (via Clone)
+//   lerp     — delegates to Lerp::lerp (Color, Dimension, Edges, FontWeight, Shadow)
+//   opt_num  — Option<f64>: lerp when both Some, snap when mixed
+//   opt_int  — Option<i32>: rounded integer lerp when both Some
+//   opt_lerp — Option<T: Lerp + Copy>: lerp when both Some, snap when mixed
+
+macro_rules! style_lerp_field {
+    ($self:ident, $other:ident, $t:ident; $( [$kind:ident] $field:ident ),* $(,)?) => {
+        Style {
+            $( $field: style_lerp_field!(@one $kind, $self.$field, $other.$field, $t), )*
+            written: StyleWritten($self.written.0 | $other.written.0),
+        }
+    };
+    (@one num, $a:expr, $b:expr, $t:expr) => { $a + ($b - $a) * $t };
+    (@one snap, $a:expr, $b:expr, $t:expr) => { if $t < 0.5 { $a.clone() } else { $b.clone() } };
+    (@one lerp, $a:expr, $b:expr, $t:expr) => { Lerp::lerp($a, $b, $t) };
+    (@one opt_num, $a:expr, $b:expr, $t:expr) => {
+        match ($a, $b) {
+            (Some(x), Some(y)) => Some(x + (y - x) * $t),
+            _ => if $t < 0.5 { $a } else { $b },
+        }
+    };
+    (@one opt_int, $a:expr, $b:expr, $t:expr) => {
+        match ($a, $b) {
+            (Some(x), Some(y)) => Some(x + ((y - x) as f64 * $t).round() as i32),
+            _ => if $t < 0.5 { $a } else { $b },
+        }
+    };
+    (@one opt_lerp, $a:expr, $b:expr, $t:expr) => {
+        match ($a, $b) {
+            (Some(x), Some(y)) => Some(Lerp::lerp(x, y, $t)),
+            _ => if $t < 0.5 { $a } else { $b },
+        }
+    };
+}
+
+// ── CSS property copy macro ───────────────────────────────────────────────
+//
+// Maps CSS property names to Style fields. Multi-field CSS properties (like
+// "transform") naturally list multiple fields in braces.
+
+macro_rules! css_property_copy {
+    ($dst:ident, $src:ident, $prop:ident;
+     $( $($css:literal)|+ => { $($field:ident),+ } ),* $(,)?
+    ) => {
+        match $prop {
+            "all" => *$dst = $src.clone(),
+            $( $($css)|+ => { $( $dst.$field = $src.$field.clone(); )+ } )*
+            _ => {}
+        }
+    }
+}
 
 /// Complete style for one node — layout + visual in one struct.
 ///
@@ -726,6 +805,7 @@ impl Style {
     ///
     /// Numeric / color / edge fields blend smoothly.
     /// Enum / discrete fields snap at `t = 0.5`.
+    /// Each field's interpolation kind is tagged in the macro invocation.
     pub fn lerp(&self, other: &Style, t: f64) -> Style {
         if t <= 0.0 {
             return self.clone();
@@ -734,119 +814,46 @@ impl Style {
             return other.clone();
         }
 
-        let lf = |a: f64, b: f64| a + (b - a) * t;
-        macro_rules! snap {
-            ($a:expr, $b:expr) => {
-                if t < 0.5 { $a } else { $b }
-            };
-        }
-        let opt_f = |a: Option<f64>, b: Option<f64>| match (a, b) {
-            (Some(x), Some(y)) => Some(lf(x, y)),
-            _ => snap!(a, b),
-        };
-        let opt_i = |a: Option<i32>, b: Option<i32>| match (a, b) {
-            (Some(x), Some(y)) => Some(x + ((y - x) as f64 * t).round() as i32),
-            _ => snap!(a, b),
-        };
-        let opt_shadow = |a: Option<Shadow>, b: Option<Shadow>| match (a, b) {
-            (Some(x), Some(y)) => Some(x.lerp(y, t)),
-            _ => snap!(a, b),
-        };
-
-        Style {
-            // Enums — snap
-            display: snap!(self.display, other.display),
-            box_sizing: snap!(self.box_sizing, other.box_sizing),
-            visibility: snap!(self.visibility, other.visibility),
-            direction: snap!(self.direction, other.direction),
-            flex_wrap: snap!(self.flex_wrap, other.flex_wrap),
-            align: snap!(self.align, other.align),
-            align_self: snap!(self.align_self, other.align_self),
-            justify: snap!(self.justify, other.justify),
-            position: snap!(self.position, other.position),
-            overflow: snap!(self.overflow, other.overflow),
-            text_align: snap!(self.text_align, other.text_align),
-            white_space: snap!(self.white_space, other.white_space),
-            text_decoration: snap!(self.text_decoration, other.text_decoration),
-            text_transform: snap!(self.text_transform, other.text_transform),
-            cursor: snap!(self.cursor, other.cursor),
-            pointer_events: snap!(self.pointer_events, other.pointer_events),
-            user_select: snap!(self.user_select, other.user_select),
-            border_style: snap!(self.border_style, other.border_style),
-            text_overflow: snap!(self.text_overflow, other.text_overflow),
-            word_break: snap!(self.word_break, other.word_break),
-
-            // Dimensions — blend same-variant, snap mixed
-            width: self.width.lerp(other.width, t),
-            height: self.height.lerp(other.height, t),
-            min_width: self.min_width.lerp(other.min_width, t),
-            min_height: self.min_height.lerp(other.min_height, t),
-            max_width: self.max_width.lerp(other.max_width, t),
-            max_height: self.max_height.lerp(other.max_height, t),
-            left: self.left.lerp(other.left, t),
-            top: self.top.lerp(other.top, t),
-            right: self.right.lerp(other.right, t),
-            bottom: self.bottom.lerp(other.bottom, t),
-            flex_basis: self.flex_basis.lerp(other.flex_basis, t),
-
-            // Numeric — blend
-            gap: lf(self.gap, other.gap),
-            row_gap: opt_f(self.row_gap, other.row_gap),
-            column_gap: opt_f(self.column_gap, other.column_gap),
-            flex_grow: lf(self.flex_grow, other.flex_grow),
-            flex_shrink: lf(self.flex_shrink, other.flex_shrink),
-            order: snap!(self.order, other.order),
-            aspect_ratio: opt_f(self.aspect_ratio, other.aspect_ratio),
-            z_index: opt_i(self.z_index, other.z_index),
-
-            // Edges — blend each side
-            padding: self.padding.lerp(other.padding, t),
-            margin: self.margin.lerp(other.margin, t),
-
-            // Visual — colors blend, numeric blend
-            background: self.background.lerp(other.background, t),
-            border_color: self.border_color.lerp(other.border_color, t),
-            border_width: lf(self.border_width, other.border_width),
-            border_top_width: lf(self.border_top_width, other.border_top_width),
-            border_right_width: lf(self.border_right_width, other.border_right_width),
-            border_bottom_width: lf(self.border_bottom_width, other.border_bottom_width),
-            border_left_width: lf(self.border_left_width, other.border_left_width),
-            corner_radius: lf(self.corner_radius, other.corner_radius),
-            opacity: lf(self.opacity, other.opacity),
-            box_shadow: opt_shadow(self.box_shadow, other.box_shadow),
-            outline_width: lf(self.outline_width, other.outline_width),
-            outline_color: self.outline_color.lerp(other.outline_color, t),
-
-            // Transform — blend
-            transform_translate_x: lf(self.transform_translate_x, other.transform_translate_x),
-            transform_translate_y: lf(self.transform_translate_y, other.transform_translate_y),
-            transform_scale_x: lf(self.transform_scale_x, other.transform_scale_x),
-            transform_scale_y: lf(self.transform_scale_y, other.transform_scale_y),
-            transform_rotate: lf(self.transform_rotate, other.transform_rotate),
-            transform_skew_x: lf(self.transform_skew_x, other.transform_skew_x),
-            transform_skew_y: lf(self.transform_skew_y, other.transform_skew_y),
-
-            // Filter — blend
-            filter_blur: lf(self.filter_blur, other.filter_blur),
-            filter_brightness: lf(self.filter_brightness, other.filter_brightness),
-            filter_contrast: lf(self.filter_contrast, other.filter_contrast),
-            filter_opacity: lf(self.filter_opacity, other.filter_opacity),
-
-            // Text — blend numeric, snap enums (already above)
-            font_family: snap!(self.font_family.clone(), other.font_family.clone()),
-            font_size: lf(self.font_size, other.font_size),
-            font_weight: self.font_weight.lerp(other.font_weight, t),
-            line_height: lf(self.line_height, other.line_height),
-            line_height_absolute: snap!(self.line_height_absolute, other.line_height_absolute),
-            color: self.color.lerp(other.color, t),
-            letter_spacing: lf(self.letter_spacing, other.letter_spacing),
-            word_spacing: lf(self.word_spacing, other.word_spacing),
-            text_indent: lf(self.text_indent, other.text_indent),
-            text_shadow: opt_shadow(self.text_shadow, other.text_shadow),
-
-            // Written mask — take the union
-            written: StyleWritten(self.written.0 | other.written.0),
-        }
+        style_lerp_field!(self, other, t;
+            // Display / Box Model — snap
+            [snap] display, [snap] box_sizing, [snap] visibility,
+            // Dimensions — variant-aware lerp
+            [lerp] width, [lerp] height, [lerp] min_width, [lerp] min_height,
+            [lerp] max_width, [lerp] max_height, [opt_num] aspect_ratio,
+            // Flex layout — snap enums, lerp numerics
+            [snap] direction, [snap] flex_wrap, [snap] align, [snap] align_self,
+            [snap] justify, [num] gap, [opt_num] row_gap, [opt_num] column_gap,
+            // Spacing — component-wise lerp
+            [lerp] padding, [lerp] margin,
+            // Position — snap enum, lerp offsets
+            [snap] position, [lerp] left, [lerp] top, [lerp] right, [lerp] bottom,
+            [snap] overflow,
+            // Flex item — lerp numerics, snap discrete
+            [num] flex_grow, [num] flex_shrink, [lerp] flex_basis, [snap] order,
+            [opt_int] z_index,
+            // Visual — lerp colors + numerics
+            [lerp] background, [lerp] border_color, [snap] border_style,
+            [num] border_width, [num] border_top_width, [num] border_right_width,
+            [num] border_bottom_width, [num] border_left_width,
+            [num] corner_radius, [num] opacity, [opt_lerp] box_shadow,
+            [num] outline_width, [lerp] outline_color,
+            // Transform — lerp all
+            [num] transform_translate_x, [num] transform_translate_y,
+            [num] transform_scale_x, [num] transform_scale_y,
+            [num] transform_rotate, [num] transform_skew_x, [num] transform_skew_y,
+            // Filter — lerp all
+            [num] filter_blur, [num] filter_brightness,
+            [num] filter_contrast, [num] filter_opacity,
+            // Text — lerp numerics, snap enums
+            [snap] font_family, [num] font_size, [lerp] font_weight,
+            [num] line_height, [snap] line_height_absolute, [lerp] color,
+            [snap] text_align, [snap] white_space,
+            [snap] text_decoration, [snap] text_transform,
+            [num] letter_spacing, [num] word_spacing, [num] text_indent,
+            [snap] text_overflow, [opt_lerp] text_shadow, [snap] word_break,
+            // Interaction — snap
+            [snap] cursor, [snap] pointer_events, [snap] user_select,
+        )
     }
 
     /// Total effective border width on each side.
@@ -887,6 +894,57 @@ impl Style {
         self.display == Display::None
     }
 
+    /// Whether `other` differs from `self` in any layout-affecting property.
+    /// Visual-only fields (colors, opacity, transforms, shadows, filters,
+    /// cursors, decorations) are ignored.
+    pub fn differs_in_layout(&self, o: &Style) -> bool {
+        self.display != o.display
+            || self.box_sizing != o.box_sizing
+            || self.width != o.width
+            || self.height != o.height
+            || self.min_width != o.min_width
+            || self.min_height != o.min_height
+            || self.max_width != o.max_width
+            || self.max_height != o.max_height
+            || self.aspect_ratio != o.aspect_ratio
+            || self.direction != o.direction
+            || self.flex_wrap != o.flex_wrap
+            || self.align != o.align
+            || self.align_self != o.align_self
+            || self.justify != o.justify
+            || self.gap != o.gap
+            || self.row_gap != o.row_gap
+            || self.column_gap != o.column_gap
+            || self.padding != o.padding
+            || self.margin != o.margin
+            || self.position != o.position
+            || self.left != o.left
+            || self.top != o.top
+            || self.right != o.right
+            || self.bottom != o.bottom
+            || self.overflow != o.overflow
+            || self.flex_grow != o.flex_grow
+            || self.flex_shrink != o.flex_shrink
+            || self.flex_basis != o.flex_basis
+            || self.order != o.order
+            || self.border_width != o.border_width
+            || self.border_top_width != o.border_top_width
+            || self.border_right_width != o.border_right_width
+            || self.border_bottom_width != o.border_bottom_width
+            || self.border_left_width != o.border_left_width
+            || self.font_family != o.font_family
+            || self.font_size != o.font_size
+            || self.font_weight != o.font_weight
+            || self.line_height != o.line_height
+            || self.line_height_absolute != o.line_height_absolute
+            || self.white_space != o.white_space
+            || self.text_align != o.text_align
+            || self.letter_spacing != o.letter_spacing
+            || self.word_spacing != o.word_spacing
+            || self.text_indent != o.text_indent
+            || self.word_break != o.word_break
+    }
+
     /// Whether this node has any non-identity transform.
     pub fn has_transform(&self) -> bool {
         self.transform_translate_x != 0.0
@@ -905,10 +963,10 @@ impl Style {
 
     /// Apply translate + scale transform to a rectangle (center-relative scaling).
     pub fn transform_rect(&self, r: Rect) -> Rect {
-        let cx = r.origin.x + r.size.w / 2.0;
-        let cy = r.origin.y + r.size.h / 2.0;
-        let sw = r.size.w * self.transform_scale_x;
-        let sh = r.size.h * self.transform_scale_y;
+        let cx = r.origin.x + r.size.w() / 2.0;
+        let cy = r.origin.y + r.size.h() / 2.0;
+        let sw = r.size.w() * self.transform_scale_x;
+        let sh = r.size.h() * self.transform_scale_y;
         Rect::new(
             cx - sw / 2.0 + self.transform_translate_x,
             cy - sh / 2.0 + self.transform_translate_y,
@@ -969,24 +1027,16 @@ impl Style {
     ///
     /// Only copies properties that (a) are inheritable per CSS spec and
     /// (b) were NOT explicitly set on this node (tracked via `written`).
+    /// Property list driven by `for_each_inheritable!` — single source of truth.
     pub fn inherit_from(&mut self, parent: &Style) {
-        macro_rules! inh {
-            ($($bit:ident => $field:ident),+ $(,)?) => {
-                $( if !self.written.has($bit) { self.$field = parent.$field; } )+
+        macro_rules! do_inherit {
+            ($( $C:ident => $f:ident ),* $(,)?) => {
+                $( if !self.written.has($C) { self.$f = parent.$f.clone(); } )*
             };
         }
-        inh! {
-            INHERIT_COLOR => color, INHERIT_FONT_SIZE => font_size,
-            INHERIT_FONT_WEIGHT => font_weight, INHERIT_LINE_HEIGHT => line_height,
-            INHERIT_TEXT_ALIGN => text_align, INHERIT_WHITE_SPACE => white_space,
-            INHERIT_VISIBILITY => visibility, INHERIT_CURSOR => cursor,
-            INHERIT_LETTER_SPACING => letter_spacing, INHERIT_WORD_SPACING => word_spacing,
-            INHERIT_TEXT_TRANSFORM => text_transform, INHERIT_TEXT_INDENT => text_indent,
-            INHERIT_WORD_BREAK => word_break, INHERIT_DIRECTION => direction,
-        }
-        // font-family inherits as Option<String> (non-Copy), handle separately
+        for_each_inheritable!(do_inherit);
+        // line_height_absolute piggybacks on font-family inheritance
         if !self.written.has(INHERIT_FONT_FAMILY) {
-            self.font_family = parent.font_family.clone();
             self.line_height_absolute = parent.line_height_absolute;
         }
     }
@@ -1268,6 +1318,45 @@ impl StyleOp {
             Self::UserSelectOp(v) => s.user_select = *v,
         }
     }
+
+    /// Returns `true` when this op changes a property that affects layout
+    /// (box model, flex, position, text metrics). Visual-only props (colors,
+    /// opacity, transforms, filters, shadows, decorations, cursors) return `false`.
+    #[inline]
+    pub fn affects_layout(&self) -> bool {
+        !matches!(
+            self,
+            Self::Background(_)
+                | Self::BorderColor(_)
+                | Self::BorderStyleOp(_)
+                | Self::CornerRadius(_)
+                | Self::Opacity(_)
+                | Self::BoxShadow(_)
+                | Self::OutlineWidth(_)
+                | Self::OutlineColor(_)
+                | Self::TranslateX(_)
+                | Self::TranslateY(_)
+                | Self::ScaleX(_)
+                | Self::ScaleY(_)
+                | Self::Rotate(_)
+                | Self::SkewX(_)
+                | Self::SkewY(_)
+                | Self::FilterBlur(_)
+                | Self::FilterBrightness(_)
+                | Self::FilterContrast(_)
+                | Self::FilterOpacity(_)
+                | Self::TextColor(_)
+                | Self::TextDecorationOp(_)
+                | Self::TextTransformOp(_)
+                | Self::TextOverflowOp(_)
+                | Self::TextShadow(_)
+                | Self::CursorOp(_)
+                | Self::PointerEventsOp(_)
+                | Self::UserSelectOp(_)
+                | Self::Visibility(_)
+                | Self::ZIndex(_)
+        )
+    }
 }
 
 /// Apply a list of pre-compiled operations to a [`Style`].
@@ -1282,69 +1371,56 @@ pub fn apply_ops(s: &mut Style, ops: &[StyleOp]) {
 ///
 /// Used by per-property transition blending: each transition computes its
 /// own interpolated style, then only the relevant field is copied over.
+/// Multi-field CSS properties list all their fields in braces.
 pub fn copy_css_property(dst: &mut Style, src: &Style, prop: &str) {
-    match prop {
-        "all" => *dst = src.clone(),
-        "background" | "background-color" => dst.background = src.background,
-        "color" => dst.color = src.color,
-        "border-color" => dst.border_color = src.border_color,
-        "border-width" => dst.border_width = src.border_width,
-        "border-radius" => dst.corner_radius = src.corner_radius,
-        "opacity" => dst.opacity = src.opacity,
-        "width" => dst.width = src.width,
-        "height" => dst.height = src.height,
-        "min-width" => dst.min_width = src.min_width,
-        "min-height" => dst.min_height = src.min_height,
-        "max-width" => dst.max_width = src.max_width,
-        "max-height" => dst.max_height = src.max_height,
-        "padding" => dst.padding = src.padding,
-        "margin" => dst.margin = src.margin,
-        "gap" => dst.gap = src.gap,
-        "font-size" => dst.font_size = src.font_size,
-        "font-weight" => dst.font_weight = src.font_weight,
-        "line-height" => {
-            dst.line_height = src.line_height;
-            dst.line_height_absolute = src.line_height_absolute;
-        }
+    css_property_copy!(dst, src, prop;
+        "background" | "background-color" => { background },
+        "color" => { color },
+        "border-color" => { border_color },
+        "border-width" => { border_width },
+        "border-radius" => { corner_radius },
+        "opacity" => { opacity },
+        "width" => { width },
+        "height" => { height },
+        "min-width" => { min_width },
+        "min-height" => { min_height },
+        "max-width" => { max_width },
+        "max-height" => { max_height },
+        "padding" => { padding },
+        "margin" => { margin },
+        "gap" => { gap },
+        "font-size" => { font_size },
+        "font-weight" => { font_weight },
+        "line-height" => { line_height, line_height_absolute },
         "transform" => {
-            dst.transform_translate_x = src.transform_translate_x;
-            dst.transform_translate_y = src.transform_translate_y;
-            dst.transform_scale_x = src.transform_scale_x;
-            dst.transform_scale_y = src.transform_scale_y;
-            dst.transform_rotate = src.transform_rotate;
-            dst.transform_skew_x = src.transform_skew_x;
-            dst.transform_skew_y = src.transform_skew_y;
-        }
-        "filter" => {
-            dst.filter_blur = src.filter_blur;
-            dst.filter_brightness = src.filter_brightness;
-            dst.filter_contrast = src.filter_contrast;
-            dst.filter_opacity = src.filter_opacity;
-        }
-        "box-shadow" => dst.box_shadow = src.box_shadow,
-        "text-shadow" => dst.text_shadow = src.text_shadow,
-        "letter-spacing" => dst.letter_spacing = src.letter_spacing,
-        "word-spacing" => dst.word_spacing = src.word_spacing,
-        "text-indent" => dst.text_indent = src.text_indent,
-        "outline-color" => dst.outline_color = src.outline_color,
-        "outline-width" => dst.outline_width = src.outline_width,
-        "left" => dst.left = src.left,
-        "top" => dst.top = src.top,
-        "right" => dst.right = src.right,
-        "bottom" => dst.bottom = src.bottom,
-        "flex-grow" => dst.flex_grow = src.flex_grow,
-        "flex-shrink" => dst.flex_shrink = src.flex_shrink,
-        "flex-basis" => dst.flex_basis = src.flex_basis,
-        "border-top-width" => dst.border_top_width = src.border_top_width,
-        "border-right-width" => dst.border_right_width = src.border_right_width,
-        "border-bottom-width" => dst.border_bottom_width = src.border_bottom_width,
-        "border-left-width" => dst.border_left_width = src.border_left_width,
-        "row-gap" => dst.row_gap = src.row_gap,
-        "column-gap" => dst.column_gap = src.column_gap,
-        "z-index" => dst.z_index = src.z_index,
-        "aspect-ratio" => dst.aspect_ratio = src.aspect_ratio,
-        "visibility" => dst.visibility = src.visibility,
-        "font-family" => dst.font_family.clone_from(&src.font_family),
-        _ => {} // Unknown property — no-op
-    }
+            transform_translate_x, transform_translate_y,
+            transform_scale_x, transform_scale_y,
+            transform_rotate, transform_skew_x, transform_skew_y
+        },
+        "filter" => { filter_blur, filter_brightness, filter_contrast, filter_opacity },
+        "box-shadow" => { box_shadow },
+        "text-shadow" => { text_shadow },
+        "letter-spacing" => { letter_spacing },
+        "word-spacing" => { word_spacing },
+        "text-indent" => { text_indent },
+        "outline-color" => { outline_color },
+        "outline-width" => { outline_width },
+        "left" => { left },
+        "top" => { top },
+        "right" => { right },
+        "bottom" => { bottom },
+        "flex-grow" => { flex_grow },
+        "flex-shrink" => { flex_shrink },
+        "flex-basis" => { flex_basis },
+        "border-top-width" => { border_top_width },
+        "border-right-width" => { border_right_width },
+        "border-bottom-width" => { border_bottom_width },
+        "border-left-width" => { border_left_width },
+        "row-gap" => { row_gap },
+        "column-gap" => { column_gap },
+        "z-index" => { z_index },
+        "aspect-ratio" => { aspect_ratio },
+        "visibility" => { visibility },
+        "font-family" => { font_family },
+    );
 }

@@ -1,15 +1,15 @@
 //! Native WGPU benchmark dashboard — zero frameworks, zero DOM, zero overhead.
 //!
 //! Renders directly to GPU via instanced draw calls.
-//! Runs real `any_compute_core::bench` workloads on background threads and
+//! Runs real `any_compute_bench::runner` workloads on background threads and
 //! streams results into the render loop at 60+ FPS with zero stutter.
 
-use any_compute_canvas::gpu::Gpu;
-use any_compute_canvas::theme;
-use any_compute_canvas::winit;
+use any_compute_dom::gpu::Gpu;
+use any_compute_dom::theme;
+use any_compute_dom::winit;
 use any_compute_core::Lerp;
 use any_compute_core::animation::{Easing, Transition, TransitionManager};
-use any_compute_core::bench::*;
+use any_compute_bench::runner::*;
 use any_compute_core::interaction::{Button, FocusState, HoverState, InputEvent, Modifiers};
 use any_compute_core::kernel::{UnaryOp, best_kernel};
 use any_compute_core::layout::{Point, Size};
@@ -766,6 +766,7 @@ pub fn main() {
                     tree.layout(Size::new(w, h));
                     let mut list = RenderList::default();
                     tree.paint(&mut list);
+                    tree.post_paint();
                     gpu.paint(&list);
                     fps_count += 1;
                     if fps_timer.elapsed().as_secs() >= 1 {

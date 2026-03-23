@@ -1,0 +1,483 @@
+/* Conformance test suite — exercises all CSS property groups.
+ * Used with palette.css for var() resolution.
+ * See css_tests.rs `conform_*` tests for assertions.
+ */
+
+/* ── Custom variables (conformance-specific) ─────────────── */
+:root {
+  --card-radius: 12px;
+  --card-pad: 16px;
+  --accent: var(--blue);
+}
+
+/* ── Box model ───────────────────────────────────────────── */
+.box-px {
+  width: 200px;
+  height: 100px;
+  padding: 16px;
+  margin: 8px;
+  box-sizing: border-box;
+}
+.box-pct {
+  width: 50%;
+  height: 25%;
+}
+.box-minmax {
+  min-width: 100px;
+  min-height: 50px;
+  max-width: 400px;
+  max-height: 200px;
+}
+.box-auto {
+  width: auto;
+  height: auto;
+}
+
+/* ── Flexbox ─────────────────────────────────────────────── */
+.flex-row-center {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+.flex-col-stretch {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+}
+.flex-wrap-around {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-around;
+}
+.flex-item-grow {
+  flex-grow: 2;
+  flex-shrink: 0;
+  flex-basis: 100px;
+  order: -1;
+}
+.flex-item-auto {
+  flex-grow: 1;
+}
+.flex-gap-row-col {
+  gap: 16px;
+  row-gap: 24px;
+  column-gap: 12px;
+}
+
+/* ── Colors ──────────────────────────────────────────────── */
+.color-hex3 {
+  background: #f00;
+}
+.color-hex6 {
+  background: #89b4fa;
+}
+.color-hex8 {
+  background: #89b4fa80;
+}
+.color-rgb {
+  background: rgb(166, 227, 161);
+}
+.color-rgba {
+  background: rgba(137, 180, 250, 0.5);
+}
+.color-named-white {
+  background: white;
+}
+.color-named-black {
+  background: black;
+}
+.color-transparent {
+  background: transparent;
+}
+.color-var {
+  background: var(--blue);
+}
+.color-var-fallback {
+  background: var(--nonexistent, #a6e3a1);
+}
+
+/* ── Border ──────────────────────────────────────────────── */
+.border-uniform {
+  border: 2px solid #89b4fa;
+  border-radius: 8px;
+}
+.border-per-side {
+  border-top-width: 1px;
+  border-right-width: 2px;
+  border-bottom-width: 3px;
+  border-left-width: 4px;
+  border-color: #f38ba8;
+}
+.border-radius-large {
+  border-radius: 9999px;
+}
+
+/* ── Text ────────────────────────────────────────────────── */
+.text-heading {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.5;
+  letter-spacing: 0.5px;
+  text-align: center;
+}
+.text-body {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--subtext0);
+  line-height: 1.6;
+}
+.text-mono {
+  font-family: "JetBrains Mono";
+  font-size: 13px;
+}
+.text-decoration {
+  text-decoration: underline;
+  text-transform: uppercase;
+}
+.text-overflow-ellipsis {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* ── Position ────────────────────────────────────────────── */
+.pos-relative {
+  position: relative;
+  left: 10px;
+  top: 5px;
+}
+.pos-absolute {
+  position: absolute;
+  right: 0px;
+  bottom: 0px;
+}
+.pos-fixed {
+  position: fixed;
+  top: 0px;
+  left: 0px;
+}
+
+/* ── Transform ───────────────────────────────────────────── */
+.transform-translate {
+  transform: translateX(20px) translateY(-10px);
+}
+.transform-scale {
+  transform: scaleX(1.5) scaleY(0.8);
+}
+.transform-rotate {
+  transform: rotate(45deg);
+}
+.transform-combo {
+  transform: translateX(10px) scale(1.2) rotate(15deg);
+}
+
+/* ── Opacity / Visibility ────────────────────────────────── */
+.opacity-full {
+  opacity: 1;
+}
+.opacity-half {
+  opacity: 0.5;
+}
+.opacity-quarter {
+  opacity: 0.25;
+}
+.opacity-zero {
+  opacity: 0;
+}
+.hidden-vis {
+  visibility: hidden;
+}
+.hidden-display {
+  display: none;
+}
+
+/* ── Overflow ────────────────────────────────────────────── */
+.overflow-visible {
+  overflow: visible;
+}
+.overflow-hidden {
+  overflow: hidden;
+}
+.overflow-scroll {
+  overflow: scroll;
+}
+.overflow-auto {
+  overflow: auto;
+}
+
+/* ── Calc ────────────────────────────────────────────────── */
+.calc-width {
+  width: calc(100% - 40px);
+}
+.calc-height {
+  height: calc(50% + 20px);
+}
+
+/* ── Transitions ─────────────────────────────────────────── */
+.transition-single {
+  transition: opacity 0.3s ease-in;
+}
+.transition-multi {
+  transition:
+    background 0.5s ease-out,
+    transform 0.3s linear 0.1s;
+}
+.transition-all {
+  transition: all 0.2s;
+}
+.transition-longhands {
+  transition-property: width, height;
+  transition-duration: 0.4s, 0.6s;
+  transition-timing-function: ease-in, ease-out;
+  transition-delay: 0s, 0.1s;
+}
+
+/* ── @keyframes + Animations ─────────────────────────────── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideScale {
+  0% {
+    transform: translateX(0px);
+  }
+  50% {
+    transform: translateX(50px) scale(1.2);
+  }
+  100% {
+    transform: translateX(100px);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.anim-fade {
+  animation: fadeIn 0.5s ease-out forwards;
+}
+.anim-slide {
+  animation: slideScale 1s linear;
+}
+.anim-infinite {
+  animation: pulse 2s alternate infinite;
+}
+.anim-longhands {
+  animation-name: fadeIn;
+  animation-duration: 0.3s;
+  animation-delay: 0.1s;
+  animation-iteration-count: 3;
+  animation-direction: reverse;
+  animation-fill-mode: both;
+}
+
+/* ── CSS Variables ───────────────────────────────────────── */
+.card-var {
+  border-radius: var(--card-radius);
+  padding: var(--card-pad);
+  background: var(--surface0);
+  color: var(--accent);
+}
+.var-chain {
+  color: var(--accent);
+}
+.var-missing-fallback {
+  background: var(--doesnt-exist, var(--green));
+}
+
+/* ── Shorthand expansion ─────────────────────────────────── */
+.shorthand-pad-1 {
+  padding: 8px;
+}
+.shorthand-pad-2 {
+  padding: 8px 16px;
+}
+.shorthand-pad-3 {
+  padding: 8px 16px 24px;
+}
+.shorthand-pad-4 {
+  padding: 8px 16px 24px 32px;
+}
+.shorthand-margin-2 {
+  margin: 10px 20px;
+}
+.shorthand-border {
+  border: 3px solid #ff0000;
+}
+.shorthand-flex {
+  flex: 2;
+}
+.shorthand-flex-basis {
+  flex: 0 1 auto;
+}
+
+/* ── Selectors ───────────────────────────────────────────── */
+.parent .child-desc {
+  color: #89b4fa;
+}
+.parent > .child-direct {
+  color: #a6e3a1;
+}
+.btn:hover {
+  background: #89b4fa;
+}
+.list-item:nth-child(2n + 1) {
+  background: #313244;
+}
+
+/* ── Specificity cascade ─────────────────────────────────── */
+div {
+  font-size: 14px;
+}
+.sized {
+  font-size: 18px;
+}
+#unique {
+  font-size: 24px;
+}
+.cascade-test {
+  color: #ff0000;
+}
+div.cascade-test {
+  color: #00ff00;
+}
+
+/* ── Inheritance ─────────────────────────────────────────── */
+.inheritor {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.3px;
+  visibility: visible;
+  cursor: pointer;
+  text-align: right;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+
+/* ── Shadow ──────────────────────────────────────────────── */
+.shadow-basic {
+  box-shadow: 4px 4px 8px 2px rgba(0, 0, 0, 0.3);
+}
+.shadow-inset {
+  box-shadow: inset 0px 0px 4px 0px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Z-index / Order ─────────────────────────────────────── */
+.z-top {
+  z-index: 100;
+}
+.z-bottom {
+  z-index: -1;
+}
+.order-first {
+  order: -1;
+}
+.order-last {
+  order: 99;
+}
+
+/* ── Interaction ─────────────────────────────────────────── */
+.cursor-pointer {
+  cursor: pointer;
+}
+.no-events {
+  pointer-events: none;
+}
+.no-select {
+  user-select: none;
+}
+
+/* ── Filter ──────────────────────────────────────────────── */
+.filter-blur {
+  filter: blur(4px);
+}
+.filter-brightness {
+  filter: brightness(1.5);
+}
+.filter-combo {
+  filter: blur(2px) brightness(0.8) contrast(1.2);
+}
+
+/* ── Outline ─────────────────────────────────────────────── */
+.outline-focus {
+  outline: 2px solid #89b4fa;
+}
+
+/* ── Dashboard component ─────────────────────────────────── */
+.dash-sidebar {
+  width: 220px;
+  min-width: 220px;
+  background: var(--mantle);
+  padding: 20px 16px;
+}
+.dash-nav-item {
+  height: 40px;
+  border-radius: 10px;
+  color: var(--overlay2);
+  cursor: pointer;
+}
+.dash-nav-active {
+  background: var(--blue);
+  color: var(--mantle);
+  font-weight: 600;
+}
+.dash-header {
+  flex-direction: row;
+  height: 56px;
+  background: var(--surface0);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom-width: 1px;
+  border-color: var(--surface1);
+}
+.dash-card {
+  flex-grow: 1;
+  border-radius: 12px;
+  background: var(--surface0);
+}
+.dash-card-title {
+  font-size: 13px;
+  text-transform: uppercase;
+}
+.dash-card-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+.bar-green {
+  background: var(--green);
+  width: 72%;
+}
+.bar-blue {
+  background: var(--blue);
+  width: 48%;
+}
+.bar-red {
+  background: var(--red);
+  width: 89%;
+}
+.bar-yellow {
+  background: var(--yellow);
+  width: 35%;
+}

@@ -5,14 +5,14 @@
 //!
 //! Run: `cargo run -p dom-example` or `make dom`
 
-use any_compute_canvas::gpu::Gpu;
-use any_compute_canvas::winit::{
+use any_compute_dom::gpu::Gpu;
+use any_compute_dom::winit::{
     self,
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{CursorIcon, WindowBuilder},
 };
-use any_compute_canvas::{DEFAULT_VIEWPORT, PALETTE_CSS};
+use any_compute_dom::{DEFAULT_VIEWPORT, PALETTE_CSS};
 use any_compute_core::interaction::{Button, InputEvent};
 use any_compute_core::layout::Point;
 use any_compute_core::render::RenderList;
@@ -29,12 +29,10 @@ const MAX_FRAME_DT: f64 = 0.032;
 fn main() {
     env_logger::init();
 
-    let (w, h) = (DEFAULT_VIEWPORT.w, DEFAULT_VIEWPORT.h);
+    let (w, h) = (DEFAULT_VIEWPORT.w(), DEFAULT_VIEWPORT.h());
     let full_css = format!("{PALETTE_CSS}\n{CSS}");
     let sheet = StyleSheet::parse(&full_css);
     let mut tree = parse_with_css(HTML, &sheet);
-    tree.layout(DEFAULT_VIEWPORT);
-    tree.start_animations();
 
     println!("DOM playground: {} nodes", tree.arena.len());
 
@@ -47,15 +45,22 @@ fn main() {
             .with_title("any-compute — DOM Playground")
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
             .with_resizable(false)
+            .with_visible(false)
             .build(&event_loop)
             .unwrap(),
     );
 
     let mut gpu = Gpu::init(window.clone());
+    // Pre-measure text nodes with real font metrics before layout.
+    tree.measure_text_nodes(|text, font_size| gpu.measure_text(text, font_size));
+    tree.layout(DEFAULT_VIEWPORT);
+    tree.start_animations();
+
     let mut cursor = Point::ZERO;
     let mut last_frame = Instant::now();
     let mut needs_repaint = true;
     let mut current_cursor = CursorIcon::Default;
+    let mut list = RenderList::default();
 
     let _ = event_loop.run(move |event, elwt| match event {
         Event::Resumed => {
@@ -70,7 +75,8 @@ fn main() {
             last_frame = now;
 
             // tick() auto re-layouts when animations touch layout properties.
-            if tree.tick(dt).active {
+            let tick = tree.tick(dt);
+            if tick.active || tree.needs_paint() {
                 needs_repaint = true;
             }
 
@@ -146,10 +152,15 @@ fn main() {
             }
 
             WindowEvent::RedrawRequested => {
-                let mut list = RenderList::default();
+                list.clear();
                 tree.paint(&mut list);
                 gpu.paint(&list);
+                tree.post_paint();
                 needs_repaint = false;
+                // Show window after first paint to avoid flash of unstyled content.
+                if !window.is_visible().unwrap_or(true) {
+                    window.set_visible(true);
+                }
             }
             _ => {}
         },

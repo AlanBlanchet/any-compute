@@ -33,7 +33,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 
 // ── Source representation ─────────────────────────────────────────────────
 
@@ -60,15 +59,11 @@ pub enum ShaderStage {
     Compute,
 }
 
-impl fmt::Display for ShaderStage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Vertex => write!(f, "vertex"),
-            Self::Fragment => write!(f, "fragment"),
-            Self::Compute => write!(f, "compute"),
-        }
-    }
-}
+display_enum!(ShaderStage {
+    Vertex   => "vertex",
+    Fragment => "fragment",
+    Compute  => "compute",
+});
 
 /// GLSL version target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

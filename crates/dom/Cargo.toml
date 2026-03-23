@@ -1,10 +1,32 @@
 [package]
 name = "any-compute-dom"
-description = "Arena-based scene graph, style system, and DOM parser for any-compute rendering."
+description = "Arena-based scene graph, style system, DOM parser, and GPU renderer for any-compute."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+gpu = [
+    "dep:wgpu",
+    "dep:glyphon",
+    "dep:pollster",
+    "dep:winit",
+    "dep:bytemuck",
+    "dep:png",
+    "dep:env_logger",
+]
+
 [dependencies]
 any-compute-core = { workspace = true }
+bitflags = "2"
 log.workspace = true
+
+# GPU rendering (optional, behind gpu feature)
+wgpu = { workspace = true, optional = true }
+glyphon = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+env_logger = { version = "0.11", optional = true }

@@ -6,37 +6,39 @@ applyTo: "crates/bench/**"
 
 # Benchmarks — `crates/bench/`
 
-Standalone benchmark crate. Depends on `any-compute-core` (compute,
-layout, render), `any-compute-dom` (CSS parsing, tree building, flexbox),
-and `any-compute-canvas` (GPU renderer, theme) for the dashboard window.
+Standalone benchmark crate — the **single home** for all benchmark code.
+Depends on `any-compute-core` (compute, layout, render) and `any-compute-dom`
+(CSS parsing, tree building, flexbox, GPU renderer behind `gpu` feature,
+theme) for the dashboard window.
 
 **No CSS/HTML tests here** — CSS parser correctness and fault-tolerance belong in
 `crates/dom/`. GPU rendering, scenario replay, and visual comparison belong in
-`crates/canvas/`. This crate only benchmarks and provides the dashboard window.
+`crates/dom/` (behind `gpu` feature). This crate only benchmarks and provides the dashboard window.
+
+**No benchmark code in core** — `crates/core/` is purely compute primitives.
+Core exposes `FEATURES` (compile-time feature flags) for the runner to query.
 
 ## Running
 
 ```sh
 make dashboard  # launches the GPU dashboard window
-make bench      # CLI benchmark (core crate)
+make bench      # CLI benchmark (writes to out/)
 cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
 ```
 
 ## Crate Structure
 
-| File         | Purpose                                                                    |
-| ------------ | -------------------------------------------------------------------------- |
-| `lib.rs`     | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
-| `window.rs`  | GPU dashboard binary (canvas + winit), feature-gated `window`              |
-| `bench.css`  | Catppuccin Mocha theme — single source of truth for dashboard styling      |
-| `Cargo.toml` | `window` feature (default) gates `any-compute-canvas` dep                  |
-
-## Core Benchmark Library (`crates/core/src/bench.rs`)
-
-| File                  | Purpose                                                                  |
-| --------------------- | ------------------------------------------------------------------------ |
-| `bench.rs`            | Categories, hardware detection, runners, comparison tables, live metrics |
-| `bench_references.rs` | Static reference comparison data (80+ library comparison entries)        |
+| File                    | Purpose                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `lib.rs`                | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
+| `runner.rs`             | Categories, hardware detection, runners, comparison tables, live metrics   |
+| `runner_references.rs`  | Static reference comparison data (80+ library comparison entries)          |
+| `window.rs`             | GPU dashboard binary (canvas + winit), feature-gated `window`              |
+| `bench.css`             | Catppuccin Mocha theme — single source of truth for dashboard styling      |
+| `bin/anc_bench.rs`      | CLI benchmark binary — writes JSON reports to `out/`                       |
+| `fixtures/website.html` | Realistic static landing page (~200 DOM nodes) for parse benchmarks        |
+| `fixtures/website.css`  | CSS for website fixture — 90+ rules, variables, selectors                  |
+| `Cargo.toml`            | `window` + `hwinfo` features gate canvas/sysinfo deps                      |
 
 ### `bench_categories!` Macro
 
@@ -51,16 +53,21 @@ curated domain ordering.
 
 ## Shared Constants (exported from `lib.rs`)
 
-| Const / fn      | Purpose                                             |
-| --------------- | --------------------------------------------------- |
-| `BENCH_CSS`     | Raw CSS text (`include_str!`)                       |
-| `VIEWPORT`      | Default `Size(1400, 900)`                           |
-| `VERSION`       | `"vX.Y.Z"` from `Cargo.toml`                        |
-| `TAB_LABELS`    | `["Hardware", "Benchmarks", "Live Showdown"]`       |
-| `SHEET`         | `LazyLock<StyleSheet>` — parsed once, O(1) lookups  |
-| `s(cls)`/`sm()` | Shorthand class resolution via `SHEET`              |
-| `kv_row()`      | Key-value row helper (label 72px + value)           |
-| `build_shell()` | Common sidebar + tab shell (returns content NodeId) |
+| Const / fn           | Purpose                                                |
+| -------------------- | ------------------------------------------------------ |
+| `BENCH_CSS`          | Raw CSS text (`include_str!`)                          |
+| `WEBSITE_HTML`       | Full website HTML fixture (`include_str!`)             |
+| `WEBSITE_CSS`        | Website CSS fixture (`include_str!`)                   |
+| `VIEWPORT`           | Default `Size(1400, 900)`                              |
+| `VERSION`            | `"vX.Y.Z"` from `Cargo.toml`                           |
+| `TAB_LABELS`         | `["Hardware", "Benchmarks", "Live Showdown"]`          |
+| `SHEET`              | `LazyLock<StyleSheet>` — parsed once, O(1) lookups     |
+| `s(cls)`/`sm()`      | Shorthand class resolution via `SHEET`                 |
+| `kv_row()`           | Key-value row helper (label 72px + value)              |
+| `build_shell()`      | Common sidebar + tab shell (returns content NodeId)    |
+| `bench_throughput()` | Generic ops/sec measurement (warmup + timed rounds)    |
+| `bench_pair()`       | A/B comparative measurement → `Measurement`            |
+| `bench_scenarios!`   | Declarative macro — batch paired benchmarks into `Vec` |
 
 `kv_row` and `build_shell` use the global `SHEET` directly — no `&StyleSheet` parameter.
 `window.rs` imports `SHEET` from `lib.rs` and defines local `s()`/`sm()` wrappers.
@@ -70,16 +77,37 @@ curated domain ordering.
 Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference tree
 (mimicking browser DOM allocation patterns).
 
-| Benchmark              | Node count | What it measures                    |
-| ---------------------- | ---------- | ----------------------------------- |
-| create flat 1K nodes   | 1001       | Allocation throughput               |
-| create deep 500 chain  | 501        | Linked-list pattern                 |
-| layout flat 1K         | 1001       | Flexbox solver vs heap creation     |
-| paint 100 nodes        | 101        | Render list generation              |
-| CSS parse (bench.css)  | —          | Parse throughput vs HashMap alloc   |
-| CSS resolve 1K classes | —          | Lookup speed vs Style::default      |
-| HTML parse (small doc) | 6          | Scanner throughput vs byte scanning |
-| full frame (dashboard) | ~40        | Build + layout + paint end-to-end   |
+| Benchmark                   | Node count | What it measures                           |
+| --------------------------- | ---------- | ------------------------------------------ |
+| create flat 1K nodes        | 1001       | Allocation throughput                      |
+| create deep 500 chain       | 501        | Linked-list pattern                        |
+| layout flat 1K              | 1001       | Flexbox solver vs heap creation            |
+| paint 100 nodes             | 101        | Render list generation                     |
+| CSS parse (bench.css)       | —          | Parse throughput vs HashMap alloc          |
+| CSS parse (website.css)     | —          | Parse throughput on 90+ rule stylesheet    |
+| CSS resolve 1K classes      | —          | Lookup speed vs Style::default             |
+| HTML parse (small doc)      | 6          | Scanner throughput vs byte scanning        |
+| website parse (HTML only)   | ~150+      | Full static site HTML parse throughput     |
+| website parse + CSS resolve | ~150+      | HTML parse + CSS class resolution pipeline |
+| website full frame          | ~150+      | Parse + layout + paint end-to-end          |
+| dashboard full frame        | ~40        | Build + layout + paint end-to-end          |
+
+### Runner Categories (`runner.rs`)
+
+Two DOM categories in the `bench_categories!` macro (group = "DOM", domain = "DOM / Layout"):
+
+| Category       | Runner                 | What it benchmarks                                   |
+| -------------- | ---------------------- | ---------------------------------------------------- |
+| `DomParse`     | `run_dom_parse()`      | HTML/CSS parse throughput: small doc + full website  |
+| `DomFullFrame` | `run_dom_full_frame()` | Full pipeline: parse→layout→paint on website fixture |
+
+### Website Fixtures
+
+`fixtures/website.html` — Realistic ~230 line landing page with nav, hero section,
+feature cards, benchmark table, code example, platform grid, footer (~150+ DOM nodes).
+
+`fixtures/website.css` — Full CSS with `:root` variables, 90+ rules, layout/color styles.
+Both are `include_str!`'d as `WEBSITE_HTML` and `WEBSITE_CSS` constants in `lib.rs`.
 
 ## GPU Dashboard (`window` feature)
 
@@ -103,13 +131,12 @@ Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference
 
 ### GPU Renderer
 
-Lives in `crates/canvas/` — see `canvas` skill file. The bench dashboard imports
-`any_compute_canvas::gpu::Gpu` and `any_compute_canvas::theme` for rendering.
+Lives in `crates/dom/` behind `gpu` feature — see `dom` skill file. The bench dashboard imports
+`any_compute_dom::gpu::Gpu` and `any_compute_dom::theme` for rendering.
 
 ### Scenario Runner
 
-Lives in `crates/canvas/` — see `canvas` skill file. Binary `anv-scenario` replays
-scripted interactions headlessly and saves PNGs at capture points.
+Lives in `crates/dom/` behind `gpu` feature — see `dom` skill file.
 
 ### Event System (V8-like)
 

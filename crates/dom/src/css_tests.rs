@@ -859,3 +859,650 @@ fn calc_resolve() {
     };
     assert!((d.resolve(200.0).unwrap() - 110.0).abs() < 1e-10);
 }
+
+// ── CSS Conformance Test ────────────────────────────────────────────────────
+//
+// Parses palette.css + conformance.css together and validates every property
+// group against expected browser values.
+
+fn conformance_sheet() -> StyleSheet {
+    let palette = include_str!("../fixtures/palette.css");
+    let css = include_str!("../fixtures/conformance.css");
+    StyleSheet::parse(&format!("{palette}\n{css}"))
+}
+
+#[test]
+fn conform_box_model() {
+    let sh = conformance_sheet();
+    let s = sh.class("box-px");
+    assert_eq!(s.width, Dimension::Px(200.0));
+    assert_eq!(s.height, Dimension::Px(100.0));
+    assert_eq!(s.padding, Edges::all(16.0));
+    assert_eq!(s.margin, Edges::all(8.0));
+    assert_eq!(s.box_sizing, BoxSizing::BorderBox);
+
+    let s = sh.class("box-pct");
+    assert_eq!(s.width, Dimension::Percent(50.0));
+    assert_eq!(s.height, Dimension::Percent(25.0));
+
+    let s = sh.class("box-minmax");
+    assert_eq!(s.min_width, Dimension::Px(100.0));
+    assert_eq!(s.min_height, Dimension::Px(50.0));
+    assert_eq!(s.max_width, Dimension::Px(400.0));
+    assert_eq!(s.max_height, Dimension::Px(200.0));
+
+    let s = sh.class("box-auto");
+    assert_eq!(s.width, Dimension::Auto);
+    assert_eq!(s.height, Dimension::Auto);
+}
+
+#[test]
+fn conform_flexbox() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("flex-row-center");
+    assert_eq!(s.direction, Direction::Row);
+    assert_eq!(s.align, Align::Center);
+    assert_eq!(s.justify, Justify::SpaceBetween);
+    assert_eq!(s.gap, 12.0);
+    assert_eq!(s.flex_wrap, FlexWrap::NoWrap);
+
+    let s = sh.class("flex-col-stretch");
+    assert_eq!(s.direction, Direction::Column);
+    assert_eq!(s.align, Align::Stretch);
+    assert_eq!(s.justify, Justify::Start);
+    assert_eq!(s.gap, 8.0);
+
+    let s = sh.class("flex-wrap-around");
+    assert_eq!(s.direction, Direction::Row);
+    assert_eq!(s.flex_wrap, FlexWrap::Wrap);
+    assert_eq!(s.justify, Justify::SpaceAround);
+
+    let s = sh.class("flex-item-grow");
+    assert_eq!(s.flex_grow, 2.0);
+    assert_eq!(s.flex_shrink, 0.0);
+    assert_eq!(s.flex_basis, Dimension::Px(100.0));
+    assert_eq!(s.order, -1);
+
+    let s = sh.class("flex-item-auto");
+    assert_eq!(s.flex_grow, 1.0);
+
+    let s = sh.class("flex-gap-row-col");
+    assert_eq!(s.gap, 16.0);
+    assert_eq!(s.row_gap, Some(24.0));
+    assert_eq!(s.column_gap, Some(12.0));
+}
+
+#[test]
+fn conform_colors() {
+    let sh = conformance_sheet();
+    assert_eq!(sh.class("color-hex3").background, Color::rgb(255, 0, 0));
+    assert_eq!(sh.class("color-hex6").background, Color::rgb(137, 180, 250));
+    assert_eq!(
+        sh.class("color-hex8").background,
+        Color::rgba(137, 180, 250, 128)
+    );
+    assert_eq!(sh.class("color-rgb").background, Color::rgb(166, 227, 161));
+    assert_eq!(
+        sh.class("color-rgba").background,
+        Color::rgba(137, 180, 250, 128)
+    );
+    assert_eq!(sh.class("color-named-white").background, Color::WHITE);
+    assert_eq!(sh.class("color-named-black").background, Color::BLACK);
+    assert_eq!(sh.class("color-transparent").background, Color::TRANSPARENT);
+    // var(--blue) → #89b4fa
+    assert_eq!(sh.class("color-var").background, Color::rgb(137, 180, 250));
+    // var(--nonexistent, #a6e3a1) → fallback green
+    assert_eq!(
+        sh.class("color-var-fallback").background,
+        Color::rgb(166, 227, 161)
+    );
+}
+
+#[test]
+fn conform_border() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("border-uniform");
+    assert_eq!(s.border_width, 2.0);
+    assert_eq!(s.border_color, Color::rgb(137, 180, 250));
+    assert_eq!(s.border_style, BorderStyle::Solid);
+    assert_eq!(s.corner_radius, 8.0);
+
+    let s = sh.class("border-per-side");
+    assert_eq!(s.border_top_width, 1.0);
+    assert_eq!(s.border_right_width, 2.0);
+    assert_eq!(s.border_bottom_width, 3.0);
+    assert_eq!(s.border_left_width, 4.0);
+    assert_eq!(s.border_color, Color::rgb(243, 139, 168));
+
+    assert_eq!(sh.class("border-radius-large").corner_radius, 9999.0);
+}
+
+#[test]
+fn conform_text() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("text-heading");
+    assert_eq!(s.font_size, 24.0);
+    assert_eq!(s.font_weight, FontWeight::BOLD);
+    assert_eq!(s.color, Color::rgb(205, 214, 244));
+    assert_eq!(s.line_height, 1.5);
+    assert!((s.letter_spacing - 0.5).abs() < 1e-10);
+    assert_eq!(s.text_align, TextAlign::Center);
+
+    let s = sh.class("text-body");
+    assert_eq!(s.font_size, 14.0);
+    assert_eq!(s.font_weight, FontWeight::NORMAL);
+    assert_eq!(s.color, Color::rgb(166, 173, 200));
+    assert_eq!(s.line_height, 1.6);
+
+    let s = sh.class("text-mono");
+    assert_eq!(s.font_family.as_deref(), Some("JetBrains Mono"));
+    assert_eq!(s.font_size, 13.0);
+
+    let s = sh.class("text-decoration");
+    assert_eq!(s.text_decoration, TextDecoration::Underline);
+    assert_eq!(s.text_transform, TextTransform::Uppercase);
+
+    let s = sh.class("text-overflow-ellipsis");
+    assert_eq!(s.text_overflow, TextOverflow::Ellipsis);
+    assert_eq!(s.white_space, WhiteSpace::NoWrap);
+    assert_eq!(s.overflow, Overflow::Hidden);
+}
+
+#[test]
+fn conform_position() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("pos-relative");
+    assert_eq!(s.position, Position::Relative);
+    assert_eq!(s.left, Dimension::Px(10.0));
+    assert_eq!(s.top, Dimension::Px(5.0));
+
+    let s = sh.class("pos-absolute");
+    assert_eq!(s.position, Position::Absolute);
+    assert_eq!(s.right, Dimension::Px(0.0));
+    assert_eq!(s.bottom, Dimension::Px(0.0));
+
+    let s = sh.class("pos-fixed");
+    assert_eq!(s.position, Position::Fixed);
+    assert_eq!(s.top, Dimension::Px(0.0));
+    assert_eq!(s.left, Dimension::Px(0.0));
+}
+
+#[test]
+fn conform_transform() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("transform-translate");
+    assert!((s.transform_translate_x - 20.0).abs() < 1e-10);
+    assert!((s.transform_translate_y - (-10.0)).abs() < 1e-10);
+
+    let s = sh.class("transform-scale");
+    assert!((s.transform_scale_x - 1.5).abs() < 1e-10);
+    assert!((s.transform_scale_y - 0.8).abs() < 1e-10);
+
+    let s = sh.class("transform-rotate");
+    assert!((s.transform_rotate - 45.0).abs() < 1e-10);
+
+    let s = sh.class("transform-combo");
+    assert!((s.transform_translate_x - 10.0).abs() < 1e-10);
+    assert!((s.transform_scale_x - 1.2).abs() < 1e-10);
+    assert!((s.transform_scale_y - 1.2).abs() < 1e-10);
+    assert!((s.transform_rotate - 15.0).abs() < 1e-10);
+}
+
+#[test]
+fn conform_opacity_visibility() {
+    let sh = conformance_sheet();
+    assert_eq!(sh.class("opacity-full").opacity, 1.0);
+    assert_eq!(sh.class("opacity-half").opacity, 0.5);
+    assert_eq!(sh.class("opacity-quarter").opacity, 0.25);
+    assert_eq!(sh.class("opacity-zero").opacity, 0.0);
+    assert_eq!(sh.class("hidden-vis").visibility, Visibility::Hidden);
+    assert_eq!(sh.class("hidden-display").display, Display::None);
+}
+
+#[test]
+fn conform_overflow() {
+    let sh = conformance_sheet();
+    assert_eq!(sh.class("overflow-visible").overflow, Overflow::Visible);
+    assert_eq!(sh.class("overflow-hidden").overflow, Overflow::Hidden);
+    assert_eq!(sh.class("overflow-scroll").overflow, Overflow::Scroll);
+    assert_eq!(sh.class("overflow-auto").overflow, Overflow::Auto);
+}
+
+#[test]
+fn conform_calc() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("calc-width");
+    match s.width {
+        Dimension::Calc { percent, px } => {
+            assert!((percent - 100.0).abs() < 1e-10);
+            assert!((px - (-40.0)).abs() < 1e-10);
+        }
+        _ => panic!("Expected Calc, got {:?}", s.width),
+    }
+
+    let s = sh.class("calc-height");
+    match s.height {
+        Dimension::Calc { percent, px } => {
+            assert!((percent - 50.0).abs() < 1e-10);
+            assert!((px - 20.0).abs() < 1e-10);
+        }
+        _ => panic!("Expected Calc, got {:?}", s.height),
+    }
+}
+
+#[test]
+fn conform_transitions() {
+    let sh = conformance_sheet();
+
+    let specs = sh.class_transitions("transition-single");
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].property, "opacity");
+    assert!((specs[0].duration_secs - 0.3).abs() < 1e-6);
+    assert_eq!(specs[0].easing, Easing::EaseIn);
+
+    let specs = sh.class_transitions("transition-multi");
+    assert_eq!(specs.len(), 2);
+    assert_eq!(specs[0].property, "background");
+    assert!((specs[0].duration_secs - 0.5).abs() < 1e-6);
+    assert_eq!(specs[0].easing, Easing::EaseOut);
+    assert_eq!(specs[1].property, "transform");
+    assert!((specs[1].duration_secs - 0.3).abs() < 1e-6);
+    assert_eq!(specs[1].easing, Easing::Linear);
+    assert!((specs[1].delay_secs - 0.1).abs() < 1e-6);
+
+    let specs = sh.class_transitions("transition-all");
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].property, "all");
+    assert!((specs[0].duration_secs - 0.2).abs() < 1e-6);
+
+    let specs = sh.class_transitions("transition-longhands");
+    assert_eq!(specs.len(), 2);
+    assert_eq!(specs[0].property, "width");
+    assert!((specs[0].duration_secs - 0.4).abs() < 1e-6);
+    assert_eq!(specs[0].easing, Easing::EaseIn);
+    assert_eq!(specs[1].property, "height");
+    assert!((specs[1].duration_secs - 0.6).abs() < 1e-6);
+    assert_eq!(specs[1].easing, Easing::EaseOut);
+    assert!((specs[1].delay_secs - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn conform_keyframes_animations() {
+    let sh = conformance_sheet();
+
+    // @keyframes fadeIn
+    let kf = sh.keyframes("fadeIn").unwrap();
+    assert_eq!(kf.len(), 2);
+    assert!((kf[0].stop).abs() < 1e-10);
+    assert!((kf[1].stop - 1.0).abs() < 1e-10);
+
+    // @keyframes slideScale (3 stops)
+    let kf = sh.keyframes("slideScale").unwrap();
+    assert_eq!(kf.len(), 3);
+    assert!((kf[1].stop - 0.5).abs() < 1e-10);
+
+    // @keyframes pulse (combined stops 0%,100% and 50%)
+    let kf = sh.keyframes("pulse").unwrap();
+    assert!(kf.len() >= 2);
+
+    // animation shorthand
+    let anims = sh.class_animations("anim-fade");
+    assert_eq!(anims.len(), 1);
+    assert_eq!(anims[0].name, "fadeIn");
+    assert!((anims[0].duration_secs - 0.5).abs() < 1e-6);
+    assert_eq!(anims[0].easing, Easing::EaseOut);
+    assert_eq!(anims[0].fill_mode, AnimationFillMode::Forwards);
+
+    let anims = sh.class_animations("anim-slide");
+    assert_eq!(anims[0].name, "slideScale");
+    assert_eq!(anims[0].easing, Easing::Linear);
+
+    let anims = sh.class_animations("anim-infinite");
+    assert_eq!(anims[0].name, "pulse");
+    assert_eq!(anims[0].iteration_count, AnimationIterCount::Infinite);
+    assert_eq!(anims[0].direction, AnimationDirection::Alternate);
+
+    // animation longhands
+    let anims = sh.class_animations("anim-longhands");
+    assert_eq!(anims.len(), 1);
+    assert_eq!(anims[0].name, "fadeIn");
+    assert!((anims[0].duration_secs - 0.3).abs() < 1e-6);
+    assert!((anims[0].delay_secs - 0.1).abs() < 1e-6);
+    assert_eq!(anims[0].iteration_count, AnimationIterCount::Count(3.0));
+    assert_eq!(anims[0].direction, AnimationDirection::Reverse);
+    assert_eq!(anims[0].fill_mode, AnimationFillMode::Both);
+}
+
+#[test]
+fn conform_css_variables() {
+    let sh = conformance_sheet();
+
+    // :root variables from palette + conformance
+    assert_eq!(sh.var("--blue"), Some("#89b4fa"));
+    assert_eq!(sh.var("--card-radius"), Some("12px"));
+    assert_eq!(sh.var("--card-pad"), Some("16px"));
+    assert_eq!(sh.var("--accent"), Some("var(--blue)"));
+
+    // Variable resolution in class
+    let s = sh.class("card-var");
+    assert_eq!(s.corner_radius, 12.0);
+    assert_eq!(s.padding, Edges::all(16.0));
+    assert_eq!(s.background, Color::rgb(49, 50, 68)); // --surface0
+    assert_eq!(s.color, Color::rgb(137, 180, 250)); // --accent → --blue
+
+    // Chain: var(--accent) → var(--blue) → #89b4fa
+    let s = sh.class("var-chain");
+    assert_eq!(s.color, Color::rgb(137, 180, 250));
+
+    // Nested fallback: var(--doesnt-exist, var(--green)) → #a6e3a1
+    let s = sh.class("var-missing-fallback");
+    assert_eq!(s.background, Color::rgb(166, 227, 161));
+}
+
+#[test]
+fn conform_shorthand_expansion() {
+    let sh = conformance_sheet();
+
+    // padding 1 value
+    assert_eq!(sh.class("shorthand-pad-1").padding, Edges::all(8.0));
+
+    // padding 2 values: V H
+    assert_eq!(
+        sh.class("shorthand-pad-2").padding,
+        Edges {
+            top: 8.0,
+            right: 16.0,
+            bottom: 8.0,
+            left: 16.0
+        }
+    );
+
+    // padding 3 values: T H B (left=right)
+    assert_eq!(
+        sh.class("shorthand-pad-3").padding,
+        Edges {
+            top: 8.0,
+            right: 16.0,
+            bottom: 24.0,
+            left: 16.0
+        }
+    );
+
+    // padding 4 values: T R B L
+    assert_eq!(
+        sh.class("shorthand-pad-4").padding,
+        Edges {
+            top: 8.0,
+            right: 16.0,
+            bottom: 24.0,
+            left: 32.0
+        }
+    );
+
+    // margin 2 values
+    assert_eq!(
+        sh.class("shorthand-margin-2").margin,
+        Edges {
+            top: 10.0,
+            right: 20.0,
+            bottom: 10.0,
+            left: 20.0
+        }
+    );
+
+    // border shorthand
+    let s = sh.class("shorthand-border");
+    assert_eq!(s.border_width, 3.0);
+    assert_eq!(s.border_style, BorderStyle::Solid);
+    assert_eq!(s.border_color, Color::rgb(255, 0, 0));
+
+    // flex shorthand
+    assert_eq!(sh.class("shorthand-flex").flex_grow, 2.0);
+    let s = sh.class("shorthand-flex-basis");
+    assert_eq!(s.flex_grow, 0.0);
+    assert_eq!(s.flex_shrink, 1.0);
+}
+
+#[test]
+fn conform_selectors() {
+    let sh = conformance_sheet();
+
+    // Descendant selectors stored as complex rules
+    let descendant_rules: Vec<_> = sh
+        .complex_rules()
+        .iter()
+        .filter(|r| {
+            r.selector.segments.len() > 1
+                && r.selector.segments[0]
+                    .1
+                    .classes
+                    .contains(&"parent".to_string())
+        })
+        .collect();
+    assert!(
+        !descendant_rules.is_empty(),
+        "descendant rules should exist"
+    );
+
+    // Pseudo-class rules
+    let hover_rules: Vec<_> = sh
+        .complex_rules()
+        .iter()
+        .filter(|r| {
+            r.selector.segments[0]
+                .1
+                .pseudos
+                .contains(&PseudoClass::Hover)
+        })
+        .collect();
+    assert!(
+        !hover_rules.is_empty(),
+        "hover pseudo-class rules should exist"
+    );
+
+    // nth-child rules
+    let nth_rules: Vec<_> = sh
+        .complex_rules()
+        .iter()
+        .filter(|r| {
+            r.selector
+                .segments
+                .last()
+                .map(|s| {
+                    s.1.pseudos
+                        .iter()
+                        .any(|p| matches!(p, PseudoClass::NthChild(_, _)))
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(!nth_rules.is_empty(), "nth-child rules should exist");
+}
+
+#[test]
+fn conform_specificity_cascade() {
+    let sh = conformance_sheet();
+
+    // tag < class < id
+    assert_eq!(sh.tag("div").font_size, 14.0);
+    assert_eq!(sh.class("sized").font_size, 18.0);
+    assert_eq!(sh.id("unique").font_size, 24.0);
+
+    // Full cascade: div.cascade-test should get color from the more specific rule
+    let s = sh.resolve("div", "cascade-test", None, &[]);
+    assert_eq!(s.color, Color::rgb(0, 255, 0));
+}
+
+#[test]
+fn conform_inheritance_props() {
+    let sh = conformance_sheet();
+    let s = sh.class("inheritor");
+    assert_eq!(s.color, Color::rgb(205, 214, 244)); // --text
+    assert_eq!(s.font_size, 16.0);
+    assert_eq!(s.font_weight, FontWeight::SEMIBOLD);
+    assert_eq!(s.line_height, 1.4);
+    assert!((s.letter_spacing - 0.3).abs() < 1e-10);
+    assert_eq!(s.visibility, Visibility::Visible);
+    assert_eq!(s.cursor, Cursor::Pointer);
+    assert_eq!(s.text_align, TextAlign::Right);
+    assert_eq!(s.white_space, WhiteSpace::NoWrap);
+    assert_eq!(s.text_transform, TextTransform::Capitalize);
+}
+
+#[test]
+fn conform_shadow() {
+    let sh = conformance_sheet();
+
+    let s = sh.class("shadow-basic");
+    let shadow = s.box_shadow.expect("should have shadow");
+    assert!((shadow.x - 4.0).abs() < 1e-10);
+    assert!((shadow.y - 4.0).abs() < 1e-10);
+    assert!((shadow.blur - 8.0).abs() < 1e-10);
+    assert!((shadow.spread - 2.0).abs() < 1e-10);
+    assert!(!shadow.inset);
+
+    let s = sh.class("shadow-inset");
+    let shadow = s.box_shadow.expect("should have inset shadow");
+    assert!(shadow.inset);
+    assert!((shadow.blur - 4.0).abs() < 1e-10);
+}
+
+#[test]
+fn conform_z_order() {
+    let sh = conformance_sheet();
+    assert_eq!(sh.class("z-top").z_index, Some(100));
+    assert_eq!(sh.class("z-bottom").z_index, Some(-1));
+    assert_eq!(sh.class("order-first").order, -1);
+    assert_eq!(sh.class("order-last").order, 99);
+}
+
+#[test]
+fn conform_interaction() {
+    let sh = conformance_sheet();
+    assert_eq!(sh.class("cursor-pointer").cursor, Cursor::Pointer);
+    assert_eq!(sh.class("no-events").pointer_events, PointerEvents::None);
+    assert_eq!(sh.class("no-select").user_select, UserSelect::None);
+}
+
+#[test]
+fn conform_filter() {
+    let sh = conformance_sheet();
+    assert!((sh.class("filter-blur").filter_blur - 4.0).abs() < 1e-10);
+    assert!((sh.class("filter-brightness").filter_brightness - 1.5).abs() < 1e-10);
+
+    let s = sh.class("filter-combo");
+    assert!((s.filter_blur - 2.0).abs() < 1e-10);
+    assert!((s.filter_brightness - 0.8).abs() < 1e-10);
+    assert!((s.filter_contrast - 1.2).abs() < 1e-10);
+}
+
+#[test]
+fn conform_outline() {
+    let sh = conformance_sheet();
+    let s = sh.class("outline-focus");
+    assert_eq!(s.outline_width, 2.0);
+    assert_eq!(s.outline_color, Color::rgb(137, 180, 250));
+}
+
+#[test]
+fn conform_dashboard_component() {
+    let sh = conformance_sheet();
+
+    // Sidebar
+    let s = sh.class("dash-sidebar");
+    assert_eq!(s.width, Dimension::Px(220.0));
+    assert_eq!(s.min_width, Dimension::Px(220.0));
+    assert_eq!(s.background, Color::rgb(24, 24, 37)); // --mantle
+    assert_eq!(
+        s.padding,
+        Edges {
+            top: 20.0,
+            right: 16.0,
+            bottom: 20.0,
+            left: 16.0
+        }
+    );
+
+    // Nav item
+    let s = sh.class("dash-nav-item");
+    assert_eq!(s.height, Dimension::Px(40.0));
+    assert_eq!(s.corner_radius, 10.0);
+    assert_eq!(s.color, Color::rgb(147, 153, 178)); // --overlay2
+    assert_eq!(s.cursor, Cursor::Pointer);
+
+    // Active nav
+    let s = sh.class("dash-nav-active");
+    assert_eq!(s.background, Color::rgb(137, 180, 250)); // --blue
+    assert_eq!(s.color, Color::rgb(24, 24, 37)); // --mantle
+    assert_eq!(s.font_weight, FontWeight::SEMIBOLD);
+
+    // Header
+    let s = sh.class("dash-header");
+    assert_eq!(s.direction, Direction::Row);
+    assert_eq!(s.height, Dimension::Px(56.0));
+    assert_eq!(s.background, Color::rgb(49, 50, 68)); // --surface0
+    assert_eq!(s.font_size, 18.0);
+    assert_eq!(s.font_weight, FontWeight::SEMIBOLD);
+    assert_eq!(s.color, Color::rgb(205, 214, 244)); // --text
+    assert_eq!(s.border_bottom_width, 1.0);
+    assert_eq!(s.border_color, Color::rgb(69, 71, 90)); // --surface1
+
+    // Card
+    let s = sh.class("dash-card");
+    assert_eq!(s.flex_grow, 1.0);
+    assert_eq!(s.corner_radius, 12.0);
+    assert_eq!(s.background, Color::rgb(49, 50, 68)); // --surface0
+
+    // Card title
+    let s = sh.class("dash-card-title");
+    assert_eq!(s.font_size, 13.0);
+    assert_eq!(s.text_transform, TextTransform::Uppercase);
+
+    // Card value
+    let s = sh.class("dash-card-value");
+    assert_eq!(s.font_size, 28.0);
+    assert_eq!(s.font_weight, FontWeight(700));
+    assert_eq!(s.color, Color::rgb(205, 214, 244)); // --text
+
+    // Bars
+    let s = sh.class("bar-green");
+    assert_eq!(s.background, Color::rgb(166, 227, 161));
+    assert_eq!(s.width, Dimension::Percent(72.0));
+
+    let s = sh.class("bar-blue");
+    assert_eq!(s.background, Color::rgb(137, 180, 250));
+    assert_eq!(s.width, Dimension::Percent(48.0));
+
+    let s = sh.class("bar-red");
+    assert_eq!(s.background, Color::rgb(243, 139, 168));
+    assert_eq!(s.width, Dimension::Percent(89.0));
+
+    let s = sh.class("bar-yellow");
+    assert_eq!(s.background, Color::rgb(249, 226, 175));
+    assert_eq!(s.width, Dimension::Percent(35.0));
+}
+
+#[test]
+fn conform_pixel_dashboard() {
+    let palette = include_str!("../fixtures/palette.css");
+    let css = include_str!("../fixtures/conformance.css");
+    let html = include_str!("../fixtures/conformance.html");
+    let sheet = StyleSheet::parse(&format!("{palette}\n{css}"));
+    let mut tree = crate::parse::parse_with_css(html, &sheet);
+    tree.layout(Size::new(800.0, 600.0));
+    let mut list = RenderList::default();
+    tree.paint(&mut list);
+    let mut buf = PixelBuffer::new(800, 600, Color::BLACK);
+    buf.paint(&list);
+
+    // Sidebar area should be mantle color #181825
+    assert_eq!(buf.pixel(10, 300), Color::rgb(24, 24, 37));
+    // Main panel header area should be surface0 #313244
+    assert_eq!(buf.pixel(400, 10), Color::rgb(49, 50, 68));
+}

@@ -7,8 +7,7 @@ license.workspace = true
 
 [dependencies]
 any-compute-core = { workspace = true }
-any-compute-dom = { workspace = true }
-any-compute-canvas = { workspace = true, features = ["gpu"] }
+any-compute-dom = { workspace = true, features = ["gpu"] }
 env_logger = "0.11"
 
 [[bin]]

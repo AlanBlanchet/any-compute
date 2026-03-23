@@ -1,7 +1,8 @@
 # DOM Skill — `crates/dom/`
 
-Arena-based scene graph with flexbox layout, HTML-like parser, and CSS parser.
+Arena-based scene graph with flexbox layout, HTML/CSS parsers, and GPU renderer.
 Lives in its own crate to keep `core` focused on compute primitives.
+GPU rendering is opt-in via `features = ["gpu"]`.
 
 ## Crate Structure
 
@@ -11,40 +12,74 @@ Lives in its own crate to keep `core` focused on compute primitives.
 | `style.rs`     | `Style` (builder pattern), `StyleOp` (pre-compiled mutations), 21 CSS enums, `Dimension` (Auto/Px/Percent/Calc), `Shadow`, `Edges`, `StyleWritten` bitmask for inheritance tracking. Every style enum has `from_css(val) -> Self` for polymorphic resolution.                                         |
 | `parse.rs`     | `parse(&str) → Tree` — zero-dep fault-tolerant HTML-like scanner + `compile_attr` / `parse_px` / `parse_dimension` / `parse_time` / `parse_angle` / `parse_shadow` / `parse_transform` / `parse_filter` / `parse_calc_expr` (single source of truth for attr→Style mapping and unit/value conversion) |
 | `css.rs`       | `StyleSheet::parse(css) → StyleSheet` — full CSS parser with transitions, @keyframes, animations, advanced selectors, CSS variables, `calc()`. O(1) HashMap lookups for simple selectors, tree-walking for complex selectors.                                                                         |
+| `gpu.rs`       | **(gpu feature)** wgpu renderer — windowed + headless, paint + capture, SDF rounded-rect shader                                                                                                                                                                                                       |
+| `harness.rs`   | **(gpu feature)** `TestHarness` + `Capture` — headless test driver: parse→layout→events→GPU                                                                                                                                                                                                           |
+| `scenario.rs`  | **(gpu feature)** `Action`/`StepResult`/`Scenario`, replay free functions, 5 tests                                                                                                                                                                                                                    |
+| `theme.rs`     | **(gpu feature)** Catppuccin Mocha palette constants (single source of truth)                                                                                                                                                                                                                         |
 | `ua.css`       | User-agent defaults (`include_str!` from `css.rs`) — block-level spacing, body margin, etc.                                                                                                                                                                                                           |
 | `tailwind.css` | Real compiled Tailwind v3 CSS output — parsed via `StyleSheet::parse()` at test time for visual correctness verification                                                                                                                                                                              |
+
+## Shared Constants (`lib.rs`)
+
+- `PALETTE_CSS: &str` — Catppuccin Mocha `:root` CSS variables; prepend before any app CSS so `var(--base)` etc. resolve
+- `DEFAULT_VIEWPORT: Size` — 800×600 default for visual tools (playground, dashboard)
+- `TAILWIND_CSS: &str` — compiled Tailwind v3 subset
 
 ## Key Patterns
 
 ### Code Compression Macros
 
-**`css_enums!`** (style.rs) — Generates 20+ CSS keyword enums from a compact DSL.
+**`css_enums!`** (style.rs) — Generates CSS keyword enums from a compact DSL.
 Each entry declares variants, CSS string mappings, default, and optional fallback.
-Generates: enum definition, `Default`, `from_css(&str) -> Self`, `to_css(self) -> &'static str`, and alias support.
-`to_css` returns the first CSS alias — used for cursor propagation, serialization, etc.
+Generates: enum definition, `Default`, `from_css(&str) -> Self`, `to_css(self) -> &'static str`.
+Also used in `css.rs` (`AnimationDirection`, `AnimationFillMode`) via `#[macro_use]` on module.
 Adding a new CSS enum = one block, no boilerplate.
 
-**`inh!`** (style.rs, inside `inherit_from()`) — One-line macro for each inheritable property:
-checks parent's `written` bit and copies the value if child hasn't set it.
+**`style_lerp_field!`** (style.rs) — Generates `Style::lerp()` body from a tagged field list.
+Each field is annotated with its interpolation kind: `[num]` (f64 linear), `[snap]` (discrete),
+`[lerp]` (Lerp trait), `[opt_num]`/`[opt_int]`/`[opt_lerp]` (Option variants).
+Adding a new style field to lerp = one `[kind] field_name` entry.
+
+**`for_each_inheritable!`** (style.rs) — Callback-pattern macro: single source of truth for
+the CSS inheritable property list (`CONST_NAME => field`). Feeds `gen_inherit_consts` (generates
+bit constants + INHERIT_ALL) and `do_inherit` inside `inherit_from()`.
+Adding a new inheritable property = one line in `for_each_inheritable!`.
+
+**`css_property_copy!`** (style.rs) — Generates `copy_css_property()` body from a table of
+`"css-name" => { field1, field2, ... }` mappings. Multi-field CSS properties (transform, filter)
+naturally list all their fields.
+
+**Lerp trait impls** (style.rs) — `Dimension`, `Edges`, `Shadow`, `FontWeight` implement
+the core `Lerp` trait (not inherent methods), enabling generic interpolation and `Transition<T>` usage.
 
 ### Named Constants (style.rs)
 
 All magic numbers live in one place as `pub const`:
 `REM_PX` (16.0), `DEFAULT_FONT_SIZE` (14.0), `DEFAULT_LINE_HEIGHT` (1.3),
 `CHAR_WIDTH_RATIO` (0.55), `TEXT_BASELINE_RATIO` (0.85), `MIN_BAR_HEIGHT` (8.0),
-`BAR_TRACK_BG` (rgba 255,255,255,20), `DEFAULT_EASING` (EaseInOut).
+`BAR_TRACK_BG` (rgba 255,255,255,20), `DEFAULT_EASING` (EaseInOut),
+`LINE_THROUGH_RATIO` (0.3), `UNDERLINE_OFFSET_PX` (1.0), `ELLIPSIS_CHARS` (3.0).
 Used everywhere in tree/parse/css — never hardcoded.
+
+GPU-side constants live in `gpu.rs` (behind `gpu` feature):
+`GLYPHON_LINE_HEIGHT` (1.2), `GLYPHON_TEXT_TOP_RATIO` (0.8),
+`MAX_INSTANCES` (50_000), `MEASURE_MAX_WIDTH` (10_000.0).
 
 ### Shared Helpers
 
+- **`nth_or_first(slice, i, default)`** (css.rs) — CSS longhand list lookup: `slice[i]` → `slice[0]` → `default`. Used by both transition and animation assembly to avoid repeating `.get(i).or(first()).copied().unwrap_or(...)`.
 - **`scan_css_functions(val, cb)`** (parse.rs) — Generic CSS function scanner yielding `(name, args)` pairs. Used by `parse_transform` and `parse_filter` — both are thin wrappers with match-arm-only logic.
 - **`parse_filter_amount(arg)`** (parse.rs) — Parses percentage-or-number from CSS filter function args.
 - **`bar_from_attrs(attrs)`** (parse.rs) — Extracts bar (fraction, fill color) from HTML attributes. Used by both `spawn_child` and `set_kind`.
 - **`expand_box_decl(prefix, value, include_style)`** (css.rs) — Unified shorthand expansion for `border` and `outline`.
-- **`z_sorted_children(id)`** (tree.rs) — Returns children sorted by z-index (ascending). Used by both `paint_children` and `hit_test_node`.
+- **`z_sorted_children(id)`** (tree.rs) — Returns `&[NodeId]` from cached z-sorted child list (zero-alloc). Used by both `paint_children` and `hit_test_node`.
 - **`find_tag_node(pos)`** (tree.rs) — Hit-test + walk up to find nearest tagged ancestor. Used by both `click()` and `tag_at()`.
 - **`walk_ancestors(start, closure)`** (tree.rs) — Walk from node to root, calling a closure on each `Slot`. Used for setting/clearing hover, active, and any future per-path flag.
 - **`ActiveTransition::from_spec(spec, from, to)`** (tree.rs) — Construct transition from `TransitionSpec` + before/after Style snapshots.
+- **`Slot::text_w(text)`** (tree.rs) — Return measured text width if available, else CSS-estimated width. Single source of truth for text width queries.
+- **`restyle_if_sheet(id)`** (tree.rs) — Restyle a single node if stylesheet is available. Collapses the common `if let Some(sheet) = … { restyle_node }` pattern.
+- **`shape_text_into(font_system, text, font_size, width, height)`** (gpu.rs) — Free-function glyphon text shaping. Used by `prepare()` (with cache) and `measure_text()` (uncached).
+- **`text_cache_key(text, font_size)`** (gpu.rs) — Hash key for text shaping cache. Hash of (content + font_size bits).
 
 ### Style Helper Methods
 
@@ -54,12 +89,23 @@ Used everywhere in tree/parse/css — never hardcoded.
 - **`apply_opacity(Color) -> Color`** — pre-multiply alpha by opacity. Applied to every emitted color.
 - **`transform_text(&str) -> Cow<str>`** — apply text-transform (uppercase/lowercase/capitalize/none)
 - **`char_width() -> f64`** / **`text_width(&str) -> f64`** — text measurement including letter-spacing and word-spacing
+- **`differs_in_layout(&self, other) -> bool`** — compares ~30 layout-affecting fields, ignoring visual-only properties. Used by `restyle_node()` to classify dirty flags.
 
 ### Test Extraction
 
 Tests live in sibling `*_tests.rs` files, wired via `#[cfg(test)] #[path = "tree_tests.rs"] mod tests;`.
 This keeps the main module focused on logic while preserving full `use super::*` access.
 Files using this pattern: `tree.rs` → `tree_tests.rs`, `css.rs` → `css_tests.rs`.
+
+### Conformance Test Suite
+
+`crates/dom/fixtures/conformance.css` + `conformance.html` — comprehensive CSS fixture
+exercising 24 property groups against palette.css variables. Tests in `css_tests.rs` (prefix `conform_`):
+box model, flexbox, colors, border, text, position, transform, opacity/visibility, overflow, calc(),
+transitions, @keyframes/animations, CSS variables, shorthand expansion, selectors, specificity cascade,
+inheritance, shadow, z-index/order, interaction, filter, outline, dashboard component (real-world),
+and pixel-level dashboard rendering. Parsed via: `StyleSheet::parse(&format!("{palette}\n{css}"))`.
+HTML fixture tested via `parse_with_css()` → `layout()` → `paint()` → `PixelBuffer`.
 
 ### Fault-Tolerant Parsers
 
@@ -120,6 +166,7 @@ Bridges to `core::animation::Transition<T>` at runtime. `Easing::from_css("ease"
 ### @keyframes + Animations
 
 `@keyframes name { from { ... } 50% { ... } to { ... } }` parsed inline. Stops sorted by percentage.
+Comma-separated stops supported: `0%, 100% { opacity: 1 }` produces two `Keyframe` entries sharing the same ops.
 Animation shorthand `animation: name dur ease delay count direction fill` parsed with positional heuristics (first time = duration, second = delay, etc).
 
 ```rust
@@ -214,6 +261,54 @@ All implement `fn from_css(val: &str) -> Self` (or `Option<Self>` for FontWeight
 | `BorderStyle`    | `border-style`    | `None`        |
 | `ObjectFit`      | `object-fit`      | `Fill`        |
 
+## GPU Renderer (`gpu.rs` — behind `gpu` feature)
+
+- WGSL shader (`shaders/rect.wgsl`): SDF rounded rectangles, per-pixel anti-aliased corners + borders
+- `InstanceData`: bounds, fill, params (corner_radius, border_width), border_color — 64 bytes
+- Premultiplied alpha blending
+- `Gpu::init(window)` — windowed mode with surface
+- `Gpu::init_headless(w, h)` — no window, capture-only
+- `paint(&RenderList)` — render to window surface + present
+- `capture(&RenderList) → (w, h, rgba)` — offscreen render to CPU bytes
+- `capture_png(&RenderList, path)` — capture + BGRA→RGBA + save PNG
+- Import as `use any_compute_dom::gpu::Gpu;` (consumers need `features = ["gpu"]`)
+- **Scissor state**: Rect batches use per-batch scissor rects for clip regions.
+  The scissor must be reset to the full viewport BEFORE `text_renderer.render()`,
+  otherwise the last batch's scissor leaks into glyphon's text pass.
+
+## Theme (`theme.rs` — behind `gpu` feature)
+
+Catppuccin Mocha Rust-side constants: `BG`, `SURFACE_BRIGHT`, `TEXT_DIM`,
+`GREEN`, `BLUE`, `RED`, `YELLOW`, `MAUVE`, `SIDEBAR_BG`, `ACCENT`, `BAR_COLORS`.
+Import as `use any_compute_dom::theme;`.
+
+## Scenario Replay (`scenario.rs` — behind `gpu` feature)
+
+- `Action`: Click, Hover, Scroll, Dispatch, AssertTag, Capture
+- `StepResult`: constructors `dispatched`, `silent`, `asserted`, `captured`
+- `replay_step(tree, action, index)` — single action → StepResult
+- `replay(tree, scenario)` — full sequence → Vec<StepResult>
+- 5 unit tests covering all action types
+
+## TestHarness (`harness.rs` — behind `gpu` feature)
+
+Headless integration test driver — combines CSS/HTML parsing, layout, scenario replay,
+event dispatch, and GPU capture in one API. No visible window needed.
+
+- `TestHarness::from_css_html(css, html, (w, h))` — full pipeline: parse→tree→layout→GPU init
+- `.hover(pos)` / `.click(pos)` / `.pointer_down(pos)` / `.pointer_up(pos)` — dispatch + re-layout
+- `.replay(&Scenario)` — full scenario sequence
+- `.capture() → Capture` — headless GPU render to RGBA bytes
+- `Capture` utilities: `.pixel(x, y)`, `.region_uniform(...)`, `.count_color(...)`, `.diff_count(...)`, `.save_png(path)`
+
+## Fixtures
+
+All external content loaded via `include_str!` — never inline markup in Rust.
+
+- `fixtures/palette.css` — Catppuccin Mocha `:root` CSS variables; exported as `PALETTE_CSS`
+- `fixtures/visual_test.css` — CSS for visual rendering (uses `var()` referencing palette)
+- `fixtures/visual_test.html` — HTML body for visual rendering
+
 ### Value Parsers (parse.rs)
 
 | Parser                    | Input                                            | Output                  |
@@ -251,8 +346,9 @@ Tests verify computed Style values and pixel-level visual equivalence using `Pix
 Flexbox-like solver in `Tree::layout_node`:
 
 - **Dual sizing context**: `avail_w/h` = flex-allocated space (auto-width fallback), `resolve_w/h` = parent's content dimensions (percentage resolution). This prevents percentage values from double-resolving through flex allocation.
-- **Cross-axis stretch**: `Align` defaults to `Stretch` (CSS spec). Children without explicit cross-dimension stretch to `child_avail_w/h`. Non-stretch alignments (`Start`/`Center`/`End`) let the child size to content (0.0 for height, `intrinsic_width` for width). Stretch is gated on `child_align_self.unwrap_or(parent.align)`.
-- **Cross-axis alignment**: Center/End use `line_cross` (pre-computed actual line cross dimension), NOT `child_avail_h/w`. Auto-height containers have `child_avail_h = 0`, which would shift Center/End children above the line. The `line_cross` is the max of `(child_cross + margin_cross)` across all items in the flex line.
+- **Cross-axis stretch**: `Align` defaults to `Stretch` (CSS spec). Children without explicit cross-dimension stretch to `child_avail_w/h`. Non-stretch alignments (`Start`/`Center`/`End`) size to content via `intrinsic_height()` (for height in row) or `intrinsic_width()` (for width in column). Stretch is gated on `child_align_self.unwrap_or(parent.align)`.
+- **Cross-axis alignment**: Center/End use `line_cross = max(intrinsic_cross, child_avail_cross)`. This handles both auto-size containers (`child_avail=0` → fall back to intrinsic) and definite containers (use the full container cross dimension). The CSS spec says single-line containers use the container's inner cross size.
+- **Intrinsic height**: `Tree::intrinsic_height(id, avail_w)` computes content height for Text (line-count × line-height, using measured or estimated text width) and Bar nodes. Box returns 0 (height comes from children during recursive layout). Used in initial child sizing so justify-content centering and cross-axis alignment both account for text height.
 - **flex-basis**: Overrides width (row) or height (column) on the main axis when not `Auto`. Falls back to explicit width/height, then intrinsic measurement.
 - **order**: `flow_children` are sorted by `style.order` (stable sort — preserves DOM order for ties) before layout.
 - **line_height_absolute**: When `true`, `style.line_height` is in absolute px (parsed from `24px`). When `false`, it's a unitless multiplier (parsed from `1.5` or `normal`).
@@ -274,7 +370,7 @@ Pixel-accurate comparison against Chrome headless reference:
 
 - **Chrome headless**: `google-chrome-stable --headless=new --screenshot=<path> --window-size=800,600 --force-device-scale-factor=1 <url>` → exact 800×600 PNG, zero decorations
 - **Engine capture**: `maim -u -i <wid>` → window content; may include CSD title bar (37px on current system), crop with `convert -crop 800x600+0+37`
-- **Known text offset**: Engine uses `chars × font_size × 0.55` width and `lines × font_size × line_height` height estimation. This produces ~4px vertical cumulative offset vs real font metrics. 88% exact pixel match is the current baseline.
+- **Known text offset**: Engine uses `chars × font_size × 0.55` width estimation as fallback. When `Gpu::measure_text()` is wired via `Tree::measure_text_nodes()`, real glyph-shaped widths replace the estimate. The 0.85/0.8 baseline offsets produce `font_size * 0.05` top offset — centering the glyphon text area within the DOM line height.
 - **Film-strip transition testing**: Freeze animations at N time steps using `animation-play-state: paused` + negative `animation-delay` in CSS, then screenshot all frames in one image. No JS/Puppeteer needed.
 
 ### Paint Pipeline
@@ -298,7 +394,7 @@ All emitted colors go through `apply_opacity()`. Invisible nodes (`opacity ≤ 0
   - `PointerUp` → clears `active` on **all** slots (not just target path), restyles each
 - `Tree::focus(id)` / `Tree::blur()` — manages `Slot.focused` flag for `:focus` pseudo-class matching
 - `Tree::scroll(pos, delta)` — nearest `Overflow::Scroll` container
-- Scenario replay lives in `crates/canvas/scenario.rs` — see canvas skill file
+- Scenario replay lives in `scenario.rs` (behind `gpu` feature)
 
 ### Live Restyle (Pseudo-Classes)
 
@@ -327,8 +423,10 @@ Per-slot animation state: `transitions: Vec<ActiveTransition>`, `animations: Vec
 
 - `Timing` — shared struct embedded in both `ActiveTransition` and `ActiveAnimation` holding `elapsed/duration/delay/easing` with `raw_progress()`, `eased_progress()`, `started()`, `finished()`, `active_time()`
 - `Tree::start_animations()` — scans all nodes, creates `ActiveAnimation` from CSS class specs + @keyframes
-- `Tree::tick(dt) -> TickResult` — advances all transitions/animations, interpolates styles, auto re-layouts when `needs_layout` is set. Returns `TickResult { active, needs_layout }`
+- `Tree::tick(dt) -> TickResult` — advances all transitions/animations, interpolates styles, auto re-layouts when layout-affecting properties change. Returns `TickResult { active }`. Dirty flags propagated internally via `mark_dirty()`.
 - `Tree::has_active_animations() -> bool` — query for redraw scheduling
+- `Tree::needs_paint() -> bool` — query for skip-frame optimization (true when any node has PAINT dirty)
+- `Tree::post_paint()` — clears all dirty flags + `needs_paint` after a full paint cycle
 - `ActiveTransition` — from/to Style snapshots + `timing: Timing`, one per CSS property. `progress()` delegates to `timing.eased_progress()`, `finished()` delegates to `timing.finished()`
 - `ActiveAnimation` — keyframe list + `timing: Timing` + iteration count/direction/fill mode. Custom `progress()` and `finished()` build on `timing.active_time()`
 - Keyframe interpolation: `apply_to()` does single-pass bracket search, clones style, applies prev/next keyframe ops independently, then `Style::lerp(local_t)`. Properties not touched by keyframes stay identical in both copies so lerp is a no-op for them.
@@ -362,24 +460,77 @@ reverse animations from the exact current visual state.
 
 Helper lerps also available: `Dimension::lerp()`, `Edges::lerp()`, `Shadow::lerp()`, `FontWeight::lerp()`.
 
+### Dirty Tracking & Caching
+
+Generation-based dirty tracking eliminates redundant work. Each `Slot` carries `dirty: Dirty` bitflags;
+the `Tree` holds global `needs_layout: bool` and `needs_paint: bool` flags.
+
+**Dirty bitflags** (`tree.rs`):
+- `LAYOUT` (0b0001) — box model / flex properties changed, subtree needs relayout
+- `PAINT` (0b0010) — visual properties changed, subtree needs repaint
+- `Z_ORDER` (0b0100) — z-index changed, cached `z_sorted` child list must rebuild
+
+**Propagation**: `Tree::mark_dirty(id, flags)` sets flags on the node and propagates upward
+to the root. Stops early when an ancestor already has the requested flags (convergence).
+`LAYOUT` always implies `PAINT`. Sets global `needs_layout` / `needs_paint` accordingly.
+
+**Layout-affecting classification** — three consistent sources of truth:
+1. `property_affects_layout(prop: &str)` (tree.rs) — for CSS transition property names
+2. `StyleOp::affects_layout(&self)` (style.rs) — for keyframe animation ops
+3. `Style::differs_in_layout(&self, other)` (style.rs) — for restyle diffing
+
+Visual-only properties (colors, opacity, transforms, filters, shadows, decorations, cursors, visibility, z-index) return `false` — animations on these skip relayout entirely.
+
+**Lifecycle**:
+1. `tick(dt)` → classifies each transition/animation → `mark_dirty(LAYOUT|PAINT)` or `mark_dirty(PAINT)` → auto `layout()` when `needs_layout`
+2. `dispatch(event)` → `restyle_node()` diffs old/new style → `mark_dirty(LAYOUT|PAINT)` or `mark_dirty(PAINT)`
+3. `layout()` → clears LAYOUT flags, promotes to PAINT, rebuilds z_sorted caches, sets `needs_paint`
+4. `paint()` builds RenderList from tree → caller calls `post_paint()` to clear all flags
+
+**Z-sorted child cache**: Each `Slot` stores `z_sorted: Vec<NodeId>` — rebuilt during `layout()`
+when `Z_ORDER` is dirty. `z_sorted_children(id)` returns `&[NodeId]` at zero cost.
+
+**GPU caching** (`gpu.rs`):
+- `rect_instances: Vec<InstanceData>` — persistent staging buffer, cleared + refilled each frame (no allocation)
+- `text_cache: HashMap<u64, GlyphBuffer>` — keyed by `text_cache_key(content, font_size)`.
+  Text is only re-shaped when content or font_size changes. This eliminates the #1 perf bottleneck
+  (HarfBuzz shaping is O(n) in glyph count, hundreds of calls/frame without cache).
+- `shape_text_into()` — free function for glyphon text shaping, used by both `prepare()` (cached) and `measure_text()` (uncached, one-shot at init)
+
+**RenderList reuse** (main.rs): Persistent `RenderList` cleared via `list.clear()` each frame — no allocation.
+
 ### DOM Playground (`examples/dom/`)
 
 Interactive window for testing all DOM/CSS features (run via `make dom`):
 
 - Loads CSS/HTML from external files via `include_str!` — no embedded markup
+- **No flash**: Window created with `with_visible(false)`, shown after first `RedrawRequested` paint completes
+- **Text measurement**: `tree.measure_text_nodes(|t, s| gpu.measure_text(t, s))` before `layout()` — wires glyphon's glyph-shaped widths into the DOM for accurate flex centering
 - Animation loop: `ControlFlow::Poll` when animations active, `ControlFlow::Wait` when idle
 - **dt cap**: `MAX_FRAME_DT` const (0.032) caps dt in `AboutToWait` — prevents transitions completing instantly after idle (when `Wait` mode yields multi-second dt)
 - Tree handles hover/active state internally — dispatch triggers restyle
-- `tree.tick(dt)` called each frame in `AboutToWait` event; auto re-layouts internally. Check `result.active` for redraw scheduling — no manual `needs_layout` flag needed
+- `tree.tick(dt)` called each frame in `AboutToWait` event; auto re-layouts internally. Check `result.active` or `tree.needs_paint()` for redraw scheduling
+- `tree.post_paint()` called after each paint to clear dirty flags — enables skip-frame optimization
 - **OS cursor**: dispatch returns `cursor` string → map to `CursorIcon` variant → `window.set_cursor_icon()`; track `current_cursor` to avoid redundant calls
 - `tree.start_animations()` called after parse + layout
 - **CSS variables**: All Catppuccin palette colors use `var(--blue)` etc. from `PALETTE_CSS` — zero hardcoded palette hex in playground.css
 - Exercises: @keyframes, transitions, :hover/:active, flexbox, colors, borders, cursor, CSS variables
-- Uses `any-compute-canvas::gpu::Gpu` for rendering
+- Uses `any_compute_dom::gpu::Gpu` for rendering
+
+### Text Measurement Pipeline
+
+Accurate text centering requires real font metrics instead of `CHAR_WIDTH_RATIO` estimates:
+
+1. `Gpu::measure_text(text, font_size)` — creates a glyphon `GlyphBuffer`, shapes with `SansSerif`, returns `layout_runs().line_w`
+2. `Tree::measure_text_nodes(f)` — iterates all `NodeKind::Text` nodes, calls `f(text, font_size)`, stores width on `Slot.measured_text_width` (adding CSS letter-spacing + word-spacing)
+3. Layout/paint check `slot.measured_text_width > 0` — if set, use it; else fall back to `Style::text_width()` estimate
+4. Call order in main: `parse_with_css` → `measure_text_nodes` → `layout` → `start_animations`
+
+`measured_text_width` persists through relayouts (tick, restyle). Since text content doesn't change during animations, the cached widths stay valid.
 
 ## Dependencies
 
 - `any-compute-core` — `layout::{Rect, Point, Size}`, `render::{Color, Primitive, RenderList, Border}`,
   `animation::Easing`, `interaction::{InputEvent, EventContext, DispatchResult, Phase}`
-- No external deps for the lib — all parsing is hand-rolled
-- No feature flags
+- `bitflags = "2"` — `Dirty` bitflags for dirty tracking
+- No other external deps for the lib — all parsing is hand-rolled

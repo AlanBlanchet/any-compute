@@ -1,7 +1,7 @@
 ---
 name: animation
 description: Timing engine, interpolation, and transition lifecycle patterns
-applyTo: "crates/core/src/animation.rs,crates/rsx/src/hooks.rs"
+applyTo: "crates/core/**"
 ---
 
 # Animation

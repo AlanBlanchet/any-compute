@@ -136,26 +136,15 @@ dependencies = [
 name = "any-compute-bench"
 version = "0.1.0"
 dependencies = [
- "any-compute-canvas",
  "any-compute-core",
  "any-compute-dom",
  "env_logger",
+ "humansize",
+ "num_cpus",
  "rayon",
-]
-
-[[package]]
-name = "any-compute-canvas"
-version = "0.1.0"
-dependencies = [
- "any-compute-core",
- "any-compute-dom",
- "bytemuck",
- "env_logger",
- "glyphon",
- "png",
- "pollster",
- "wgpu",
- "winit",
+ "serde",
+ "serde_json",
+ "sysinfo",
 ]
 
 [[package]]
@@ -166,16 +155,13 @@ dependencies = [
  "bytemuck",
  "env_logger",
  "glyphon",
- "humansize",
  "log",
  "naga",
- "num_cpus",
  "parking_lot",
  "rayon",
  "serde",
  "serde_json",
  "smallvec",
- "sysinfo",
  "thiserror 2.0.18",
  "wgpu",
 ]
@@ -185,7 +171,15 @@ name = "any-compute-dom"
 version = "0.1.0"
 dependencies = [
  "any-compute-core",
+ "bitflags 2.11.0",
+ "bytemuck",
+ "env_logger",
+ "glyphon",
  "log",
+ "png",
+ "pollster",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
@@ -552,7 +546,6 @@ dependencies = [
 name = "dom-example"
 version = "0.1.0"
 dependencies = [
- "any-compute-canvas",
  "any-compute-core",
  "any-compute-dom",
  "env_logger",
@@ -1772,6 +1765,17 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "showcase"
+version = "0.1.0"
+dependencies = [
+ "any-compute-bench",
+ "any-compute-core",
+ "any-compute-dom",
+ "env_logger",
+ "rayon",
+]
 
 [[package]]
 name = "simd-adler32"

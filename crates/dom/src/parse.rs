@@ -1172,8 +1172,8 @@ mod tests {
         let mut tree =
             parse(r##"<div w="400" h="300" bg="#000"><div w="200" h="100" bg="#fff" /></div>"##);
         tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(tree.arena[1].rect.size.w, 200.0);
-        assert_eq!(tree.arena[1].rect.size.h, 100.0);
+        assert_eq!(tree.arena[1].rect.size.w(), 200.0);
+        assert_eq!(tree.arena[1].rect.size.h(), 100.0);
     }
 
     #[test]
@@ -1194,9 +1194,9 @@ mod tests {
         // Root is row layout.
         assert_eq!(tree.arena[0].style.direction, Direction::Row);
         // Sidebar has fixed width 200.
-        assert_eq!(tree.arena[1].rect.size.w, 200.0);
+        assert_eq!(tree.arena[1].rect.size.w(), 200.0);
         // Main content is flex-grow, should take remaining space.
-        assert!(tree.arena[4].rect.size.w > 500.0, "main should be >500px");
+        assert!(tree.arena[4].rect.size.w() > 500.0, "main should be >500px");
     }
 
     #[test]

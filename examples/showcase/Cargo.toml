@@ -1,0 +1,17 @@
+[package]
+name = "showcase"
+description = "Unified showcase — DOM, 3D, compute, shaders, benchmarks, live metrics in one window."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-compute-core = { workspace = true, features = ["wgpu-backend"] }
+any-compute-dom = { workspace = true, features = ["gpu"] }
+any-compute-bench = { workspace = true, features = ["window"] }
+rayon = { workspace = true }
+env_logger = "0.11"
+
+[[bin]]
+name = "showcase"
+path = "main.rs"

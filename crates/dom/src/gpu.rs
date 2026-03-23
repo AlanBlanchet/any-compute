@@ -10,11 +10,27 @@ use glyphon::{
     Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use pollster::block_on;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use winit::window::Window;
 
 /// SDF rounded-rect + border shader, loaded from file (no inline WGSL).
 const SHADER_CODE: &str = include_str!("../shaders/rect.wgsl");
+
+/// Default line-height multiplier for glyphon text shaping.
+const GLYPHON_LINE_HEIGHT: f32 = 1.2;
+
+/// Glyphon text-area top offset as a fraction of font_size.
+/// Paired with `TEXT_BASELINE_RATIO` (0.85) in the DOM — the 0.05 delta
+/// centers the glyphon rendering within the DOM line-height box.
+const GLYPHON_TEXT_TOP_RATIO: f32 = 0.8;
+
+/// Maximum SDF rect instances per frame.
+const MAX_INSTANCES: usize = 50_000;
+
+/// Width ceiling for text measurement (effectively unbounded single-line).
+const MEASURE_MAX_WIDTH: f32 = 10_000.0;
 
 // ── sRGB → linear conversion ────────────────────────────────────────────────
 
@@ -58,6 +74,61 @@ struct GpuUniforms {
     _pad: [f32; 2],
 }
 
+/// A contiguous range of rect instances sharing the same scissor clip.
+#[derive(Clone)]
+struct DrawBatch {
+    start: u32,
+    count: u32,
+    /// Scissor rect in pixels (x, y, w, h). `None` = full viewport.
+    scissor: Option<[u32; 4]>,
+}
+
+/// Intersect two clip rects (x, y, w, h). Returns the overlapping region.
+fn intersect_clip(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let x0 = a[0].max(b[0]);
+    let y0 = a[1].max(b[1]);
+    let x1 = (a[0] + a[2]).min(b[0] + b[2]);
+    let y1 = (a[1] + a[3]).min(b[1] + b[3]);
+    if x1 <= x0 || y1 <= y0 {
+        [0, 0, 0, 0]
+    } else {
+        [x0, y0, x1 - x0, y1 - y0]
+    }
+}
+
+// ── Text cache helpers ──────────────────────────────────────────────────────
+
+/// Compute a cache key for shaped text: hash of content + font-size bits.
+fn text_cache_key(text: &str, font_size: f32) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    text.hash(&mut h);
+    font_size.to_bits().hash(&mut h);
+    h.finish()
+}
+
+/// Shape text using glyphon (free function — usable without &mut Gpu).
+fn shape_text_into(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    width: Option<f32>,
+    height: Option<f32>,
+) -> GlyphBuffer {
+    let mut buf = GlyphBuffer::new(
+        font_system,
+        Metrics::new(font_size, font_size * GLYPHON_LINE_HEIGHT),
+    );
+    buf.set_size(font_system, width, height);
+    buf.set_text(
+        font_system,
+        text,
+        Attrs::new().family(Family::SansSerif),
+        Shaping::Advanced,
+    );
+    buf.shape_until_scroll(font_system, false);
+    buf
+}
+
 // ── Gpu renderer ────────────────────────────────────────────────────────────
 
 pub struct Gpu {
@@ -70,12 +141,16 @@ pub struct Gpu {
     ib: wgpu::Buffer,
     ub: wgpu::Buffer,
     bg: wgpu::BindGroup,
-    max_inst: usize,
     font_system: FontSystem,
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
     text_viewport: Viewport,
     text_renderer: TextRenderer,
+    /// Reusable instance buffer staging — cleared each frame, avoids allocation.
+    rect_instances: Vec<InstanceData>,
+    /// Text shaping cache: hash(content + font_size) → shaped GlyphBuffer.
+    /// Avoids re-shaping unchanged text every frame (the #1 cost).
+    text_cache: HashMap<u64, GlyphBuffer>,
     /// Clear color (defaults to Catppuccin Mocha BG).
     pub clear: Color,
 }
@@ -115,10 +190,9 @@ impl Gpu {
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let max_inst = 50_000;
         let ib = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ib"),
-            size: (std::mem::size_of::<InstanceData>() * max_inst) as u64,
+            size: (std::mem::size_of::<InstanceData>() * MAX_INSTANCES) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -219,12 +293,13 @@ impl Gpu {
             ib,
             ub,
             bg,
-            max_inst,
             font_system,
             swash_cache,
             text_atlas,
             text_viewport,
             text_renderer,
+            rect_instances: Vec::with_capacity(4096),
+            text_cache: HashMap::new(),
             clear: theme::BG,
         }
     }
@@ -291,81 +366,181 @@ impl Gpu {
 
     // ── Shared helpers ─────────────────────────────────────────────────────
 
-    fn prepare(&mut self, list: &RenderList) -> usize {
-        let mut instances: Vec<InstanceData> = Vec::with_capacity(list.len());
+    fn prepare(&mut self, list: &RenderList) -> Vec<DrawBatch> {
+        let (vw, vh) = (self.config.width, self.config.height);
+
+        // ── Rect instances + clip batches ───────────────────────────────
+        self.rect_instances.clear();
+        let mut batches: Vec<DrawBatch> = Vec::new();
+        let mut clip_stack: Vec<[u32; 4]> = Vec::new();
+        let mut cur_scissor: Option<[u32; 4]> = None;
+        let mut batch_start: u32 = 0;
+
+        // Flush current batch when scissor changes.
+        macro_rules! flush_batch {
+            () => {
+                let n = self.rect_instances.len() as u32;
+                if n > batch_start {
+                    batches.push(DrawBatch {
+                        start: batch_start,
+                        count: n - batch_start,
+                        scissor: cur_scissor,
+                    });
+                    batch_start = n;
+                }
+            };
+        }
+
         for p in &list.primitives {
-            if let Primitive::Rect {
-                bounds,
-                fill,
-                border,
-                corner_radius,
-            } = p
-            {
-                let (bw, bc) = border
-                    .map(|b| (b.width as f32, color_linear(b.color)))
-                    .unwrap_or((0.0, [0.0; 4]));
-                instances.push(InstanceData {
-                    bounds: [
-                        bounds.origin.x as f32,
-                        bounds.origin.y as f32,
-                        bounds.size.w as f32,
-                        bounds.size.h as f32,
-                    ],
-                    color: color_linear(*fill),
-                    params: [*corner_radius as f32, bw, 0.0, 0.0],
-                    border_color: bc,
-                });
+            match p {
+                Primitive::PushClip { bounds } => {
+                    flush_batch!();
+                    let new = [
+                        bounds.origin.x.max(0.0) as u32,
+                        bounds.origin.y.max(0.0) as u32,
+                        (bounds.size.w().ceil() as u32).min(vw),
+                        (bounds.size.h().ceil() as u32).min(vh),
+                    ];
+                    let clipped = match cur_scissor {
+                        Some(prev) => intersect_clip(prev, new),
+                        None => new,
+                    };
+                    clip_stack.push(cur_scissor.unwrap_or([0, 0, vw, vh]));
+                    cur_scissor = Some(clipped);
+                }
+                Primitive::PopClip => {
+                    flush_batch!();
+                    cur_scissor = clip_stack.pop().map(|c| {
+                        if c == [0, 0, vw, vh] {
+                            return c;
+                        }
+                        c
+                    });
+                    // Restore to None (full viewport) when stack is empty or was full viewport.
+                    if cur_scissor == Some([0, 0, vw, vh]) {
+                        cur_scissor = None;
+                    }
+                }
+                Primitive::Rect {
+                    bounds,
+                    fill,
+                    border,
+                    corner_radius,
+                } => {
+                    let (bw, bc) = border
+                        .map(|b| (b.width as f32, color_linear(b.color)))
+                        .unwrap_or((0.0, [0.0; 4]));
+                    self.rect_instances.push(InstanceData {
+                        bounds: [
+                            bounds.origin.x as f32,
+                            bounds.origin.y as f32,
+                            bounds.size.w() as f32,
+                            bounds.size.h() as f32,
+                        ],
+                        color: color_linear(*fill),
+                        params: [*corner_radius as f32, bw, 0.0, 0.0],
+                        border_color: bc,
+                    });
+                }
+                _ => {}
             }
         }
-        let n = instances.len().min(self.max_inst);
+        // Flush remaining rects after the last clip change.
+        flush_batch!();
+
+        let n = self.rect_instances.len().min(MAX_INSTANCES);
         if n > 0 {
             self.queue
-                .write_buffer(&self.ib, 0, bytemuck::cast_slice(&instances[..n]));
+                .write_buffer(&self.ib, 0, bytemuck::cast_slice(&self.rect_instances[..n]));
         }
 
-        let (w, h) = (self.config.width, self.config.height);
-        self.text_viewport
-            .update(&self.queue, Resolution { width: w, height: h });
+        // ── Text shaping (cached) with clip-aware TextBounds ────────────
+        self.text_viewport.update(
+            &self.queue,
+            Resolution {
+                width: vw,
+                height: vh,
+            },
+        );
 
-        let mut text_buffers: Vec<(GlyphBuffer, f32, f32, glyphon::Color)> = Vec::new();
+        let mut text_keys: Vec<(u64, f32, f32, glyphon::Color, TextBounds)> = Vec::new();
+        let mut text_clip_stack: Vec<[u32; 4]> = Vec::new();
+        let mut text_scissor: Option<[u32; 4]> = None;
+
         for p in &list.primitives {
-            if let Primitive::Text {
-                anchor,
-                content,
-                font_size,
-                color,
-            } = p
-            {
-                let sz = *font_size as f32;
-                let mut buf = GlyphBuffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.2));
-                buf.set_size(&mut self.font_system, Some(w as f32), Some(h as f32));
-                buf.set_text(
-                    &mut self.font_system,
+            match p {
+                Primitive::PushClip { bounds } => {
+                    let new = [
+                        bounds.origin.x.max(0.0) as u32,
+                        bounds.origin.y.max(0.0) as u32,
+                        (bounds.size.w().ceil() as u32).min(vw),
+                        (bounds.size.h().ceil() as u32).min(vh),
+                    ];
+                    let clipped = match text_scissor {
+                        Some(prev) => intersect_clip(prev, new),
+                        None => new,
+                    };
+                    text_clip_stack.push(text_scissor.unwrap_or([0, 0, vw, vh]));
+                    text_scissor = Some(clipped);
+                }
+                Primitive::PopClip => {
+                    text_scissor = text_clip_stack.pop();
+                    if text_scissor == Some([0, 0, vw, vh]) {
+                        text_scissor = None;
+                    }
+                }
+                Primitive::Text {
+                    anchor,
                     content,
-                    Attrs::new().family(Family::SansSerif),
-                    Shaping::Advanced,
-                );
-                buf.shape_until_scroll(&mut self.font_system, false);
-                let gc = glyphon::Color::rgba(color.r, color.g, color.b, color.a);
-                text_buffers.push((buf, anchor.x as f32, anchor.y as f32, gc));
+                    font_size,
+                    color,
+                } => {
+                    let fs = *font_size as f32;
+                    let key = text_cache_key(content, fs);
+                    if !self.text_cache.contains_key(&key) {
+                        let buf = shape_text_into(
+                            &mut self.font_system,
+                            content,
+                            fs,
+                            Some(vw as f32),
+                            Some(vh as f32),
+                        );
+                        self.text_cache.insert(key, buf);
+                    }
+                    let gc = glyphon::Color::rgba(color.r, color.g, color.b, color.a);
+                    let tb = match text_scissor {
+                        Some([x, y, w, h]) => TextBounds {
+                            left: x as i32,
+                            top: y as i32,
+                            right: (x + w) as i32,
+                            bottom: (y + h) as i32,
+                        },
+                        None => TextBounds {
+                            left: 0,
+                            top: 0,
+                            right: vw as i32,
+                            bottom: vh as i32,
+                        },
+                    };
+                    text_keys.push((key, anchor.x as f32, anchor.y as f32, gc, tb));
+                }
+                _ => {}
             }
         }
 
-        let text_areas: Vec<TextArea> = text_buffers
+        let text_areas: Vec<TextArea> = text_keys
             .iter()
-            .map(|(buf, x, y, color)| TextArea {
-                buffer: buf,
-                left: *x,
-                top: *y - buf.metrics().font_size * 0.8,
-                scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: w as i32,
-                    bottom: h as i32,
-                },
-                default_color: *color,
-                custom_glyphs: &[],
+            .filter_map(|(key, x, y, color, tb)| {
+                let buf = self.text_cache.get(key)?;
+                Some(TextArea {
+                    buffer: buf,
+                    left: *x,
+                    top: *y - buf.metrics().font_size * GLYPHON_TEXT_TOP_RATIO,
+                    scale: 1.0,
+                    bounds: *tb,
+                    default_color: *color,
+                    custom_glyphs: &[],
+                })
             })
             .collect();
 
@@ -381,15 +556,16 @@ impl Gpu {
             )
             .unwrap();
 
-        n
+        batches
     }
 
     fn draw<'a>(
         &'a self,
         enc: &'a mut wgpu::CommandEncoder,
         view: &'a wgpu::TextureView,
-        n: usize,
+        batches: &[DrawBatch],
     ) {
+        let (vw, vh) = (self.config.width, self.config.height);
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -412,13 +588,37 @@ impl Gpu {
             occlusion_query_set: None,
             timestamp_writes: None,
         });
-        if n > 0 {
+        if !batches.is_empty() {
             rp.set_pipeline(&self.pipeline);
             rp.set_bind_group(0, &self.bg, &[]);
             rp.set_vertex_buffer(0, self.vb.slice(..));
             rp.set_vertex_buffer(1, self.ib.slice(..));
-            rp.draw(0..4, 0..n as u32);
+            for batch in batches {
+                match batch.scissor {
+                    Some([x, y, w, h]) if w > 0 && h > 0 => {
+                        let cx = x.min(vw);
+                        let cy = y.min(vh);
+                        let cw = w.min(vw.saturating_sub(cx));
+                        let ch = h.min(vh.saturating_sub(cy));
+                        if cw == 0 || ch == 0 {
+                            continue;
+                        }
+                        rp.set_scissor_rect(cx, cy, cw, ch);
+                    }
+                    Some(_) => continue, // zero-area clip — skip entirely
+                    None => {
+                        rp.set_scissor_rect(0, 0, vw, vh);
+                    }
+                }
+                let end = (batch.start + batch.count).min(MAX_INSTANCES as u32);
+                if batch.start < end {
+                    rp.draw(0..4, batch.start..end);
+                }
+            }
         }
+        // Reset scissor to full viewport before text rendering — the last
+        // rect batch may have left a clip-scoped scissor active.
+        rp.set_scissor_rect(0, 0, vw, vh);
         self.text_renderer
             .render(&self.text_atlas, &self.text_viewport, &mut rp)
             .unwrap();
@@ -431,7 +631,7 @@ impl Gpu {
         if self.surface.is_none() {
             return;
         }
-        let n = self.prepare(list);
+        let batches = self.prepare(list);
         let surface = self.surface.as_ref().unwrap();
         let Ok(output) = surface.get_current_texture() else {
             return;
@@ -442,7 +642,7 @@ impl Gpu {
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        self.draw(&mut enc, &view, n);
+        self.draw(&mut enc, &view, &batches);
         self.queue.submit(std::iter::once(enc.finish()));
         output.present();
         self.text_atlas.trim();
@@ -453,7 +653,7 @@ impl Gpu {
     /// Returns `(width, height, rgba_pixels)`.
     pub fn capture(&mut self, list: &RenderList) -> (u32, u32, Vec<u8>) {
         let (w, h) = (self.config.width, self.config.height);
-        let n = self.prepare(list);
+        let batches = self.prepare(list);
 
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("capture"),
@@ -474,7 +674,7 @@ impl Gpu {
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        self.draw(&mut enc, &view, n);
+        self.draw(&mut enc, &view, &batches);
 
         let bpr = Self::aligned_bytes_per_row(w);
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -549,5 +749,27 @@ impl Gpu {
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().unwrap();
         writer.write_image_data(&pixels).unwrap();
+    }
+
+    /// Measure the shaped width of `text` at `font_size` using the real font system.
+    ///
+    /// This gives accurate glyph-based widths that match the rendered output,
+    /// unlike the `CHAR_WIDTH_RATIO` estimate in the DOM crate.
+    pub fn measure_text(&mut self, text: &str, font_size: f64) -> f64 {
+        let buf = shape_text_into(
+            &mut self.font_system,
+            text,
+            font_size as f32,
+            Some(MEASURE_MAX_WIDTH),
+            None,
+        );
+        buf.layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0_f32, f32::max) as f64
+    }
+
+    /// Invalidate all cached text shapes (call when text content changes globally).
+    pub fn invalidate_text_cache(&mut self) {
+        self.text_cache.clear();
     }
 }

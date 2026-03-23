@@ -1,9 +1,9 @@
 //! CLI benchmark runner.
 //!
-//! Run: `cargo run --release --features hwinfo --bin anc-bench`
+//! Run: `cargo run -p any-compute-bench --release --features hwinfo --bin anc-bench`
 
-use any_compute_core::bench::*;
-use any_compute_core::compute::{ComputeBackend, SimulatedBackend};
+use any_compute_bench::runner::*;
+use any_compute_core::compute::Device;
 use any_compute_core::kernel::best_kernel;
 
 fn main() {
@@ -96,8 +96,8 @@ fn main() {
 
     // Simulated devices
     for (tag, profile) in all_profiles() {
-        let sim = SimulatedBackend::new(profile.clone());
-        let info = sim.device_info();
+        let sim = Device::simulated(profile.clone());
+        let info = sim.info();
         println!(
             "\n--- Simulated: {} (cores={}, compute={:.2}) ---\n",
             info.name, info.max_parallelism, profile.compute_factor

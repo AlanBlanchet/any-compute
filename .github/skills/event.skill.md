@@ -1,7 +1,7 @@
 ---
 name: event
 description: Input event model, propagation phases, hover/focus tracking, and framework-agnostic dispatch
-applyTo: "crates/core/src/interaction.rs,crates/dom/src/tree.rs,crates/canvas/src/scenario.rs"
+applyTo: "crates/core/**,crates/dom/**"
 ---
 
 # Event Model
@@ -45,9 +45,9 @@ applyTo: "crates/core/src/interaction.rs,crates/dom/src/tree.rs,crates/canvas/sr
 - `Tree::click(pos)` — walk parents from hit node to find deepest tagged node (legacy helper).
 - `Tree::tag_at(pos)` — same as `click` but returns `String` (owned).
 
-## Scenario Replay — `crates/canvas/scenario.rs`
+## Scenario Replay — `crates/dom/scenario.rs`
 
-- `Scenario` — builder for scripted interactions, lives in canvas crate (depends on dom).
+- `Scenario` — builder for scripted interactions, lives in dom crate (behind `gpu` feature).
 - `Action` enum: `Click(Point)`, `Hover(Point)`, `Scroll{pos,delta}`, `Dispatch(InputEvent)`, `AssertTag{pos,expected}`, `Capture`.
 - `StepResult` — constructors: `dispatched`, `silent`, `asserted`, `captured`.
 - `replay_step(tree, action, index)` and `replay(tree, scenario)` — free functions, not Tree methods.

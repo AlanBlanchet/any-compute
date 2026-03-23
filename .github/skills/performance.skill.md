@@ -10,7 +10,7 @@ applyTo: "crates/core/src/**"
 
 - `bumpalo` arena for **per-frame temporaries** — reset each frame, not per-element.
 - `SmallVec` for collections with a small, bounded inline count — never use `Vec` for ≤8-item collections.
-- All parallel iteration goes through `ComputeBackend`, never raw `rayon`.
+- All parallel iteration goes through `Device`, never raw `rayon`.
 
 ## Rendering
 
@@ -20,6 +20,7 @@ applyTo: "crates/core/src/**"
 
 ## Measurement
 
-- Benchmarks live in `core::bench` only — no benchmark code outside that module.
-- Run `cargo run --release --features hwinfo --bin anc-bench` for CLI reports to `out/`.
-- Run `cargo run -p any-compute-rsx --features bench --bin anc-bench-window` for GUI dashboard.
+- Benchmarks live in `crates/bench/` — compute runners in `runner.rs`, DOM comparisons in `lib.rs`.
+- `core` has zero benchmark code — it only exposes compute primitives and `FEATURES` for feature detection.
+- Run `cargo run -p any-compute-bench --release --features hwinfo --bin anc-bench` for CLI reports to `out/`.
+- Run `cargo run -p any-compute-bench --bin anv-bench-window` (or `make dashboard`) for GPU dashboard.

@@ -8,8 +8,8 @@ fn basic_tree_layout() {
         Style::default().w(200.0).h(100.0).bg(Color::WHITE),
     );
     tree.layout(Size::new(400.0, 300.0));
-    assert_eq!(tree.slot(child).rect.size.w, 200.0);
-    assert_eq!(tree.slot(child).rect.size.h, 100.0);
+    assert_eq!(tree.slot(child).rect.size.w(), 200.0);
+    assert_eq!(tree.slot(child).rect.size.h(), 100.0);
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn text_node_has_intrinsic_height() {
     let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
     let txt = tree.add_text(tree.root, "Hello world", Style::default().font(16.0));
     tree.layout(Size::new(300.0, 200.0));
-    assert!(tree.slot(txt).rect.size.h > 0.0);
+    assert!(tree.slot(txt).rect.size.h() > 0.0);
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn flex_grow_distributes_space() {
     let _a = tree.add_box(tree.root, Style::default().w(50.0).h(100.0));
     let b = tree.add_box(tree.root, Style::default().h(100.0).grow(1.0));
     tree.layout(Size::new(300.0, 100.0));
-    let bw = tree.slot(b).rect.size.w;
+    let bw = tree.slot(b).rect.size.w();
     assert!(
         bw > 200.0,
         "flex child should consume remaining space, got {}",
@@ -111,13 +111,13 @@ fn row_button_in_column_stretches_width() {
     let btn_r = tree.slot(btn).rect;
     // Button must fill the sidebar's inner width (220 − 12 − 12 = 196).
     assert!(
-        (btn_r.size.w - 196.0).abs() < 1.0,
+        (btn_r.size.w() - 196.0).abs() < 1.0,
         "tab button should stretch to 196px, got {}",
-        btn_r.size.w
+        btn_r.size.w()
     );
     // Click in the middle of the button must return the tag.
-    let mid_x = btn_r.origin.x + btn_r.size.w / 2.0;
-    let mid_y = btn_r.origin.y + btn_r.size.h / 2.0;
+    let mid_x = btn_r.origin.x + btn_r.size.w() / 2.0;
+    let mid_y = btn_r.origin.y + btn_r.size.h() / 2.0;
     assert_eq!(tree.click(Point::new(mid_x, mid_y)), Some("tab-0"));
     // Click near the right edge (x ≈ 190) must also work.
     assert_eq!(
@@ -132,7 +132,7 @@ fn text_in_row_has_intrinsic_width() {
     let mut tree = Tree::new(Style::default().w(400.0).h(100.0).row());
     let txt = tree.add_text(tree.root, "Hello", Style::default().font(14.0));
     tree.layout(Size::new(400.0, 100.0));
-    let w = tree.slot(txt).rect.size.w;
+    let w = tree.slot(txt).rect.size.w();
     assert!(w > 10.0, "text in row should have intrinsic width, got {w}");
 }
 
@@ -194,8 +194,8 @@ fn row_with_fixed_and_grow_respects_min_width() {
     // Give main a child to create intrinsic width.
     t.add_text(main, "Dashboard", Style::default().font(16.0));
     t.layout(Size::new(800.0, 600.0));
-    let sb_w = t.slot(sidebar).rect.size.w;
-    let mn_w = t.slot(main).rect.size.w;
+    let sb_w = t.slot(sidebar).rect.size.w();
+    let mn_w = t.slot(main).rect.size.w();
     assert!(sb_w >= 200.0, "sidebar should be >= 200px but was {sb_w}");
     assert!(
         (sb_w + mn_w - 800.0).abs() < 1.0,
@@ -277,7 +277,7 @@ fn visual_cmp_layout_dimensions() {
         };
         println!(
             "[{i:2}] {tag:12} {kind:20} x={:6.1} y={:6.1} w={:6.1} h={:6.1}",
-            r.origin.x, r.origin.y, r.size.w, r.size.h,
+            r.origin.x, r.origin.y, r.size.w(), r.size.h(),
         );
     }
 
@@ -300,60 +300,60 @@ fn visual_cmp_layout_dimensions() {
     let card = by_tag("card1");
 
     println!("\n=== Key dimensions ===");
-    println!("sidebar: w={:.1}", sidebar.rect.size.w);
-    println!("header:  h={:.1}", header.rect.size.h);
+    println!("sidebar: w={:.1}", sidebar.rect.size.w());
+    println!("header:  h={:.1}", header.rect.size.h());
     println!(
         "content: w={:.1} h={:.1}",
-        content.rect.size.w, content.rect.size.h
+        content.rect.size.w(), content.rect.size.h()
     );
     println!(
         "swatch:  w={:.1} h={:.1}",
-        swatch.rect.size.w, swatch.rect.size.h
+        swatch.rect.size.w(), swatch.rect.size.h()
     );
     println!(
         "opacity: w={:.1} h={:.1}",
-        obox.rect.size.w, obox.rect.size.h
+        obox.rect.size.w(), obox.rect.size.h()
     );
     println!(
         "card1:   w={:.1} h={:.1}",
-        card.rect.size.w, card.rect.size.h
+        card.rect.size.w(), card.rect.size.h()
     );
     println!(
         "bar-track w={:.1}, fills: green={:.1} ({:.1}%) blue={:.1} ({:.1}%) red={:.1} ({:.1}%)",
-        track.rect.size.w,
-        fill_green.rect.size.w,
-        fill_green.rect.size.w / track.rect.size.w * 100.0,
-        fill_blue.rect.size.w,
-        fill_blue.rect.size.w / track.rect.size.w * 100.0,
-        fill_red.rect.size.w,
-        fill_red.rect.size.w / track.rect.size.w * 100.0,
+        track.rect.size.w(),
+        fill_green.rect.size.w(),
+        fill_green.rect.size.w() / track.rect.size.w() * 100.0,
+        fill_blue.rect.size.w(),
+        fill_blue.rect.size.w() / track.rect.size.w() * 100.0,
+        fill_red.rect.size.w(),
+        fill_red.rect.size.w() / track.rect.size.w() * 100.0,
     );
 
     // Assertions.
     assert!(
-        (sidebar.rect.size.w - 200.0).abs() < 1.0,
+        (sidebar.rect.size.w() - 200.0).abs() < 1.0,
         "sidebar should be 200px, got {:.1}",
-        sidebar.rect.size.w
+        sidebar.rect.size.w()
     );
     assert!(
-        (header.rect.size.h - 48.0).abs() < 1.0,
+        (header.rect.size.h() - 48.0).abs() < 1.0,
         "header should be 48px, got {:.1}",
-        header.rect.size.h
+        header.rect.size.h()
     );
     assert!(
-        (swatch.rect.size.w - 40.0).abs() < 1.0,
+        (swatch.rect.size.w() - 40.0).abs() < 1.0,
         "swatch should be 40px, got {:.1}",
-        swatch.rect.size.w
+        swatch.rect.size.w()
     );
     assert!(
-        (obox.rect.size.w - 60.0).abs() < 1.0,
+        (obox.rect.size.w() - 60.0).abs() < 1.0,
         "opacity-box should be 60px, got {:.1}",
-        obox.rect.size.w
+        obox.rect.size.w()
     );
     assert!(
-        (fill_green.rect.size.w / track.rect.size.w - 0.70).abs() < 0.02,
+        (fill_green.rect.size.w() / track.rect.size.w() - 0.70).abs() < 0.02,
         "green fill should be 70%, got {:.1}%",
-        fill_green.rect.size.w / track.rect.size.w * 100.0
+        fill_green.rect.size.w() / track.rect.size.w() * 100.0
     );
 }
 
@@ -506,9 +506,9 @@ fn universal_selector_applies_box_sizing() {
     );
     // With border-box, total width stays 100px (content = 80, padding = 10+10)
     assert!(
-        (b.rect.size.w - 100.0).abs() < 1.0,
+        (b.rect.size.w() - 100.0).abs() < 1.0,
         "border-box width should be 100px, got {:.1}",
-        b.rect.size.w
+        b.rect.size.w()
     );
 }
 

@@ -19,7 +19,7 @@
 
 use any_compute_core::interaction::{Button, DispatchResult, InputEvent};
 use any_compute_core::layout::Point;
-use any_compute_dom::tree::Tree;
+use crate::tree::Tree;
 
 // ── Action ──────────────────────────────────────────────────────────────────
 
@@ -202,8 +202,7 @@ pub fn replay(tree: &mut Tree, scenario: &Scenario) -> Vec<StepResult> {
 mod tests {
     use super::*;
     use any_compute_core::layout::Size;
-    use any_compute_core::render::Color;
-    use any_compute_dom::style::Style;
+    use crate::style::Style;
 
     fn test_tree() -> Tree {
         let mut tree = Tree::new(Style::default().w(400.0).h(300.0));

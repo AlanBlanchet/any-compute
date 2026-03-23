@@ -37,7 +37,7 @@ use crate::parse::{
     apply_style_attrs, compile_attr, parse_filter, parse_px, parse_shadow, parse_time,
     parse_transform,
 };
-use crate::style::{Style, StyleOp, apply_ops, DEFAULT_EASING};
+use crate::style::{DEFAULT_EASING, Style, StyleOp, apply_ops};
 use any_compute_core::animation::Easing;
 
 // ── CSS transition + animation metadata ─────────────────────────────────────
@@ -74,45 +74,17 @@ impl Default for AnimationIterCount {
     }
 }
 
-/// Animation playback direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AnimationDirection {
-    #[default]
-    Normal,
-    Reverse,
-    Alternate,
-    AlternateReverse,
-}
-
-impl AnimationDirection {
-    pub fn from_css(val: &str) -> Self {
-        match val {
-            "reverse" => Self::Reverse,
-            "alternate" => Self::Alternate,
-            "alternate-reverse" => Self::AlternateReverse,
-            _ => Self::Normal,
-        }
+css_enums! {
+    /// Animation playback direction.
+    AnimationDirection [Normal, Normal] {
+        "normal" => Normal, "reverse" => Reverse,
+        "alternate" => Alternate, "alternate-reverse" => AlternateReverse
     }
-}
 
-/// Animation fill mode (CSS `animation-fill-mode`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AnimationFillMode {
-    #[default]
-    None,
-    Forwards,
-    Backwards,
-    Both,
-}
-
-impl AnimationFillMode {
-    pub fn from_css(val: &str) -> Self {
-        match val {
-            "forwards" => Self::Forwards,
-            "backwards" => Self::Backwards,
-            "both" => Self::Both,
-            _ => Self::None,
-        }
+    /// Animation fill mode (CSS `animation-fill-mode`).
+    AnimationFillMode [None, None] {
+        "none" => None, "forwards" => Forwards,
+        "backwards" => Backwards, "both" => Both
     }
 }
 
@@ -312,16 +284,6 @@ impl StyleSheet {
                         continue;
                     }
                     let stop_text = cleaned[stop_start..j].trim();
-                    let stop = match stop_text {
-                        "from" => Some(0.0),
-                        "to" => Some(1.0),
-                        s if s.ends_with('%') => s[..s.len() - 1]
-                            .trim()
-                            .parse::<f64>()
-                            .ok()
-                            .map(|v| v / 100.0),
-                        _ => None,
-                    };
                     j += 1; // skip inner '{'
                     // Read body
                     let body_start = j;
@@ -338,12 +300,26 @@ impl StyleSheet {
                     }
                     let body = &cleaned[body_start..j];
                     j += 1; // skip inner '}'
-                    if let Some(stop_val) = stop {
-                        let payload = compile_declarations(body, &variables);
-                        kf_list.push(Keyframe {
-                            stop: stop_val,
-                            ops: payload.ops,
-                        });
+                    // Parse comma-separated stops (e.g. "0%, 100%")
+                    let payload = compile_declarations(body, &variables);
+                    for part in stop_text.split(',') {
+                        let part = part.trim();
+                        let stop = match part {
+                            "from" => Some(0.0),
+                            "to" => Some(1.0),
+                            s if s.ends_with('%') => s[..s.len() - 1]
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                                .map(|v| v / 100.0),
+                            _ => None,
+                        };
+                        if let Some(stop_val) = stop {
+                            kf_list.push(Keyframe {
+                                stop: stop_val,
+                                ops: payload.ops.clone(),
+                            });
+                        }
                     }
                 }
                 kf_list.sort_by(|a, b| {
@@ -833,13 +809,9 @@ fn compile_declarations(body: &str, variables: &HashMap<String, String>) -> Rule
         for (i, prop) in props.into_iter().enumerate() {
             payload.transitions.push(TransitionSpec {
                 property: prop,
-                duration_secs: durs.get(i).or(durs.first()).copied().unwrap_or(0.0),
-                easing: easings
-                    .get(i)
-                    .or(easings.first())
-                    .copied()
-                    .unwrap_or(DEFAULT_EASING),
-                delay_secs: delays.get(i).or(delays.first()).copied().unwrap_or(0.0),
+                duration_secs: nth_or_first(&durs, i, 0.0),
+                easing: nth_or_first(&easings, i, DEFAULT_EASING),
+                delay_secs: nth_or_first(&delays, i, 0.0),
             });
         }
     }
@@ -855,21 +827,27 @@ fn compile_declarations(body: &str, variables: &HashMap<String, String>) -> Rule
         for (i, name) in names.into_iter().enumerate() {
             payload.animations.push(AnimationSpec {
                 name,
-                duration_secs: durs.get(i).or(durs.first()).copied().unwrap_or(0.0),
-                easing: easings
-                    .get(i)
-                    .or(easings.first())
-                    .copied()
-                    .unwrap_or(DEFAULT_EASING),
-                delay_secs: delays.get(i).or(delays.first()).copied().unwrap_or(0.0),
-                iteration_count: iters.get(i).or(iters.first()).copied().unwrap_or_default(),
-                direction: dirs.get(i).or(dirs.first()).copied().unwrap_or_default(),
-                fill_mode: fills.get(i).or(fills.first()).copied().unwrap_or_default(),
+                duration_secs: nth_or_first(&durs, i, 0.0),
+                easing: nth_or_first(&easings, i, DEFAULT_EASING),
+                delay_secs: nth_or_first(&delays, i, 0.0),
+                iteration_count: nth_or_first(&iters, i, AnimationIterCount::default()),
+                direction: nth_or_first(&dirs, i, AnimationDirection::default()),
+                fill_mode: nth_or_first(&fills, i, AnimationFillMode::default()),
             });
         }
     }
 
     payload
+}
+
+// ── CSS longhand assembly helpers ────────────────────────────────────────────
+
+/// CSS longhand list lookup: `slice[i]`, falling back to `slice[0]`, then `default`.
+///
+/// Matches CSS spec behavior for shorthand lists: when fewer values are specified
+/// than properties, the list cycles from the beginning.
+fn nth_or_first<T: Copy>(slice: &[T], i: usize, default: T) -> T {
+    slice.get(i).or(slice.first()).copied().unwrap_or(default)
 }
 
 // ── CSS variable resolution ─────────────────────────────────────────────────
@@ -1385,4 +1363,3 @@ fn expand_box_shorthand(prop: &str, value: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 #[path = "css_tests.rs"]
 mod tests;
-

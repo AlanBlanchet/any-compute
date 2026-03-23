@@ -1,0 +1,358 @@
+/* ── Website fixture CSS ─────────────────────────────────────── */
+/* Realistic landing page styles for parse throughput benchmarks  */
+
+:root {
+  --bg: #1e1e2e;
+  --surface: #313244;
+  --overlay: #45475a;
+  --text: #cdd6f4;
+  --subtext: #a6adc8;
+  --dim: #6c7086;
+  --blue: #89b4fa;
+  --green: #a6e3a1;
+  --red: #f38ba8;
+  --yellow: #f9e2af;
+  --mauve: #cba6f7;
+  --radius: 8;
+  --radius-lg: 12;
+}
+
+.page {
+  direction: column;
+  bg: var(--bg);
+  color: var(--text);
+  gap: 0;
+}
+
+/* ── Top bar ──────────────────────────────────────────────── */
+.top-bar {
+  direction: row;
+  h: 56;
+  pad: 0 24;
+  gap: 16;
+  align-items: center;
+  bg: var(--surface);
+}
+.logo-row {
+  direction: row;
+  gap: 8;
+  align-items: center;
+}
+.logo-icon {
+  w: 28;
+  h: 28;
+  bg: var(--blue);
+  border-radius: 6;
+}
+.logo-text {
+  font: 18;
+  font-weight: bold;
+  color: var(--text);
+}
+.nav-row {
+  direction: row;
+  gap: 20;
+  grow: 1;
+}
+.nav-link {
+  font: 14;
+  color: var(--subtext);
+}
+.nav-link.nav-active {
+  color: var(--blue);
+  font-weight: bold;
+}
+.top-actions {
+  direction: row;
+  gap: 8;
+}
+.search-box {
+  w: 120;
+  h: 32;
+  bg: var(--overlay);
+  border-radius: 6;
+  pad: 0 8;
+}
+.search-icon {
+  font: 12;
+  color: var(--dim);
+}
+
+/* ── Hero ─────────────────────────────────────────────────── */
+.hero {
+  direction: column;
+  pad: 80 40;
+  gap: 20;
+  align-items: center;
+}
+.hero-badge {
+  font: 12;
+  color: var(--blue);
+  bg: #1e1e3e;
+  pad: 6 14;
+  border-radius: 20;
+}
+.hero-title {
+  font: 48;
+  font-weight: bold;
+  color: var(--text);
+  text-align: center;
+}
+.hero-sub {
+  font: 18;
+  color: var(--subtext);
+  max-w: 640;
+  text-align: center;
+}
+.hero-btns {
+  direction: row;
+  gap: 12;
+  pad: 16 0;
+}
+.hero-stats {
+  direction: row;
+  gap: 24;
+  pad: 32 0;
+}
+.stat-card {
+  direction: column;
+  align-items: center;
+  gap: 4;
+  w: 140;
+}
+.stat-value {
+  font: 32;
+  font-weight: bold;
+  color: var(--blue);
+}
+.stat-label {
+  font: 13;
+  color: var(--subtext);
+}
+
+/* ── Buttons ──────────────────────────────────────────────── */
+.btn {
+  h: 40;
+  pad: 0 20;
+  border-radius: 8;
+  font: 14;
+  font-weight: bold;
+  align-items: center;
+  justify-content: center;
+}
+.btn-sm {
+  h: 32;
+  pad: 0 12;
+  border-radius: 6;
+  font: 13;
+  align-items: center;
+  justify-content: center;
+}
+.btn-primary {
+  bg: var(--blue);
+  color: #1e1e2e;
+}
+.btn-outline {
+  border: 1 solid var(--overlay);
+  color: var(--text);
+}
+
+/* ── Sections ─────────────────────────────────────────────── */
+.section {
+  direction: column;
+  pad: 64 40;
+  gap: 16;
+}
+.section-title {
+  font: 32;
+  font-weight: bold;
+  color: var(--text);
+  text-align: center;
+}
+.section-sub {
+  font: 16;
+  color: var(--subtext);
+  text-align: center;
+  max-w: 560;
+}
+
+/* ── Feature grid ─────────────────────────────────────────── */
+.feature-grid {
+  direction: row;
+  gap: 16;
+  flex-wrap: wrap;
+  justify-content: center;
+  pad: 24 0;
+}
+.feature-card {
+  direction: column;
+  gap: 8;
+  w: 320;
+  pad: 20;
+  bg: var(--surface);
+  border-radius: var(--radius-lg);
+}
+.feature-icon {
+  w: 40;
+  h: 40;
+  border-radius: 8;
+}
+.icon-compute {
+  bg: var(--blue);
+}
+.icon-dom {
+  bg: var(--green);
+}
+.icon-gpu {
+  bg: var(--mauve);
+}
+.icon-ffi {
+  bg: var(--yellow);
+}
+.icon-anim {
+  bg: var(--red);
+}
+.icon-data {
+  bg: #94e2d5;
+}
+.feature-title {
+  font: 16;
+  font-weight: bold;
+  color: var(--text);
+}
+.feature-desc {
+  font: 13;
+  color: var(--subtext);
+  line-height: 1.5;
+}
+
+/* ── Benchmark table ──────────────────────────────────────── */
+.bench-table {
+  direction: column;
+  gap: 0;
+  bg: var(--surface);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  max-w: 800;
+}
+.bench-header {
+  direction: row;
+  gap: 0;
+  pad: 12 16;
+  bg: var(--overlay);
+  font: 13;
+  font-weight: bold;
+  color: var(--text);
+}
+.bench-row {
+  direction: row;
+  gap: 0;
+  pad: 10 16;
+  font: 13;
+  color: var(--text);
+}
+.bench-alt {
+  bg: #2a2a3e;
+}
+.bench-col-op {
+  w: 240;
+}
+.bench-col-lib {
+  w: 200;
+}
+.bench-col-ops {
+  w: 120;
+}
+.bench-col-speedup {
+  w: 120;
+  color: var(--dim);
+}
+
+/* ── Code block ───────────────────────────────────────────── */
+.code-block {
+  direction: column;
+  gap: 2;
+  bg: var(--surface);
+  pad: 20;
+  border-radius: var(--radius-lg);
+  max-w: 600;
+  font: 14;
+}
+.code-line {
+  direction: row;
+  gap: 0;
+}
+.kw {
+  color: var(--mauve);
+}
+.ident {
+  color: var(--text);
+}
+.punct {
+  color: var(--dim);
+}
+.fn-call {
+  color: var(--blue);
+}
+.num {
+  color: #fab387;
+}
+
+/* ── Platform grid ────────────────────────────────────────── */
+.platform-grid {
+  direction: row;
+  gap: 12;
+  flex-wrap: wrap;
+  justify-content: center;
+  pad: 24 0;
+}
+.platform-card {
+  direction: column;
+  align-items: center;
+  gap: 4;
+  w: 140;
+  pad: 16;
+  bg: var(--surface);
+  border-radius: var(--radius);
+}
+.platform-name {
+  font: 16;
+  font-weight: bold;
+  color: var(--text);
+}
+.platform-arch {
+  font: 12;
+  color: var(--dim);
+}
+
+/* ── Footer ───────────────────────────────────────────────── */
+.footer {
+  direction: row;
+  gap: 40;
+  pad: 40;
+  bg: var(--surface);
+  flex-wrap: wrap;
+}
+.footer-col {
+  direction: column;
+  gap: 8;
+  min-w: 140;
+}
+.footer-heading {
+  font: 14;
+  font-weight: bold;
+  color: var(--text);
+}
+.footer-link {
+  font: 13;
+  color: var(--subtext);
+}
+.footer-bottom {
+  w: 100%;
+  pad: 16 0 0 0;
+  border-top: 1 solid var(--overlay);
+}
+.footer-copy {
+  font: 12;
+  color: var(--dim);
+}

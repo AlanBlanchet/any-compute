@@ -18,6 +18,87 @@ use super::style::{
 
 use std::sync::Arc;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Dirty tracking ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+bitflags::bitflags! {
+    /// Per-node dirty flags — gate which phases need re-running.
+    ///
+    /// Layout-affecting changes (dimensions, padding, flex) set `LAYOUT`.
+    /// Visual-only changes (color, opacity, background) set `PAINT`.
+    /// `LAYOUT` implies `PAINT` (anything that moved must also be repainted).
+    /// `Z_ORDER` means the cached z-sorted child list must be rebuilt.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Dirty: u8 {
+        const LAYOUT  = 0b0001;
+        const PAINT   = 0b0010;
+        const Z_ORDER = 0b0100;
+    }
+}
+
+/// Classify a CSS transition/animation property as layout-affecting or visual-only.
+/// Kept in sync with `Style::differs_in_layout()` and `StyleOp::affects_layout()`.
+fn property_affects_layout(prop: &str) -> bool {
+    matches!(
+        prop,
+        "display"
+            | "box-sizing"
+            | "width"
+            | "height"
+            | "min-width"
+            | "min-height"
+            | "max-width"
+            | "max-height"
+            | "aspect-ratio"
+            | "direction"
+            | "flex-direction"
+            | "flex-wrap"
+            | "align-items"
+            | "align-self"
+            | "justify-content"
+            | "gap"
+            | "row-gap"
+            | "column-gap"
+            | "padding"
+            | "padding-top"
+            | "padding-right"
+            | "padding-bottom"
+            | "padding-left"
+            | "margin"
+            | "margin-top"
+            | "margin-right"
+            | "margin-bottom"
+            | "margin-left"
+            | "position"
+            | "left"
+            | "top"
+            | "right"
+            | "bottom"
+            | "overflow"
+            | "flex-grow"
+            | "flex-shrink"
+            | "flex-basis"
+            | "order"
+            | "border-width"
+            | "border-top-width"
+            | "border-right-width"
+            | "border-bottom-width"
+            | "border-left-width"
+            | "font-family"
+            | "font-size"
+            | "font-weight"
+            | "line-height"
+            | "white-space"
+            | "text-align"
+            | "letter-spacing"
+            | "word-spacing"
+            | "text-indent"
+            | "word-break"
+            | "all"
+    )
+}
+
 // ── Animation runtime state ─────────────────────────────────────────────────
 
 /// Shared timing fields for transitions and keyframe animations.
@@ -72,8 +153,6 @@ impl Timing {
 pub struct TickResult {
     /// Any animations/transitions still running — caller should redraw.
     pub active: bool,
-    /// Layout-affecting properties were changed — caller should re-layout.
-    pub needs_layout: bool,
 }
 
 /// Active CSS property transition — interpolates one `StyleOp` from→to.
@@ -270,10 +349,16 @@ pub struct Slot {
     pub active: bool,
     /// Current focused state — set by `Tree::focus()`, used for `:focus` restyle.
     pub focused: bool,
+    /// Accurate text width from font shaping (0.0 = not measured, use estimate).
+    pub measured_text_width: f64,
     /// Active CSS transitions (property-level interpolation on style change).
     pub transitions: Vec<ActiveTransition>,
     /// Active CSS @keyframes animations.
     pub animations: Vec<ActiveAnimation>,
+    /// Per-node dirty flags — gate layout/paint traversal.
+    pub dirty: Dirty,
+    /// Cached z-sorted children — invalidated when `Dirty::Z_ORDER` is set.
+    z_sorted: Vec<NodeId>,
 }
 
 impl Slot {
@@ -295,8 +380,20 @@ impl Slot {
             hovered: false,
             active: false,
             focused: false,
+            measured_text_width: 0.0,
             transitions: Vec::new(),
             animations: Vec::new(),
+            dirty: Dirty::LAYOUT | Dirty::PAINT | Dirty::Z_ORDER,
+            z_sorted: Vec::new(),
+        }
+    }
+
+    /// Return measured text width if available, else CSS-estimated width.
+    pub fn text_w(&self, text: &str) -> f64 {
+        if self.measured_text_width > 0.0 {
+            self.measured_text_width
+        } else {
+            self.style.text_width(text)
         }
     }
 }
@@ -315,6 +412,10 @@ pub struct Tree {
     hovered: Option<NodeId>,
     /// Currently focused node (if any).
     focused: Option<NodeId>,
+    /// Global flag: at least one node has `Dirty::LAYOUT`.
+    pub needs_layout: bool,
+    /// Global flag: at least one node has `Dirty::PAINT`.
+    pub needs_paint: bool,
 }
 
 impl Tree {
@@ -341,6 +442,37 @@ impl Tree {
             }
         }
     }
+
+    /// Mark a node (and ancestors) dirty, propagating upward.
+    /// `LAYOUT` implies `PAINT`. Ancestors get the same flags so that
+    /// top-down traversal can discover dirty subtrees early.
+    fn mark_dirty(&mut self, id: NodeId, flags: Dirty) {
+        let flags = if flags.contains(Dirty::LAYOUT) {
+            flags | Dirty::PAINT
+        } else {
+            flags
+        };
+        if flags.contains(Dirty::LAYOUT) {
+            self.needs_layout = true;
+        }
+        if flags.contains(Dirty::PAINT) {
+            self.needs_paint = true;
+        }
+        let mut cur = id;
+        loop {
+            let slot = &mut self.arena[cur.0];
+            let before = slot.dirty;
+            slot.dirty |= flags;
+            // Stop propagating if ancestor already had these flags.
+            if slot.dirty == before {
+                break;
+            }
+            match slot.parent {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+    }
 }
 
 impl Tree {
@@ -353,6 +485,8 @@ impl Tree {
             viewport: Size::ZERO,
             hovered: None,
             focused: None,
+            needs_layout: true,
+            needs_paint: true,
         }
     }
 
@@ -407,6 +541,7 @@ impl Tree {
     /// Returns a [`TickResult`] so the caller knows whether to redraw.
     pub fn tick(&mut self, dt: f64) -> TickResult {
         let mut result = TickResult::default();
+        let mut dirty_nodes: Vec<(NodeId, Dirty)> = Vec::new();
 
         for i in 0..self.arena.len() {
             let slot = &mut self.arena[i];
@@ -417,13 +552,16 @@ impl Tree {
                 let to_style = slot.transitions[0].to.clone();
                 let mut blended_result = to_style;
                 let mut all_done = true;
+                let mut any_layout = false;
 
                 for tr in &mut slot.transitions {
                     tr.timing.elapsed += dt;
                     if !tr.finished() {
                         all_done = false;
                         result.active = true;
-                        result.needs_layout = true;
+                        if property_affects_layout(&tr.property) {
+                            any_layout = true;
+                        }
                         let blended = tr.from.lerp(&tr.to, tr.progress());
                         super::style::copy_css_property(
                             &mut blended_result,
@@ -437,6 +575,12 @@ impl Tree {
                 if all_done {
                     slot.transitions.clear();
                 }
+                let id = NodeId(i);
+                if any_layout {
+                    dirty_nodes.push((id, Dirty::LAYOUT | Dirty::PAINT));
+                } else {
+                    dirty_nodes.push((id, Dirty::PAINT));
+                }
             }
 
             // ── Animations ──────────────────────────────────────────
@@ -446,12 +590,12 @@ impl Tree {
                     anim.timing.elapsed += dt;
                     anim_dirty = true;
                     result.active = true;
-                    result.needs_layout = true;
                 }
             }
 
             // Apply keyframe ops on top of the current style
             if anim_dirty {
+                let mut any_layout = false;
                 for anim in &slot.animations {
                     if !anim.finished()
                         || matches!(
@@ -459,14 +603,34 @@ impl Tree {
                             AnimationFillMode::Forwards | AnimationFillMode::Both
                         )
                     {
+                        // Check if any keyframe op affects layout.
+                        if !any_layout {
+                            for kf in &anim.keyframes {
+                                if kf.ops.iter().any(|op| op.affects_layout()) {
+                                    any_layout = true;
+                                    break;
+                                }
+                            }
+                        }
                         anim.apply_to(&mut slot.style);
                     }
+                }
+                let id = NodeId(i);
+                if any_layout {
+                    dirty_nodes.push((id, Dirty::LAYOUT | Dirty::PAINT));
+                } else {
+                    dirty_nodes.push((id, Dirty::PAINT));
                 }
             }
         }
 
+        // Propagate dirty flags.
+        for (id, flags) in dirty_nodes {
+            self.mark_dirty(id, flags);
+        }
+
         // Auto re-layout when animations changed layout-affecting properties.
-        if result.needs_layout && self.viewport != Size::ZERO {
+        if self.needs_layout && self.viewport != Size::ZERO {
             self.layout(self.viewport);
         }
 
@@ -514,12 +678,10 @@ impl Tree {
         }
         self.arena[id.0].focused = true;
         self.focused = Some(id);
-        if let Some(sheet) = self.sheet.clone() {
-            self.restyle_node(id, &sheet);
-            if let Some(old) = self.focused {
-                if old != id {
-                    self.restyle_node(old, &sheet);
-                }
+        self.restyle_if_sheet(id);
+        if let Some(old) = self.focused {
+            if old != id {
+                self.restyle_if_sheet(old);
             }
         }
     }
@@ -528,9 +690,7 @@ impl Tree {
     pub fn blur(&mut self) {
         if let Some(old) = self.focused.take() {
             self.arena[old.0].focused = false;
-            if let Some(sheet) = self.sheet.clone() {
-                self.restyle_node(old, &sheet);
-            }
+            self.restyle_if_sheet(old);
         }
     }
 
@@ -543,13 +703,57 @@ impl Tree {
 
     // ── Layout ──────────────────────────────────────────
 
+    /// Pre-measure all text nodes using an external font measurement function.
+    ///
+    /// `f(text, font_size) -> width` should return the glyph-shaped text width
+    /// (e.g. via `Gpu::measure_text`).  CSS letter-spacing and word-spacing are
+    /// added automatically. Call before `layout()` for accurate flex centering.
+    pub fn measure_text_nodes(&mut self, mut f: impl FnMut(&str, f64) -> f64) {
+        for slot in &mut self.arena {
+            if let NodeKind::Text(ref text) = slot.kind {
+                let mut w = f(text, slot.style.font_size);
+                if slot.style.letter_spacing != 0.0 {
+                    w += text.len() as f64 * slot.style.letter_spacing;
+                }
+                if slot.style.word_spacing != 0.0 {
+                    let spaces = text.chars().filter(|c| *c == ' ').count() as f64;
+                    w += spaces * slot.style.word_spacing;
+                }
+                slot.measured_text_width = w;
+            }
+        }
+    }
+
     /// Solve layout for the whole tree, given the viewport size.
     pub fn layout(&mut self, viewport: Size) {
         self.viewport = viewport;
         let root = self.root;
         self.layout_node(
-            root, viewport.w, viewport.h, viewport.w, viewport.h, 0.0, 0.0,
+            root, viewport.w(), viewport.h(), viewport.w(), viewport.h(), 0.0, 0.0,
         );
+        // Layout done — clear LAYOUT flags, promote to PAINT (positions may have changed).
+        // Also refresh z_sorted caches for all dirty nodes.
+        for i in 0..self.arena.len() {
+            if self.arena[i].dirty.contains(Dirty::LAYOUT) {
+                self.arena[i].dirty.remove(Dirty::LAYOUT);
+                self.arena[i].dirty.insert(Dirty::PAINT);
+            }
+            // Rebuild z_sorted cache while we have &mut self.
+            if self.arena[i].dirty.contains(Dirty::Z_ORDER) || self.arena[i].z_sorted.is_empty() {
+                let children = self.arena[i].children.clone();
+                let any_z = children
+                    .iter()
+                    .any(|c| self.arena[c.0].style.z_index.is_some());
+                let mut sorted = children;
+                if any_z {
+                    sorted.sort_by_key(|c| self.arena[c.0].style.z_index.unwrap_or(0));
+                }
+                self.arena[i].z_sorted = sorted;
+                self.arena[i].dirty.remove(Dirty::Z_ORDER);
+            }
+        }
+        self.needs_layout = false;
+        self.needs_paint = true;
     }
 
     /// Layout a single node.
@@ -599,24 +803,7 @@ impl Tree {
         };
 
         // Determine intrinsic height for text / bar.
-        let intrinsic_h = match &self.slot(id).kind {
-            NodeKind::Text(s) => {
-                let text_w = style.text_width(s) + style.text_indent;
-                let lines = if style.white_space == WhiteSpace::NoWrap {
-                    1.0
-                } else {
-                    (text_w / content_w.max(1.0)).ceil().max(1.0)
-                };
-                let lh = if style.line_height_absolute {
-                    style.line_height
-                } else {
-                    style.font_size * style.line_height
-                };
-                lines * lh
-            }
-            NodeKind::Bar { .. } => style.font_size.max(MIN_BAR_HEIGHT),
-            NodeKind::Box => 0.0,
-        };
+        let intrinsic_h = self.intrinsic_height(id, content_w);
 
         // Recursively layout children to know content height.
         let children: Vec<NodeId> = self.slot(id).children.clone();
@@ -679,10 +866,12 @@ impl Tree {
                 match (explicit_h, cross_align) {
                     (Some(h), _) => h,
                     (None, Align::Stretch) => child_avail_h,
-                    (None, _) => 0.0,
+                    (None, _) => self.intrinsic_height(cid, cw),
                 }
             } else {
-                flex_basis.or(explicit_h).unwrap_or(0.0)
+                flex_basis
+                    .or(explicit_h)
+                    .unwrap_or_else(|| self.intrinsic_height(cid, cw))
             };
             child_sizes.push((cid, cw, ch));
         }
@@ -865,8 +1054,10 @@ impl Tree {
             let mut line_max_cross = 0.0_f64;
 
             // Pre-compute actual line cross dimension for correct Center/End alignment.
-            // Without this, auto-height containers would use parent-given avail (often 0).
-            let line_cross: f64 = line_indices
+            // CSS spec: for single-line containers with a definite cross size,
+            // the line cross = container inner cross.  For multi-line or auto-size,
+            // it's the intrinsic max of items in the line.
+            let intrinsic_cross: f64 = line_indices
                 .iter()
                 .map(|&idx| {
                     let (cid, cw, ch) = child_sizes[idx];
@@ -878,6 +1069,11 @@ impl Tree {
                     }
                 })
                 .fold(0.0_f64, f64::max);
+            let line_cross = if is_row {
+                intrinsic_cross.max(child_avail_h)
+            } else {
+                intrinsic_cross.max(child_avail_w)
+            };
 
             for &idx in line_indices {
                 let (cid, cw, ch) = child_sizes[idx];
@@ -911,11 +1107,11 @@ impl Tree {
 
                 let child_rect = self.slot(cid).rect;
                 if is_row {
-                    cursor_main += child_rect.size.w + cm.horizontal() + j_gap;
-                    line_max_cross = line_max_cross.max(child_rect.size.h + cm.vertical());
+                    cursor_main += child_rect.size.w() + cm.horizontal() + j_gap;
+                    line_max_cross = line_max_cross.max(child_rect.size.h() + cm.vertical());
                 } else {
-                    cursor_main += child_rect.size.h + cm.vertical() + j_gap;
-                    line_max_cross = line_max_cross.max(child_rect.size.w + cm.horizontal());
+                    cursor_main += child_rect.size.h() + cm.vertical() + j_gap;
+                    line_max_cross = line_max_cross.max(child_rect.size.w() + cm.horizontal());
                 }
             }
 
@@ -971,12 +1167,37 @@ impl Tree {
 
     /// Estimate the min-content width of a subtree (for main-axis measurement
     /// of row children that have no explicit width).
+    /// Intrinsic height of a content node (text or bar) given available width.
+    /// Returns 0 for Box nodes (their height comes from children during layout).
+    fn intrinsic_height(&self, id: NodeId, avail_w: f64) -> f64 {
+        let slot = self.slot(id);
+        let s = &slot.style;
+        match &slot.kind {
+            NodeKind::Text(text) => {
+                let text_w = slot.text_w(text) + s.text_indent;
+                let lines = if s.white_space == WhiteSpace::NoWrap {
+                    1.0
+                } else {
+                    (text_w / avail_w.max(1.0)).ceil().max(1.0)
+                };
+                let lh = if s.line_height_absolute {
+                    s.line_height
+                } else {
+                    s.font_size * s.line_height
+                };
+                lines * lh
+            }
+            NodeKind::Bar { .. } => s.font_size.max(MIN_BAR_HEIGHT),
+            NodeKind::Box => 0.0,
+        }
+    }
+
     fn intrinsic_width(&self, id: NodeId) -> f64 {
         let slot = self.slot(id);
         let s = &slot.style;
         let pad_h = s.padding.horizontal();
         match &slot.kind {
-            NodeKind::Text(t) => s.text_width(t) + s.text_indent + pad_h,
+            NodeKind::Text(t) => slot.text_w(t) + s.text_indent + pad_h,
             NodeKind::Bar { .. } => pad_h,
             NodeKind::Box => {
                 let row = s.direction == Direction::Row;
@@ -1022,6 +1243,21 @@ impl Tree {
         self.paint_node(self.root, list);
     }
 
+    /// Call after `paint()` to clear dirty flags so the next frame can skip
+    /// unchanged nodes.  Separate from `paint()` to keep it `&self`.
+    pub fn post_paint(&mut self) {
+        for slot in &mut self.arena {
+            slot.dirty = Dirty::empty();
+        }
+        self.needs_paint = false;
+    }
+
+    /// Whether the tree has pending visual changes that require a repaint.
+    #[inline]
+    pub fn needs_paint(&self) -> bool {
+        self.needs_paint
+    }
+
     fn paint_node(&self, id: NodeId, list: &mut RenderList) {
         let slot = self.slot(id);
         let r = slot.rect;
@@ -1057,8 +1293,8 @@ impl Tree {
             let shadow_bounds = Rect::new(
                 r.origin.x + sh.x - sh.spread,
                 r.origin.y + sh.y - sh.spread,
-                r.size.w + sh.spread * 2.0,
-                r.size.h + sh.spread * 2.0,
+                r.size.w() + sh.spread * 2.0,
+                r.size.h() + sh.spread * 2.0,
             );
             list.push(Primitive::Rect {
                 bounds: shadow_bounds,
@@ -1096,8 +1332,8 @@ impl Tree {
             let outline_bounds = Rect::new(
                 r.origin.x - ow,
                 r.origin.y - ow,
-                r.size.w + ow * 2.0,
-                r.size.h + ow * 2.0,
+                r.size.w() + ow * 2.0,
+                r.size.h() + ow * 2.0,
             );
             list.push(Primitive::Rect {
                 bounds: outline_bounds,
@@ -1114,8 +1350,8 @@ impl Tree {
         match &slot.kind {
             NodeKind::Text(content) => {
                 let display_text = s.transform_text(content);
-                let text_w = s.text_width(&display_text);
-                let avail_w = r.size.w - s.padding.left - s.padding.right;
+                let text_w = self.slot(id).text_w(&display_text);
+                let avail_w = r.size.w() - s.padding.left - s.padding.right;
 
                 // text-overflow: ellipsis — truncate when text overflows
                 let final_text = if s.text_overflow == TextOverflow::Ellipsis
@@ -1123,7 +1359,8 @@ impl Tree {
                     && avail_w > 0.0
                 {
                     let char_w = s.char_width();
-                    let max_chars = ((avail_w - char_w * 3.0).max(0.0) / char_w) as usize;
+                    let max_chars =
+                        ((avail_w - char_w * ELLIPSIS_CHARS).max(0.0) / char_w) as usize;
                     let truncated: String = display_text.chars().take(max_chars).collect();
                     std::borrow::Cow::Owned(format!("{}...", truncated))
                 } else {
@@ -1162,10 +1399,10 @@ impl Tree {
                 if s.text_decoration != TextDecoration::None {
                     let line_y = match s.text_decoration {
                         TextDecoration::Underline => {
-                            ty + s.font_size * (1.0 - TEXT_BASELINE_RATIO) + 1.0
+                            ty + s.font_size * (1.0 - TEXT_BASELINE_RATIO) + UNDERLINE_OFFSET_PX
                         }
                         TextDecoration::Overline => r.origin.y + s.padding.top,
-                        TextDecoration::LineThrough => ty - s.font_size * 0.3,
+                        TextDecoration::LineThrough => ty - s.font_size * LINE_THROUGH_RATIO,
                         TextDecoration::None => unreachable!(),
                     };
                     let line_end = tx + text_w.min(avail_w);
@@ -1178,8 +1415,8 @@ impl Tree {
                 }
             }
             NodeKind::Bar { fraction, fill } => {
-                let bar_h = (r.size.h - s.padding.vertical()).max(0.0);
-                let track_w = (r.size.w - s.padding.horizontal()).max(0.0);
+                let bar_h = (r.size.h() - s.padding.vertical()).max(0.0);
+                let track_w = (r.size.w() - s.padding.horizontal()).max(0.0);
                 let bx = r.origin.x + s.padding.left;
                 let by = r.origin.y + s.padding.top;
                 // Track background.
@@ -1215,20 +1452,12 @@ impl Tree {
     /// insertion order (stable sort preserves source order for equal z).
     /// Return children sorted by z-index (ascending). If no child has z-index
     /// set, returns a simple clone in insertion order (no allocation for fast path).
-    fn z_sorted_children(&self, id: NodeId) -> Vec<NodeId> {
-        let children = &self.slot(id).children;
-        let any_z = children
-            .iter()
-            .any(|c| self.slot(*c).style.z_index.is_some());
-        let mut sorted: Vec<NodeId> = children.clone();
-        if any_z {
-            sorted.sort_by_key(|c| self.slot(*c).style.z_index.unwrap_or(0));
-        }
-        sorted
+    fn z_sorted_children(&self, id: NodeId) -> &[NodeId] {
+        &self.slot(id).z_sorted
     }
 
     fn paint_children(&self, id: NodeId, list: &mut RenderList) {
-        for child_id in self.z_sorted_children(id) {
+        for &child_id in self.z_sorted_children(id) {
             self.paint_node(child_id, list);
         }
     }
@@ -1367,10 +1596,8 @@ impl Tree {
                         self.arena[id.0].active = false;
                     }
                     // Restyle every node that lost :active — not just the target path
-                    if let Some(sheet) = self.sheet.clone() {
-                        for &id in &active_ids {
-                            self.restyle_node(id, &sheet);
-                        }
+                    for &id in &active_ids {
+                        self.restyle_if_sheet(id);
                     }
                     restyled = true;
                 }
@@ -1416,17 +1643,24 @@ impl Tree {
             }
         }
 
-        // Resolve cursor: walk from target up, find first non-default
+        // Resolve cursor: walk from target up, find first non-default.
+        // Text nodes implicitly use a text cursor (browser default).
         let cursor = {
             let mut cursor_str = String::new();
             let mut cid = target;
             loop {
-                let c = self.slot(cid).style.cursor;
+                let slot = self.slot(cid);
+                let c = slot.style.cursor;
                 if c != Cursor::Default {
                     cursor_str = c.to_css().to_string();
                     break;
                 }
-                match self.slot(cid).parent {
+                // Text nodes default to text cursor (CSS spec).
+                if matches!(slot.kind, NodeKind::Text(_)) && slot.style.user_select != UserSelect::None {
+                    cursor_str = "text".to_string();
+                    break;
+                }
+                match slot.parent {
                     Some(p) => cid = p,
                     None => break,
                 }
@@ -1459,6 +1693,13 @@ impl Tree {
         }
     }
 
+    /// Restyle a single node if a stylesheet is available.
+    fn restyle_if_sheet(&mut self, id: NodeId) {
+        if let Some(sheet) = self.sheet.clone() {
+            self.restyle_node(id, &sheet);
+        }
+    }
+
     /// Re-resolve a single node's style: base + pseudo-class overrides from complex rules.
     /// If the node has CSS transition specs, property changes become animated transitions
     /// instead of instant snaps.
@@ -1479,6 +1720,9 @@ impl Tree {
         if old_style == new_style {
             return;
         }
+
+        // Style changed — classify as layout or paint-only.
+        let is_layout_change = old_style.differs_in_layout(&new_style);
 
         // Collect transition specs from all classes on this node
         let slot = &self.arena[id.0];
@@ -1525,6 +1769,14 @@ impl Tree {
 
             self.arena[id.0].transitions = transitions;
         }
+
+        // Propagate dirty flags based on what changed.
+        let flags = if is_layout_change {
+            Dirty::LAYOUT | Dirty::PAINT
+        } else {
+            Dirty::PAINT
+        };
+        self.mark_dirty(id, flags);
     }
 
     /// Check if a node matches a complex selector rule given current pseudo-class state.

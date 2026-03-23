@@ -7,8 +7,6 @@ license.workspace = true
 
 [features]
 default = []
-# Convenience: enables everything the bench-window binary needs
-bench = ["wgpu-backend", "hwinfo"]
 # GPU backends
 wgpu-backend = ["dep:wgpu", "dep:glyphon"]
 # Vendor-specific compute (link to proprietary libs)
@@ -18,8 +16,6 @@ mkl = []   # Intel MKL/oneMKL — LAPACK, BLAS, FFT
 metal = [] # Apple Metal Performance Shaders
 # Shader compilation
 shader = ["dep:naga"]
-# Hardware detection for benchmarks
-hwinfo = ["dep:sysinfo", "dep:num_cpus"]
 
 [dependencies]
 env_logger = "0.11"
@@ -32,16 +28,8 @@ bytemuck.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-humansize.workspace = true
 
 # Optional deps behind feature flags
 wgpu = { workspace = true, optional = true }
 glyphon = { workspace = true, optional = true }
 naga = { workspace = true, optional = true }
-sysinfo = { workspace = true, optional = true }
-num_cpus = { workspace = true, optional = true }
-
-[[bin]]
-name = "anc-bench"
-path = "src/bin/anc_bench.rs"
-required-features = ["hwinfo"]

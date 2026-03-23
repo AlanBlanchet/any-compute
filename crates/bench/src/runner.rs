@@ -4,16 +4,16 @@
 //! written to JSON.  Runner functions are pure: they return results without
 //! printing anything.
 
-use crate::Lerp;
-use crate::animation::{Easing, Transition};
-use crate::compute::{ComputeBackend, CpuBackend, DeviceProfile, SimulatedBackend};
-use crate::data::{CellValue, ColumnKind, ColumnMeta, DataSource, VecSource};
-use crate::hints::Hints;
-use crate::kernel::{BinaryOp, ReduceOp, UnaryOp, best_kernel};
+use any_compute_core::Lerp;
+use any_compute_core::animation::{Easing, Transition};
+use any_compute_core::compute::{Device, DeviceProfile};
+use any_compute_core::data::{CellValue, ColumnKind, ColumnMeta, DataSource, VecSource};
+use any_compute_core::hints::Hints;
+use any_compute_core::kernel::{BinaryOp, ReduceOp, UnaryOp, best_kernel};
 #[cfg(feature = "hwinfo")]
-use crate::kernel::{CpuSimdKernel, Kernel};
-use crate::layout::{Point, Rect, ScrollState};
-use crate::render::{Border, Color, Primitive, RenderList};
+use any_compute_core::kernel::{CpuSimdKernel, Kernel};
+use any_compute_core::layout::{Point, Rect, ScrollState};
+use any_compute_core::render::{Border, Color, Primitive, RenderList};
 use humansize::{BINARY, SizeFormatter};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -206,25 +206,11 @@ pub fn bench_fn<F: FnMut()>(
     iters: usize,
     mut f: F,
 ) -> BenchResult {
-    for _ in 0..warmup {
-        f();
-    }
-    let start = Instant::now();
-    for _ in 0..iters {
-        f();
-    }
-    let total = start.elapsed();
-    let per_iter = total / iters as u32;
-    let ops_sec = if per_iter.as_secs_f64() > 0.0 {
-        1.0 / per_iter.as_secs_f64()
-    } else {
-        f64::INFINITY
-    };
-
+    let (ops_sec, us_per) = crate::bench_throughput(warmup as u32, iters as u32, &mut f);
     BenchResult {
         name: name.to_string(),
         scale,
-        duration_us: per_iter.as_micros(),
+        duration_us: us_per as u128,
         throughput_ops_sec: ops_sec,
     }
 }
@@ -329,13 +315,14 @@ pub fn detect_simd_features() -> Vec<String> {
 }
 
 pub fn detect_features() -> FeaturesReport {
+    let f = any_compute_core::FEATURES;
     FeaturesReport {
-        cuda: cfg!(feature = "cuda"),
-        rocm: cfg!(feature = "rocm"),
-        mkl: cfg!(feature = "mkl"),
-        metal: cfg!(feature = "metal"),
-        wgpu: cfg!(feature = "wgpu-backend"),
-        shader: cfg!(feature = "shader"),
+        cuda: f.cuda,
+        rocm: f.rocm,
+        mkl: f.mkl,
+        metal: f.metal,
+        wgpu: f.wgpu,
+        shader: f.shader,
         hwinfo: cfg!(feature = "hwinfo"),
     }
 }
@@ -534,6 +521,18 @@ bench_categories! {
         domain: "Graphics / 3D", desc: "sphere mesh vertex transforms + perspective projection",
         runner: run_geometry_3d,
     },
+    /// HTML parse throughput: small doc, website fixture, with/without CSS.
+    DomParse {
+        id: "dom_parse", label: "DOM: HTML/CSS Parse", group: "DOM",
+        domain: "DOM / Layout", desc: "HTML parse throughput: small doc, full website, with/without CSS resolve",
+        runner: run_dom_parse,
+    },
+    /// Full website frame: parse + layout + paint pipeline.
+    DomFullFrame {
+        id: "dom_full_frame", label: "DOM: Full Frame Pipeline", group: "DOM",
+        domain: "DOM / Layout", desc: "full frame pipeline: parse HTML+CSS → layout → paint on website fixture",
+        runner: run_dom_full_frame,
+    },
 }
 
 impl BenchCategory {
@@ -546,6 +545,7 @@ impl BenchCategory {
             "Animation / Dynamics",
             "Rendering / Data",
             "Events / Interaction",
+            "DOM / Layout",
         ]
     }
 
@@ -708,26 +708,26 @@ fn run_kernel_sort() -> ScenarioReport {
 // ── Compute runners ───────────────────────────────────────────────────────
 
 fn run_compute_parallel() -> ScenarioReport {
-    let backend = CpuBackend::default();
+    let device = Device::cpu();
     let mut results = Vec::new();
     for &n in COMPUTE_SIZES {
         let data = make_f64_data(n);
-        results.push(bench_fn(&format!("map_f64 n={n}"), n, 3, 50, || {
-            std::hint::black_box(backend.map_f64(&data, |v| v * 2.0 + 1.0));
+        results.push(bench_fn(&format!("map n={n}"), n, 3, 50, || {
+            std::hint::black_box(device.map(&data, |v| v * 2.0 + 1.0));
         }));
-        results.push(bench_fn(&format!("filter_indices n={n}"), n, 3, 50, || {
-            std::hint::black_box(backend.filter_indices(&data, |v| v > 500.0));
+        results.push(bench_fn(&format!("filter n={n}"), n, 3, 50, || {
+            std::hint::black_box(device.filter(&data, |v| v > 500.0));
         }));
-        results.push(bench_fn(&format!("sum_f64 n={n}"), n, 3, 50, || {
-            std::hint::black_box(backend.sum_f64(&data));
+        results.push(bench_fn(&format!("sum n={n}"), n, 3, 50, || {
+            std::hint::black_box(device.sum(&data));
         }));
         results.push(bench_fn(&format!("prefix_sum n={n}"), n, 3, 30, || {
-            std::hint::black_box(backend.prefix_sum_f64(&data));
+            std::hint::black_box(device.prefix_sum(&data));
         }));
         let mut sort_data = data.clone();
-        results.push(bench_fn(&format!("sort_f64 n={n}"), n, 3, 20, || {
+        results.push(bench_fn(&format!("sort n={n}"), n, 3, 20, || {
             sort_data.copy_from_slice(&data);
-            backend.sort_f64(&mut sort_data);
+            device.sort(&mut sort_data);
             std::hint::black_box(&sort_data);
         }));
     }
@@ -738,7 +738,7 @@ fn run_compute_parallel() -> ScenarioReport {
 }
 
 fn run_hints_optimization() -> ScenarioReport {
-    let backend = CpuBackend::default();
+    let device = Device::cpu();
     let mut results = Vec::new();
     let profiles: &[(&str, Hints)] = &[
         ("default", Hints::default()),
@@ -750,7 +750,7 @@ fn run_hints_optimization() -> ScenarioReport {
     for &n in HINTS_SIZES {
         let data = make_f64_data(n);
         results.push(bench_fn(&format!("map_raw n={n}"), n, 3, 50, || {
-            std::hint::black_box(backend.map_f64(&data, |v| v * 2.0 + 1.0));
+            std::hint::black_box(device.map(&data, |v| v * 2.0 + 1.0));
         }));
         for &(hint_name, ref hints) in profiles {
             results.push(bench_fn(
@@ -759,7 +759,7 @@ fn run_hints_optimization() -> ScenarioReport {
                 3,
                 50,
                 || {
-                    std::hint::black_box(backend.map_f64_hinted(&data, |v| v * 2.0 + 1.0, hints));
+                    std::hint::black_box(device.map_hinted(&data, |v| v * 2.0 + 1.0, hints));
                 },
             ));
         }
@@ -1021,8 +1021,10 @@ fn run_lerp_throughput() -> ScenarioReport {
 }
 
 pub fn run_event_handling() -> ScenarioReport {
-    use crate::interaction::{Button, EventContext, EventResponse, InputEvent, Interactive, Phase};
-    use crate::layout::{Point, Rect};
+    use any_compute_core::interaction::{
+        Button, EventContext, EventResponse, InputEvent, Interactive, Phase,
+    };
+    use any_compute_core::layout::{Point, Rect};
 
     /// Minimal interactive node used only in this benchmark.
     struct Node {
@@ -1327,6 +1329,134 @@ fn run_geometry_3d() -> ScenarioReport {
     }
     ScenarioReport {
         category: BenchCategory::Geometry3D.id().into(),
+        results,
+    }
+}
+
+// ── DOM runners ──────────────────────────────────────────────────────────
+
+fn run_dom_parse() -> ScenarioReport {
+    use any_compute_dom::css::StyleSheet;
+    use any_compute_dom::parse;
+
+    let small_html = r##"<div w="1400" h="900" direction="row"><div w="220" pad="12" gap="8"><span font="16">Sidebar</span></div><div grow="1" pad="24" gap="16"><span font="22">Main</span><progress value="0.6" color="#a6e3a1" h="8" /></div></div>"##;
+    let website_html = crate::WEBSITE_HTML;
+    let website_css = crate::WEBSITE_CSS;
+    let sheet = StyleSheet::parse(website_css);
+
+    let mut results = Vec::new();
+
+    results.push(bench_fn("html_parse small (6 nodes)", 6, 3, 500, || {
+        std::hint::black_box(parse::parse(small_html));
+    }));
+
+    let tree = parse::parse(website_html);
+    let n = tree.arena.len();
+
+    results.push(bench_fn(
+        &format!("html_parse website ({n} nodes)"),
+        n,
+        3,
+        500,
+        || {
+            std::hint::black_box(parse::parse(website_html));
+        },
+    ));
+
+    results.push(bench_fn("css_parse website.css", 0, 3, 500, || {
+        std::hint::black_box(StyleSheet::parse(website_css));
+    }));
+
+    results.push(bench_fn(
+        &format!("html+css parse website ({n} nodes)"),
+        n,
+        3,
+        500,
+        || {
+            std::hint::black_box(parse::parse_with_css(website_html, &sheet));
+        },
+    ));
+
+    ScenarioReport {
+        category: BenchCategory::DomParse.id().into(),
+        results,
+    }
+}
+
+fn run_dom_full_frame() -> ScenarioReport {
+    use any_compute_core::render::RenderList;
+    use any_compute_dom::css::StyleSheet;
+    use any_compute_dom::parse;
+
+    let website_html = crate::WEBSITE_HTML;
+    let website_css = crate::WEBSITE_CSS;
+    let sheet = StyleSheet::parse(website_css);
+    let viewport = crate::VIEWPORT;
+
+    let tree = parse::parse_with_css(website_html, &sheet);
+    let n = tree.arena.len();
+
+    let mut results = Vec::new();
+
+    // Parse + layout (no paint)
+    results.push(bench_fn(
+        &format!("parse+layout website ({n} nodes)"),
+        n,
+        3,
+        200,
+        || {
+            let mut t = parse::parse_with_css(website_html, &sheet);
+            t.layout(viewport);
+            std::hint::black_box(&t);
+        },
+    ));
+
+    // Full frame: parse + layout + paint
+    results.push(bench_fn(
+        &format!("full_frame website ({n} nodes)"),
+        n,
+        3,
+        200,
+        || {
+            let mut t = parse::parse_with_css(website_html, &sheet);
+            t.layout(viewport);
+            let mut list = RenderList::default();
+            t.paint(&mut list);
+            std::hint::black_box(&list);
+        },
+    ));
+
+    // Layout-only (re-parse + layout, no paint)
+    results.push(bench_fn(
+        &format!("layout_only website ({n} nodes)"),
+        n,
+        3,
+        500,
+        || {
+            let mut t = parse::parse_with_css(website_html, &sheet);
+            t.layout(viewport);
+            std::hint::black_box(&t);
+        },
+    ));
+
+    // Paint-only (build + layout, then just paint)
+    results.push(bench_fn(
+        &format!("paint_only website ({n} nodes)"),
+        n,
+        3,
+        500,
+        || {
+            let mut t = parse::parse_with_css(website_html, &sheet);
+            t.layout(viewport);
+            let mut list = RenderList::default();
+            t.paint(&mut list);
+            // Only the paint part matters; parse+layout is amortized baseline
+            std::hint::black_box(&list);
+        },
+    ));
+
+    ScenarioReport {
+        category: BenchCategory::DomFullFrame.id().into(),
         results,
     }
 }
@@ -1698,7 +1828,7 @@ pub fn build_comparison_tables(
     // ── Event dispatch ───────────────────────────────────────────────
     // Measure direct single-phase dispatch vs our 3-phase EventContext.
     {
-        use crate::interaction::{EventContext, EventResponse, Interactive};
+        use any_compute_core::interaction::{EventContext, EventResponse, Interactive};
 
         struct DummyNode {
             bounds: Rect,
@@ -1776,18 +1906,18 @@ pub fn all_profiles() -> Vec<(&'static str, DeviceProfile)> {
 }
 
 pub fn run_simulated(profile: &DeviceProfile) -> Vec<ScenarioReport> {
-    let sim_backend = SimulatedBackend::new(profile.clone());
+    let sim_device = Device::simulated(profile.clone());
     let mut results = Vec::new();
 
     // Compute parallel on simulated
     let mut compute_results = Vec::new();
     for &n in SIMULATED_SIZES {
         let data = make_f64_data(n);
-        compute_results.push(bench_fn(&format!("map_f64 n={n}"), n, 3, 50, || {
-            std::hint::black_box(sim_backend.map_f64(&data, |v| v * 2.0 + 1.0));
+        compute_results.push(bench_fn(&format!("map n={n}"), n, 3, 50, || {
+            std::hint::black_box(sim_device.map(&data, |v| v * 2.0 + 1.0));
         }));
-        compute_results.push(bench_fn(&format!("sum_f64 n={n}"), n, 3, 50, || {
-            std::hint::black_box(sim_backend.sum_f64(&data));
+        compute_results.push(bench_fn(&format!("sum n={n}"), n, 3, 50, || {
+            std::hint::black_box(sim_device.sum(&data));
         }));
     }
     results.push(ScenarioReport {
@@ -1901,11 +2031,11 @@ impl MetricsMonitor {
         self.sys.refresh_memory();
 
         // Quick compute throughput measurement
-        let backend = CpuBackend::default();
+        let device = Device::cpu();
         let data: Vec<f64> = (0..METRICS_SAMPLE_SIZE).map(|i| i as f64).collect();
         let start = Instant::now();
         for _ in 0..METRICS_SAMPLE_ITERS {
-            std::hint::black_box(backend.map_f64(&data, |v| v * 2.0 + 1.0));
+            std::hint::black_box(device.map(&data, |v| v * 2.0 + 1.0));
         }
         let elapsed = start.elapsed().as_secs_f64();
         let ops = METRICS_SAMPLE_ITERS as f64 / elapsed;
@@ -1937,7 +2067,7 @@ pub struct ReferenceComparison {
     pub notes: String,
 }
 
-// Reference data lives in bench_references.rs to keep this file focused on logic.
-#[path = "bench_references.rs"]
-mod bench_references;
-pub use bench_references::reference_comparisons;
+// Reference data lives in runner_references.rs to keep this file focused on logic.
+#[path = "runner_references.rs"]
+mod runner_references;
+pub use runner_references::reference_comparisons;

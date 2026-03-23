@@ -1,0 +1,13 @@
+<!-- Conformance HTML — used by conform_pixel_dashboard test.
+     Pairs with conformance.css + palette.css for pixel-level assertions.
+     Uses direct attributes (w/h/bg/direction/etc), NOT CSS style="...". -->
+<div direction="row" w="800" h="600">
+  <div w="220" min-w="220" h="600" bg="#181825">
+    <div class="dash-nav-item" h="40">Overview</div>
+    <div class="dash-nav-item dash-nav-active" h="40">Benchmarks</div>
+  </div>
+  <div direction="column" grow="1" h="600">
+    <div h="56" bg="#313244" w="580">Dashboard</div>
+    <div grow="1"></div>
+  </div>
+</div>

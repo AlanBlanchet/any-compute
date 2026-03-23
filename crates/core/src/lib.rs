@@ -27,14 +27,36 @@
 //! override them for fine-grained control.
 
 pub mod animation;
-pub mod bench;
+pub mod buffer;
 pub mod compute;
 pub mod data;
 pub mod hints;
 pub mod interaction;
+
+pub use compute::Device;
+
+// ── display_enum! ─────────────────────────────────────────────────────────
+//
+// Generates a `Display` impl for enums that map variants to string literals.
+// Avoids hand-writing repetitive `match self { Variant => write!(f, "...") }`.
+//
+// Usage:
+//   display_enum!(MyEnum { Foo => "foo label", Bar => "bar label" });
+
+macro_rules! display_enum {
+    ($name:ty { $( $variant:ident => $lit:literal ),* $(,)? }) => {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                f.write_str(match self { $( Self::$variant => $lit, )* })
+            }
+        }
+    }
+}
+
 pub mod kernel;
 pub mod layout;
 pub mod render;
+pub mod scene;
 pub mod shader;
 
 mod error;
@@ -42,6 +64,27 @@ pub use error::Error;
 
 /// Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Compile-time feature flag report — lets downstream crates query which
+/// core features were enabled without duplicating `cfg!` checks.
+pub const FEATURES: CoreFeatures = CoreFeatures {
+    cuda: cfg!(feature = "cuda"),
+    rocm: cfg!(feature = "rocm"),
+    mkl: cfg!(feature = "mkl"),
+    metal: cfg!(feature = "metal"),
+    wgpu: cfg!(feature = "wgpu-backend"),
+    shader: cfg!(feature = "shader"),
+};
+
+/// Which optional core features are compiled in.
+pub struct CoreFeatures {
+    pub cuda: bool,
+    pub rocm: bool,
+    pub mkl: bool,
+    pub metal: bool,
+    pub wgpu: bool,
+    pub shader: bool,
+}
 
 /// Trait for types that can be linearly interpolated.
 ///

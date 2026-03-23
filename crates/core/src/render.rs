@@ -44,6 +44,68 @@ impl Lerp for Color {
     }
 }
 
+impl From<(u8, u8, u8)> for Color {
+    fn from((r, g, b): (u8, u8, u8)) -> Self {
+        Self::rgb(r, g, b)
+    }
+}
+
+impl From<(u8, u8, u8, u8)> for Color {
+    fn from((r, g, b, a): (u8, u8, u8, u8)) -> Self {
+        Self::rgba(r, g, b, a)
+    }
+}
+
+impl From<[u8; 3]> for Color {
+    fn from([r, g, b]: [u8; 3]) -> Self {
+        Self::rgb(r, g, b)
+    }
+}
+
+impl From<[u8; 4]> for Color {
+    fn from([r, g, b, a]: [u8; 4]) -> Self {
+        Self::rgba(r, g, b, a)
+    }
+}
+
+impl From<u32> for Color {
+    /// From 0xRRGGBB or 0xRRGGBBAA (alpha defaults to 255 if only 3 bytes used).
+    fn from(hex: u32) -> Self {
+        if hex > 0xFFFFFF {
+            Self::rgba(
+                ((hex >> 24) & 0xFF) as u8,
+                ((hex >> 16) & 0xFF) as u8,
+                ((hex >> 8) & 0xFF) as u8,
+                (hex & 0xFF) as u8,
+            )
+        } else {
+            Self::rgb(
+                ((hex >> 16) & 0xFF) as u8,
+                ((hex >> 8) & 0xFF) as u8,
+                (hex & 0xFF) as u8,
+            )
+        }
+    }
+}
+
+impl From<Color> for [u8; 4] {
+    fn from(c: Color) -> Self {
+        [c.r, c.g, c.b, c.a]
+    }
+}
+
+impl From<Color> for (u8, u8, u8, u8) {
+    fn from(c: Color) -> Self {
+        (c.r, c.g, c.b, c.a)
+    }
+}
+
+impl From<Color> for u32 {
+    fn from(c: Color) -> Self {
+        (c.r as u32) << 24 | (c.g as u32) << 16 | (c.b as u32) << 8 | c.a as u32
+    }
+}
+
 /// A single draw command — references layout types for all spatial data.
 #[derive(Debug, Clone)]
 pub enum Primitive {
@@ -103,17 +165,6 @@ impl RenderList {
     pub fn is_empty(&self) -> bool {
         self.primitives.is_empty()
     }
-}
-
-/// Trait for render backends (GPU, canvas, terminal, etc.).
-///
-/// Each backend implements this once. Core produces `RenderList`, backend paints it.
-pub trait RenderBackend: Send + Sync {
-    /// Paint the entire render list to the target surface.
-    fn paint(&mut self, list: &RenderList);
-
-    /// Hint to the backend about viewport size (for buffer allocation, etc.).
-    fn resize(&mut self, width: u32, height: u32);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -183,20 +234,25 @@ impl PixelBuffer {
                 } => {
                     self.rasterize_rect(*bounds, *fill, *border, *corner_radius);
                 }
-                // Text, Line, Clip — not rasterized by software backend (test rects only).
                 _ => {}
             }
         }
     }
 
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        self.pixels.resize((width * height) as usize, self.clear);
+    }
+
     fn rasterize_rect(&mut self, bounds: Rect, fill: Color, border: Option<Border>, radius: f64) {
         let x0 = (bounds.origin.x.floor() as i32).max(0) as u32;
         let y0 = (bounds.origin.y.floor() as i32).max(0) as u32;
-        let x1 = ((bounds.origin.x + bounds.size.w).ceil() as u32).min(self.width);
-        let y1 = ((bounds.origin.y + bounds.size.h).ceil() as u32).min(self.height);
+        let x1 = ((bounds.origin.x + bounds.size.w()).ceil() as u32).min(self.width);
+        let y1 = ((bounds.origin.y + bounds.size.h()).ceil() as u32).min(self.height);
 
-        let hw = bounds.size.w * 0.5;
-        let hh = bounds.size.h * 0.5;
+        let hw = bounds.size.w() * 0.5;
+        let hh = bounds.size.h() * 0.5;
         let cx = bounds.origin.x + hw;
         let cy = bounds.origin.y + hh;
         let r = radius.min(hw).min(hh);
@@ -266,18 +322,6 @@ impl PixelBuffer {
             return 0.0;
         }
         self.diff(other, tolerance) as f64 / total
-    }
-}
-
-impl RenderBackend for PixelBuffer {
-    fn paint(&mut self, list: &RenderList) {
-        PixelBuffer::paint(self, list);
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
-        self.pixels.resize((width * height) as usize, self.clear);
     }
 }
 
@@ -524,5 +568,45 @@ mod tests {
         assert_eq!(tl, buf.pixel(77, 2));
         assert_eq!(tl, buf.pixel(2, 77));
         assert_eq!(tl, buf.pixel(77, 77));
+    }
+
+    // ── From trait conversions ──────────────────────────────────────────
+
+    #[test]
+    fn color_from_tuple() {
+        assert_eq!(Color::from((255u8, 0u8, 0u8)), Color::rgb(255, 0, 0));
+        assert_eq!(
+            Color::from((0u8, 255u8, 0u8, 128u8)),
+            Color::rgba(0, 255, 0, 128)
+        );
+    }
+
+    #[test]
+    fn color_from_array() {
+        assert_eq!(Color::from([255, 0, 0]), Color::rgb(255, 0, 0));
+        assert_eq!(Color::from([0, 255, 0, 128]), Color::rgba(0, 255, 0, 128));
+    }
+
+    #[test]
+    fn color_from_u32_hex() {
+        assert_eq!(Color::from(0xFF0000u32), Color::rgb(255, 0, 0));
+        assert_eq!(Color::from(0x89B4FA80u32), Color::rgba(137, 180, 250, 128));
+    }
+
+    #[test]
+    fn color_roundtrip_u32() {
+        let c = Color::rgba(137, 180, 250, 255);
+        let hex: u32 = c.into();
+        let back: Color = hex.into();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn color_roundtrip_array() {
+        let c = Color::rgba(10, 20, 30, 40);
+        let arr: [u8; 4] = c.into();
+        assert_eq!(arr, [10, 20, 30, 40]);
+        let back: Color = arr.into();
+        assert_eq!(back, c);
     }
 }

@@ -13,10 +13,10 @@
 use any_compute_core::interaction::{Button, InputEvent};
 use any_compute_core::layout::{Point, Size};
 use any_compute_core::render::{Color, RenderList};
-use any_compute_dom::css::StyleSheet;
-use any_compute_dom::parse::parse_with_css;
-use any_compute_dom::style::Style;
-use any_compute_dom::tree::Tree;
+use crate::css::StyleSheet;
+use crate::parse::parse_with_css;
+use crate::style::Style;
+use crate::tree::Tree;
 
 use crate::PALETTE_CSS;
 use crate::scenario::{Scenario, StepResult, replay};
@@ -210,9 +210,10 @@ impl TestHarness {
     // ── Capture ─────────────────────────────────────────────────────────
 
     /// Paint the current tree to the render list.
-    pub fn render_list(&self) -> RenderList {
+    pub fn render_list(&mut self) -> RenderList {
         let mut list = RenderList::default();
         self.tree.paint(&mut list);
+        self.tree.post_paint();
         list
     }
 
@@ -221,6 +222,7 @@ impl TestHarness {
     pub fn capture(&mut self) -> Capture {
         let mut list = RenderList::default();
         self.tree.paint(&mut list);
+        self.tree.post_paint();
         let (w, h, rgba) = self.gpu.capture(&list);
         Capture {
             width: w,
@@ -234,6 +236,7 @@ impl TestHarness {
     pub fn capture_png(&mut self, path: &std::path::Path) {
         let mut list = RenderList::default();
         self.tree.paint(&mut list);
+        self.tree.post_paint();
         self.gpu.capture_png(&list, path);
     }
 

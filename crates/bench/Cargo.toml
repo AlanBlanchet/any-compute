@@ -1,17 +1,19 @@
 [package]
 name = "any-compute-bench"
-description = "Benchmark dashboard & performance comparison suite for any-compute DOM."
+description = "Benchmark dashboard & performance comparison suite for any-compute."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [features]
 default = ["window"]
-# Enables the GPU dashboard binary (rendering via any-compute-canvas)
+# Hardware detection for benchmark runner & live metrics
+hwinfo = ["dep:sysinfo", "dep:num_cpus"]
+# Enables the GPU dashboard binary (rendering via dom's gpu feature)
 window = [
+    "hwinfo",
     "any-compute-core/wgpu-backend",
-    "any-compute-core/hwinfo",
-    "any-compute-canvas/gpu",
+    "any-compute-dom/gpu",
     "dep:rayon",
     "dep:env_logger",
 ]
@@ -19,15 +21,27 @@ window = [
 [dependencies]
 any-compute-core = { workspace = true }
 any-compute-dom = { workspace = true }
-any-compute-canvas = { workspace = true, default-features = false }
+
+# Runner deps (bench.rs types are Clone + Serialize)
+serde.workspace = true
+serde_json.workspace = true
+humansize.workspace = true
+
+# Optional deps behind feature flags
+sysinfo = { workspace = true, optional = true }
+num_cpus = { workspace = true, optional = true }
 
 # Background threads for benchmark dashboard
 rayon = { workspace = true, optional = true }
 env_logger = { version = "0.11", optional = true }
 
 [dev-dependencies]
-any-compute-core = { workspace = true, features = ["hwinfo"] }
 any-compute-dom = { workspace = true }
+
+[[bin]]
+name = "anc-bench"
+path = "src/bin/anc_bench.rs"
+required-features = ["hwinfo"]
 
 [[bin]]
 name = "anv-bench-window"

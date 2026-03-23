@@ -1,0 +1,273 @@
+<div class="page">
+  <div class="top-bar">
+    <div class="logo-row">
+      <div class="logo-icon"></div>
+      <span class="logo-text">AnyCompute</span>
+    </div>
+    <div class="nav-row">
+      <span class="nav-link nav-active">Home</span>
+      <span class="nav-link">Docs</span>
+      <span class="nav-link">API</span>
+      <span class="nav-link">Blog</span>
+      <span class="nav-link">Pricing</span>
+    </div>
+    <div class="top-actions">
+      <div class="search-box">
+        <span class="search-icon">⌘K</span>
+      </div>
+      <div class="btn-sm btn-outline">Sign In</div>
+      <div class="btn-sm btn-primary">Get Started</div>
+    </div>
+  </div>
+
+  <div class="hero">
+    <span class="hero-badge">New: GPU backend now in beta</span>
+    <span class="hero-title">One API. Every device. Every platform.</span>
+    <span class="hero-sub"
+      >High-performance compute and visualization — Rust core, zero-copy FFI to
+      Python, JS, Java, and every major framework.</span
+    >
+    <div class="hero-btns">
+      <div class="btn btn-primary">Get Started</div>
+      <div class="btn btn-outline">View on GitHub</div>
+    </div>
+    <div class="hero-stats">
+      <div class="stat-card">
+        <span class="stat-value">4.2x</span>
+        <span class="stat-label">faster than NumPy</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">12</span>
+        <span class="stat-label">platform targets</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">0</span>
+        <span class="stat-label">GC pauses</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">6</span>
+        <span class="stat-label">framework bindings</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section features">
+    <span class="section-title">Why any-compute?</span>
+    <span class="section-sub"
+      >Built from scratch for maximum hardware utilisation across every
+      target.</span
+    >
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon icon-compute"></div>
+        <span class="feature-title">Hardware-Agnostic Compute</span>
+        <span class="feature-desc"
+          >One trait dispatches to CPU SIMD, CUDA, ROCm, Metal, or WebGPU — the
+          best path is chosen automatically based on runtime detection.</span
+        >
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon icon-dom"></div>
+        <span class="feature-title">Arena DOM Engine</span>
+        <span class="feature-desc"
+          >Cache-friendly arena allocation, flexbox layout, CSS parsing, and
+          hit-testing — 15x faster than heap-per-node browser DOMs.</span
+        >
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon icon-gpu"></div>
+        <span class="feature-title">Native GPU Rendering</span>
+        <span class="feature-desc"
+          >Instanced wgpu draw calls with glyphon text shaping. 60+ FPS at
+          50,000 primitives on integrated graphics.</span
+        >
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon icon-ffi"></div>
+        <span class="feature-title">Universal Bindings</span>
+        <span class="feature-desc"
+          >Auto-generated React, Vue, Svelte, Angular, Python, Node, Java, and
+          WASM bindings from a single Rust source of truth.</span
+        >
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon icon-anim"></div>
+        <span class="feature-title">Animation Engine</span>
+        <span class="feature-desc"
+          >Transition system with 7 easing curves, spring physics, and keyframe
+          animations — all running at kernel throughput speeds.</span
+        >
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon icon-data"></div>
+        <span class="feature-title">Data Virtualisation</span>
+        <span class="feature-desc"
+          >Scroll through 100M rows at 60 FPS with virtual windowing. Only
+          visible rows are laid out, styled, and rendered.</span
+        >
+      </div>
+    </div>
+  </div>
+
+  <div class="section benchmarks">
+    <span class="section-title">Benchmarks</span>
+    <span class="section-sub"
+      >Measured on AMD Ryzen 9 7950X, 64GB DDR5, AVX-512.</span
+    >
+    <div class="bench-table">
+      <div class="bench-header">
+        <span class="bench-col-op">Operation</span>
+        <span class="bench-col-lib">Library</span>
+        <span class="bench-col-ops">ops/s</span>
+        <span class="bench-col-speedup">vs any-compute</span>
+      </div>
+      <div class="bench-row">
+        <span class="bench-col-op">Parallel Map 10M f64</span>
+        <span class="bench-col-lib">any-compute</span>
+        <span class="bench-col-ops">842M</span>
+        <span class="bench-col-speedup">—</span>
+      </div>
+      <div class="bench-row bench-alt">
+        <span class="bench-col-op">Parallel Map 10M f64</span>
+        <span class="bench-col-lib">NumPy</span>
+        <span class="bench-col-ops">505M</span>
+        <span class="bench-col-speedup">0.6x</span>
+      </div>
+      <div class="bench-row">
+        <span class="bench-col-op">GEMM 512×512</span>
+        <span class="bench-col-lib">any-compute</span>
+        <span class="bench-col-ops">4.2G</span>
+        <span class="bench-col-speedup">—</span>
+      </div>
+      <div class="bench-row bench-alt">
+        <span class="bench-col-op">GEMM 512×512</span>
+        <span class="bench-col-lib">OpenBLAS</span>
+        <span class="bench-col-ops">63G</span>
+        <span class="bench-col-speedup">15x</span>
+      </div>
+      <div class="bench-row">
+        <span class="bench-col-op">DOM create 1K nodes</span>
+        <span class="bench-col-lib">any-compute arena</span>
+        <span class="bench-col-ops">125K</span>
+        <span class="bench-col-speedup">—</span>
+      </div>
+      <div class="bench-row bench-alt">
+        <span class="bench-col-op">DOM create 1K nodes</span>
+        <span class="bench-col-lib">Browser heap DOM</span>
+        <span class="bench-col-ops">8.2K</span>
+        <span class="bench-col-speedup">0.07x</span>
+      </div>
+      <div class="bench-row">
+        <span class="bench-col-op">CSS resolve 1K classes</span>
+        <span class="bench-col-lib">any-compute</span>
+        <span class="bench-col-ops">2.1M</span>
+        <span class="bench-col-speedup">—</span>
+      </div>
+      <div class="bench-row bench-alt">
+        <span class="bench-col-op">Animation tick 50K</span>
+        <span class="bench-col-lib">any-compute</span>
+        <span class="bench-col-ops">18M</span>
+        <span class="bench-col-speedup">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section code-example">
+    <span class="section-title">Get started in 3 lines</span>
+    <div class="code-block">
+      <div class="code-line">
+        <span class="kw">use</span>
+        <span class="ident"> any_compute_core</span>
+        <span class="punct">::</span>
+        <span class="ident">compute</span>
+        <span class="punct">::</span>
+        <span class="ident">CpuBackend</span>
+        <span class="punct">;</span>
+      </div>
+      <div class="code-line">
+        <span class="kw">let</span>
+        <span class="ident"> backend </span>
+        <span class="punct">= </span>
+        <span class="ident">CpuBackend</span>
+        <span class="punct">::</span>
+        <span class="fn-call">default</span>
+        <span class="punct">();</span>
+      </div>
+      <div class="code-line">
+        <span class="kw">let</span>
+        <span class="ident"> result </span>
+        <span class="punct">= </span>
+        <span class="ident">backend</span>
+        <span class="punct">.</span>
+        <span class="fn-call">map_f64</span>
+        <span class="punct">(</span>
+        <span class="punct">&amp;</span>
+        <span class="ident">data</span>
+        <span class="punct">, |</span>
+        <span class="ident">v</span>
+        <span class="punct">| </span>
+        <span class="ident">v </span>
+        <span class="punct">* </span>
+        <span class="num">2.0</span>
+        <span class="punct">);</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section platforms">
+    <span class="section-title">Runs everywhere</span>
+    <div class="platform-grid">
+      <div class="platform-card">
+        <span class="platform-name">Linux</span>
+        <span class="platform-arch">x64, ARM64</span>
+      </div>
+      <div class="platform-card">
+        <span class="platform-name">macOS</span>
+        <span class="platform-arch">x64, Apple Silicon</span>
+      </div>
+      <div class="platform-card">
+        <span class="platform-name">Windows</span>
+        <span class="platform-arch">x64, ARM64</span>
+      </div>
+      <div class="platform-card">
+        <span class="platform-name">Web</span>
+        <span class="platform-arch">WASM + WebGPU</span>
+      </div>
+      <div class="platform-card">
+        <span class="platform-name">Android</span>
+        <span class="platform-arch">NDK / Vulkan</span>
+      </div>
+      <div class="platform-card">
+        <span class="platform-name">iOS</span>
+        <span class="platform-arch">Metal / Swift</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="footer-col">
+      <span class="footer-heading">Product</span>
+      <span class="footer-link">Documentation</span>
+      <span class="footer-link">API Reference</span>
+      <span class="footer-link">Changelog</span>
+      <span class="footer-link">Roadmap</span>
+    </div>
+    <div class="footer-col">
+      <span class="footer-heading">Community</span>
+      <span class="footer-link">GitHub</span>
+      <span class="footer-link">Discord</span>
+      <span class="footer-link">Twitter</span>
+      <span class="footer-link">Blog</span>
+    </div>
+    <div class="footer-col">
+      <span class="footer-heading">Company</span>
+      <span class="footer-link">About</span>
+      <span class="footer-link">Careers</span>
+      <span class="footer-link">Contact</span>
+      <span class="footer-link">Legal</span>
+    </div>
+    <div class="footer-bottom">
+      <span class="footer-copy">© 2026 AnyCompute. MIT / Apache 2.0</span>
+    </div>
+  </div>
+</div>

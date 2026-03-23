@@ -7,8 +7,8 @@
 //!
 //! ```text
 //! ┌────────────────┐     ┌──────────────────────────────────────────┐
-//! │  ComputeBackend│────▶│  Kernel<T>  (trait)                      │
-//! │  (high-level)  │     │  ├─ CpuSimdKernel   (always available)  │
+//! │  Device         │────▶│  Kernel  (trait)                         │
+//! │  (unified)      │     │  ├─ CpuSimdKernel   (always available)  │
 //! └────────────────┘     │  ├─ CudaKernel      (feature = "cuda")  │
 //!                        │  ├─ RocmKernel      (feature = "rocm")  │
 //!                        │  ├─ MklKernel       (feature = "mkl")   │
@@ -159,7 +159,7 @@ pub struct KernelStats {
 /// Hardware-agnostic kernel interface.
 ///
 /// Implementations live behind feature flags — the user's code only uses this trait.
-/// The [`crate::compute::ComputeBackend`] calls `Kernel` methods internally.
+/// The [`crate::compute::Device`] delegates to `Kernel` methods internally.
 pub trait Kernel: Send + Sync + fmt::Debug {
     /// Human-readable name (e.g. "CpuSimd/AVX2", "CUDA/cuBLAS").
     fn name(&self) -> &str;
@@ -218,16 +218,25 @@ pub enum KernelBackend {
     Wgpu,
 }
 
-impl fmt::Display for KernelBackend {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CpuScalar => write!(f, "CPU/Scalar"),
-            Self::CpuSimd => write!(f, "CPU/SIMD"),
-            Self::Cuda => write!(f, "NVIDIA/CUDA"),
-            Self::Rocm => write!(f, "AMD/ROCm"),
-            Self::Mkl => write!(f, "Intel/MKL"),
-            Self::Metal => write!(f, "Apple/Metal"),
-            Self::Wgpu => write!(f, "wgpu"),
+display_enum!(KernelBackend {
+    CpuScalar => "CPU/Scalar",
+    CpuSimd   => "CPU/SIMD",
+    Cuda      => "NVIDIA/CUDA",
+    Rocm      => "AMD/ROCm",
+    Mkl       => "Intel/MKL",
+    Metal     => "Apple/Metal",
+    Wgpu      => "wgpu",
+});
+
+/// Maps a fine-grained [`KernelBackend`] to the coarser [`BackendKind`]
+/// used by the compute dispatch layer.
+impl From<KernelBackend> for crate::compute::BackendKind {
+    fn from(kb: KernelBackend) -> Self {
+        match kb {
+            KernelBackend::CpuScalar | KernelBackend::CpuSimd | KernelBackend::Mkl => Self::Cpu,
+            KernelBackend::Cuda => Self::Cuda,
+            KernelBackend::Rocm => Self::Rocm,
+            KernelBackend::Metal | KernelBackend::Wgpu => Self::Wgpu,
         }
     }
 }
@@ -274,14 +283,20 @@ fn detect_simd() -> (String, usize) {
     {
         return ("CpuSimd/SIMD128".into(), 2);
     }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "wasm32"
+    )))]
     {
         return ("CpuSimd/Scalar".into(), 1);
     }
 }
 
 impl CpuSimdKernel {
-    /// Apply a unary op scalar-style. SIMD intrinsics would replace the inner loop.
+    /// Apply a unary op scalar-style. Transcendental ops (exp, sin, …)
+    /// are inherently scalar — LLVM auto-vectorises the simple algebraic
+    /// ones (neg, abs, relu, scale, offset) when looping.
     fn apply_unary(v: f64, op: UnaryOp) -> f64 {
         match op {
             UnaryOp::Neg => -v,
@@ -333,6 +348,109 @@ impl CpuSimdKernel {
     }
 }
 
+// ── x86_64 AVX2 SIMD implementations ─────────────────────────────────────
+//
+// These process 4× f64 per instruction (256-bit lanes).
+// Activated at runtime via `is_x86_feature_detected!`.
+// Rayon splits work across cores; each core's chunk runs the SIMD inner loop.
+
+#[cfg(target_arch = "x86_64")]
+mod simd_avx2 {
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    use super::{BinaryOp, ReduceOp};
+
+    /// 4-wide f64 binary op — caller must ensure AVX2 is available.
+    ///
+    /// # Safety
+    /// Requires AVX2 (checked by caller via `is_x86_feature_detected!`).
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn binary_f64_avx2(a: &[f64], b: &[f64], op: BinaryOp) -> Vec<f64> {
+        unsafe {
+            debug_assert_eq!(a.len(), b.len());
+            let n = a.len();
+            let mut out = vec![0.0f64; n];
+            let chunks = n / 4;
+            let ap = a.as_ptr();
+            let bp = b.as_ptr();
+            let op_ = out.as_mut_ptr();
+            for i in 0..chunks {
+                let off = i * 4;
+                let va = _mm256_loadu_pd(ap.add(off));
+                let vb = _mm256_loadu_pd(bp.add(off));
+                let vr = match op {
+                    BinaryOp::Add => _mm256_add_pd(va, vb),
+                    BinaryOp::Sub => _mm256_sub_pd(va, vb),
+                    BinaryOp::Mul => _mm256_mul_pd(va, vb),
+                    BinaryOp::Div => _mm256_div_pd(va, vb),
+                    BinaryOp::Min => _mm256_min_pd(va, vb),
+                    BinaryOp::Max => _mm256_max_pd(va, vb),
+                    BinaryOp::Pow => {
+                        let mut tmp = [0.0f64; 4];
+                        _mm256_storeu_pd(tmp.as_mut_ptr(), va);
+                        let mut tb = [0.0f64; 4];
+                        _mm256_storeu_pd(tb.as_mut_ptr(), vb);
+                        for j in 0..4 {
+                            tmp[j] = tmp[j].powf(tb[j]);
+                        }
+                        _mm256_loadu_pd(tmp.as_ptr())
+                    }
+                };
+                _mm256_storeu_pd(op_.add(off), vr);
+            }
+            // Scalar tail for remaining elements
+            for i in (chunks * 4)..n {
+                out[i] = super::CpuSimdKernel::apply_binary(a[i], b[i], op);
+            }
+            out
+        }
+    }
+
+    /// 4-wide f64 horizontal reduction — processes data in 256-bit chunks.
+    ///
+    /// # Safety
+    /// Requires AVX2 (checked by caller).
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn reduce_f64_avx2(data: &[f64], op: ReduceOp) -> f64 {
+        unsafe {
+            let n = data.len();
+            if n == 0 {
+                return super::CpuSimdKernel::reduce_identity(op);
+            }
+            let chunks = n / 4;
+            let dp = data.as_ptr();
+
+            let identity = super::CpuSimdKernel::reduce_identity(op);
+            let mut acc = _mm256_set1_pd(identity);
+
+            for i in 0..chunks {
+                let v = _mm256_loadu_pd(dp.add(i * 4));
+                acc = match op {
+                    ReduceOp::Sum | ReduceOp::Mean => _mm256_add_pd(acc, v),
+                    ReduceOp::Product => _mm256_mul_pd(acc, v),
+                    ReduceOp::Min => _mm256_min_pd(acc, v),
+                    ReduceOp::Max => _mm256_max_pd(acc, v),
+                };
+            }
+
+            // Horizontal collapse: 4 lanes → 1 scalar
+            let mut lanes = [0.0f64; 4];
+            _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+            let mut scalar = lanes[0];
+            for &lane in &lanes[1..] {
+                scalar = super::CpuSimdKernel::apply_reduce(scalar, lane, op);
+            }
+
+            // Scalar tail
+            for i in (chunks * 4)..n {
+                scalar = super::CpuSimdKernel::apply_reduce(scalar, data[i], op);
+            }
+            scalar
+        }
+    }
+}
+
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -358,6 +476,26 @@ impl Kernel for CpuSimdKernel {
     }
 
     fn map_binary_f64(&self, a: &[f64], b: &[f64], op: BinaryOp) -> Vec<f64> {
+        #[cfg(target_arch = "x86_64")]
+        if self.width >= 4 {
+            // AVX2: process each rayon chunk with 4-wide SIMD
+            let chunk_size = (a.len() / rayon::current_num_threads()).max(1024);
+            let mut out = vec![0.0f64; a.len()];
+            out.par_chunks_mut(chunk_size)
+                .enumerate()
+                .for_each(|(ci, chunk)| {
+                    let start = ci * chunk_size;
+                    let end = (start + chunk.len()).min(a.len());
+                    let a_slice = &a[start..end];
+                    let b_slice = &b[start..end];
+                    // SAFETY: we checked `self.width >= 4` which means
+                    // AVX2 was detected at construction time.
+                    let result = unsafe { simd_avx2::binary_f64_avx2(a_slice, b_slice, op) };
+                    chunk.copy_from_slice(&result);
+                });
+            return out;
+        }
+        // Scalar fallback (SSE / NEON / wasm / no SIMD)
         a.par_iter()
             .zip(b.par_iter())
             .map(|(&x, &y)| Self::apply_binary(x, y, op))
@@ -365,10 +503,30 @@ impl Kernel for CpuSimdKernel {
     }
 
     fn reduce_f64(&self, data: &[f64], op: ReduceOp) -> f64 {
-        let raw = data
-            .par_iter()
-            .copied()
-            .reduce(|| Self::reduce_identity(op), |acc, v| Self::apply_reduce(acc, v, op));
+        #[cfg(target_arch = "x86_64")]
+        if self.width >= 4 {
+            // AVX2: each rayon chunk reduces with SIMD, then merge
+            let chunk_size = (data.len() / rayon::current_num_threads()).max(1024);
+            let raw: f64 = data
+                .par_chunks(chunk_size)
+                .map(|chunk| {
+                    // SAFETY: AVX2 detected at construction.
+                    unsafe { simd_avx2::reduce_f64_avx2(chunk, op) }
+                })
+                .reduce(
+                    || Self::reduce_identity(op),
+                    |a, b| Self::apply_reduce(a, b, op),
+                );
+            return if op == ReduceOp::Mean && !data.is_empty() {
+                raw / data.len() as f64
+            } else {
+                raw
+            };
+        }
+        let raw = data.par_iter().copied().reduce(
+            || Self::reduce_identity(op),
+            |acc, v| Self::apply_reduce(acc, v, op),
+        );
         if op == ReduceOp::Mean && !data.is_empty() {
             raw / data.len() as f64
         } else {
@@ -439,12 +597,18 @@ impl Kernel for CpuSimdKernel {
                 let data: Vec<f64> = (0..*len).map(|i| (i as f64).sin()).collect();
                 std::hint::black_box(&data);
             }
-            KernelOp::Gather { data_len, index_len } => {
+            KernelOp::Gather {
+                data_len,
+                index_len,
+            } => {
                 let data: Vec<f64> = (0..*data_len).map(|i| i as f64).collect();
                 let indices: Vec<usize> = (0..*index_len).map(|i| i % data_len).collect();
                 std::hint::black_box(self.gather_f64(&data, &indices));
             }
-            KernelOp::Scatter { data_len, index_len } => {
+            KernelOp::Scatter {
+                data_len,
+                index_len,
+            } => {
                 let values: Vec<f64> = (0..*index_len).map(|i| i as f64).collect();
                 let indices: Vec<usize> = (0..*index_len).map(|i| i % data_len).collect();
                 std::hint::black_box(self.scatter_f64(&values, &indices, *data_len));
@@ -695,10 +859,7 @@ mod tests {
     fn empty_data() {
         let k = kernel();
         assert_eq!(k.map_unary_f64(&[], UnaryOp::Neg), Vec::<f64>::new());
-        assert_eq!(
-            k.map_binary_f64(&[], &[], BinaryOp::Add),
-            Vec::<f64>::new()
-        );
+        assert_eq!(k.map_binary_f64(&[], &[], BinaryOp::Add), Vec::<f64>::new());
         assert_eq!(k.scan_f64(&[], ReduceOp::Sum), Vec::<f64>::new());
     }
 }

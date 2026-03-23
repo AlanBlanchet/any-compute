@@ -1,5 +1,5 @@
 /* Catppuccin Mocha — single source of truth for all CSS files.
- * Rust-side constants live in crates/canvas/src/theme.rs.
+ * Rust-side constants live in crates/dom/src/theme.rs.
  * Include via: include_str! + concatenate before StyleSheet::parse().
  */
 :root {

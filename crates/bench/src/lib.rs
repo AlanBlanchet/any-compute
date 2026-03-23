@@ -1,14 +1,18 @@
 //! # any-compute-bench
 //!
-//! Performance benchmarks for the any-compute DOM.
+//! Performance benchmarks and comparison suite for any-compute.
 //!
-//! Measures `parse`, `css-resolve`, `layout`, and `paint` throughput on our
-//! arena DOM and compares against equivalent work on a naive `Box<Node>` tree
-//! (the kind of heap-per-node structure that real browser DOMs use).
+//! - **`runner`** — compute/kernel benchmark categories, harness, hardware detection,
+//!   comparison tables, simulated device profiles, live metrics.
+//! - **DOM benchmarks** — arena `Tree` vs heap-per-node `Box<RefNode>` comparison,
+//!   CSS/HTML parse throughput, full website parsing, layout and paint measurement.
+//! - **Dashboard UI helpers** — shared stylesheet, sidebar/tab shell builder.
+
+pub mod runner;
 
 use std::time::Instant;
 
-use any_compute_canvas::PALETTE_CSS;
+use any_compute_dom::PALETTE_CSS;
 use any_compute_core::layout::Size;
 use any_compute_core::render::RenderList;
 use any_compute_dom::css::StyleSheet;
@@ -22,9 +26,13 @@ use any_compute_dom::tree::*;
 /// Raw bench.css text — single source for both `lib` and `window`.
 pub const BENCH_CSS: &str = include_str!("bench.css");
 
-/// Combined CSS: Tailwind utilities first, then bench.css overrides.
-/// Tailwind provides the spacing/layout/color utilities; bench.css
-/// provides component-level classes (sidebar, card, tab-btn, etc.).
+/// Realistic static website HTML fixture (~200 nodes).
+pub const WEBSITE_HTML: &str = include_str!("../fixtures/website.html");
+
+/// CSS for the website fixture — 90+ rules, variables, selectors.
+pub const WEBSITE_CSS: &str = include_str!("../fixtures/website.css");
+
+/// Combined CSS: palette + Tailwind utilities + bench.css overrides.
 /// Parsed once at startup → O(1) lookups.
 pub fn combined_css() -> String {
     format!(
@@ -71,7 +79,6 @@ pub fn kv_row(t: &mut Tree, parent: NodeId, label: &str, value: &str) {
 /// Returns `(sidebar_id, content_id)`.  Caller adds dynamic content.
 pub fn build_shell(t: &mut Tree, active_tab: usize) -> (NodeId, NodeId) {
     let root = t.root;
-    // Sidebar
     let sb = t.add_box(root, s("sidebar"));
     let brand = t.add_box(sb, s("brand"));
     t.add_box(brand, s("brand-icon"));
@@ -79,11 +86,14 @@ pub fn build_shell(t: &mut Tree, active_tab: usize) -> (NodeId, NodeId) {
     t.add_text(bt, "any-compute", s("heading-text"));
     t.add_text(bt, VERSION, s("small-dim"));
     for (i, label) in TAB_LABELS.iter().enumerate() {
-        let cls = if i == active_tab { "tab-active" } else { "tab-inactive" };
+        let cls = if i == active_tab {
+            "tab-active"
+        } else {
+            "tab-inactive"
+        };
         let btn = t.add_box(sb, sm(&["tab-btn", cls]));
         t.add_text(btn, *label, s("font-13"));
     }
-    // Main
     let main = t.add_box(root, s("grow"));
     let hdr = t.add_box(main, s("header"));
     t.add_text(hdr, TAB_LABELS[active_tab], sm(&["font-18", "text"]));
@@ -92,38 +102,68 @@ pub fn build_shell(t: &mut Tree, active_tab: usize) -> (NodeId, NodeId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ── Reference "browser-like" DOM for comparison ─────────────────────────
+// ── Generic benchmark harness macros ────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Naive heap-per-node tree — every node is a separate allocation behind
-/// `Box` + `Vec<Box<RefNode>>`, mimicking what real browser DOMs do.
-/// We measure identical operations on both representations.
-#[derive(Clone)]
-struct RefNode {
-    _style: Style,
-    children: Vec<Box<RefNode>>,
+/// Measure a single operation: warmup, then timed iterations → ops/sec.
+///
+/// Generic — reusable for any throughput measurement (DOM, compute, parse, …).
+/// Returns `(ops_per_sec, duration_per_op_us)`.
+pub fn bench_throughput(warmup: u32, rounds: u32, mut f: impl FnMut()) -> (f64, f64) {
+    for _ in 0..warmup {
+        f();
+    }
+    let t0 = Instant::now();
+    for _ in 0..rounds {
+        f();
+    }
+    let elapsed = t0.elapsed().as_secs_f64();
+    let ops = rounds as f64 / elapsed;
+    let us_per = (elapsed / rounds as f64) * 1e6;
+    (ops, us_per)
 }
 
-impl RefNode {
-    fn new(style: Style) -> Self {
-        Self {
-            _style: style,
-            children: Vec::new(),
-        }
+/// Measure paired A/B operation (arena vs heap, ours vs reference) and
+/// return a `Measurement`.  Reusable for any comparative benchmark.
+pub fn bench_pair(
+    name: &'static str,
+    nodes: usize,
+    rounds: u32,
+    arena_fn: impl Fn(),
+    heap_fn: impl Fn(),
+) -> Measurement {
+    for _ in 0..3 {
+        arena_fn();
+        heap_fn();
     }
+    let (arena_ops, _) = bench_throughput(0, rounds, &arena_fn);
+    let (heap_ops, _) = bench_throughput(0, rounds, &heap_fn);
+    Measurement {
+        name,
+        nodes,
+        arena_ops,
+        heap_ops,
+    }
+}
 
-    fn add_child(&mut self, style: Style) -> &mut RefNode {
-        self.children.push(Box::new(RefNode::new(style)));
-        self.children.last_mut().unwrap()
-    }
-
-    fn node_count(&self) -> usize {
-        1 + self.children.iter().map(|c| c.node_count()).sum::<usize>()
-    }
+/// Declare a batch of paired benchmarks in a compact table.
+///
+/// Each entry: `name, nodes, rounds, arena_expr, heap_expr`.
+/// Expands to `bench_pair(...)` calls collected into a `Vec<Measurement>`.
+macro_rules! bench_scenarios {
+    ($( $name:literal, $nodes:expr, $rounds:expr,
+        $arena:expr, $heap:expr );+ $(;)?) => {{
+        vec![ $(
+            bench_pair($name, $nodes, $rounds,
+                || { std::hint::black_box($arena); },
+                || { std::hint::black_box($heap); },
+            ),
+        )+ ]
+    }};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ── Benchmark harness ───────────────────────────────────────────────────
+// ── Benchmark types ─────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// One measurement: name, node count, our ops/s, reference ops/s.
@@ -144,50 +184,39 @@ impl Measurement {
     }
 }
 
-fn measure(
-    name: &'static str,
-    rounds: u32,
-    arena_fn: impl Fn(),
-    heap_fn: impl Fn(),
-    nodes: usize,
-) -> Measurement {
-    // Warmup
-    for _ in 0..3 {
-        arena_fn();
-        heap_fn();
-    }
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Reference "browser-like" DOM for comparison ─────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
 
-    let t0 = Instant::now();
-    for _ in 0..rounds {
-        arena_fn();
-    }
-    let arena_dur = t0.elapsed().as_secs_f64();
+/// Naive heap-per-node tree mimicking browser DOM allocation patterns.
+#[derive(Clone)]
+struct RefNode {
+    _style: Style,
+    children: Vec<Box<RefNode>>,
+}
 
-    let t0 = Instant::now();
-    for _ in 0..rounds {
-        heap_fn();
+impl RefNode {
+    fn new(style: Style) -> Self {
+        Self {
+            _style: style,
+            children: Vec::new(),
+        }
     }
-    let heap_dur = t0.elapsed().as_secs_f64();
-
-    Measurement {
-        name,
-        nodes,
-        arena_ops: rounds as f64 / arena_dur,
-        heap_ops: rounds as f64 / heap_dur,
+    fn add_child(&mut self, style: Style) -> &mut RefNode {
+        self.children.push(Box::new(RefNode::new(style)));
+        self.children.last_mut().unwrap()
+    }
+    fn node_count(&self) -> usize {
+        1 + self.children.iter().map(|c| c.node_count()).sum::<usize>()
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ── Scenarios ───────────────────────────────────────────────────────────
+// ── Scenario builders ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ── Scenarios ───────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Build a flat N-child arena tree.
 fn arena_flat(n: usize) -> Tree {
-    let mut t = Tree::new(Style::default().w(VIEWPORT.w).h(VIEWPORT.h));
+    let mut t = Tree::new(Style::default().w(VIEWPORT.w()).h(VIEWPORT.h()));
     let r = t.root;
     for i in 0..n {
         t.add_text(r, format!("node-{i}"), Style::default().font(12.0));
@@ -195,16 +224,14 @@ fn arena_flat(n: usize) -> Tree {
     t
 }
 
-/// Build a flat N-child heap tree.
 fn heap_flat(n: usize) -> RefNode {
-    let mut root = RefNode::new(Style::default().w(VIEWPORT.w).h(VIEWPORT.h));
+    let mut root = RefNode::new(Style::default().w(VIEWPORT.w()).h(VIEWPORT.h()));
     for _ in 0..n {
         root.add_child(Style::default().font(12.0));
     }
     root
 }
 
-/// Build a deep arena tree (linear chain).
 fn arena_deep(depth: usize) -> Tree {
     let mut t = Tree::new(Style::default().w(800.0).h(600.0));
     let mut parent = t.root;
@@ -214,7 +241,6 @@ fn arena_deep(depth: usize) -> Tree {
     t
 }
 
-/// Build a deep heap tree (linear chain).
 fn heap_deep(depth: usize) -> RefNode {
     let mut root = RefNode::new(Style::default().w(800.0).h(600.0));
     let mut ptr = &mut root as *mut RefNode;
@@ -228,9 +254,8 @@ fn heap_deep(depth: usize) -> RefNode {
     root
 }
 
-/// Build a realistic dashboard-like tree using CSS + shared shell.
 fn arena_dashboard() -> Tree {
-    let mut t = Tree::new(sm(&["bg", "row"]).w(VIEWPORT.w).h(VIEWPORT.h));
+    let mut t = Tree::new(sm(&["bg", "row"]).w(VIEWPORT.w()).h(VIEWPORT.h()));
     let (_sb, content) = build_shell(&mut t, 0);
     let row = t.add_box(content, s("row-gap-12"));
     for _ in 0..3 {
@@ -244,9 +269,8 @@ fn arena_dashboard() -> Tree {
     t
 }
 
-/// Equivalent heap tree for the dashboard.
 fn heap_dashboard() -> RefNode {
-    let mut root = RefNode::new(sm(&["bg", "row"]).w(VIEWPORT.w).h(VIEWPORT.h));
+    let mut root = RefNode::new(sm(&["bg", "row"]).w(VIEWPORT.w()).h(VIEWPORT.h()));
     let sb = root.add_child(s("sidebar"));
     let brand = sb.add_child(s("brand"));
     brand.add_child(s("brand-icon"));
@@ -276,65 +300,65 @@ fn heap_dashboard() -> RefNode {
     root
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Run all DOM benchmarks ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
 /// Run all DOM benchmarks. Returns measurements for display or reporting.
 pub fn run_dom_benchmarks() -> Vec<Measurement> {
     let sheet = StyleSheet::parse(BENCH_CSS);
+    let website_sheet = StyleSheet::parse(WEBSITE_CSS);
     let rounds = 2000;
-    let mut results = Vec::new();
 
-    // 1. Flat tree creation (1000 children)
     let n = 1000;
-    results.push(measure(
-        "create flat 1K nodes",
-        rounds,
-        || {
-            std::hint::black_box(arena_flat(n));
-        },
-        || {
-            std::hint::black_box(heap_flat(n));
-        },
-        n + 1,
-    ));
-
-    // 2. Deep tree creation (500-deep chain)
     let d = 500;
-    results.push(measure(
-        "create deep 500 chain",
+
+    let mut results = bench_scenarios! {
+        // ── Tree creation ───────────────────────────────────────────
+        "create flat 1K nodes", n + 1, rounds,
+            arena_flat(n), heap_flat(n);
+        "create deep 500 chain", d + 1, rounds,
+            arena_deep(d), heap_deep(d);
+
+        // ── Layout ──────────────────────────────────────────────────
+        "layout flat 1K", n + 1, rounds,
+            { let mut t = arena_flat(n); t.layout(VIEWPORT); t },
+            heap_flat(n);
+
+        // ── CSS parsing ─────────────────────────────────────────────
+        "CSS parse (bench.css)", 0, rounds,
+            StyleSheet::parse(BENCH_CSS),
+            std::collections::HashMap::<String, Vec<(String, String)>>::with_capacity(30);
+        "CSS parse (website.css)", 0, rounds,
+            StyleSheet::parse(WEBSITE_CSS),
+            std::collections::HashMap::<String, Vec<(String, String)>>::with_capacity(90);
+
+    };
+
+    // ── CSS resolution ──────────────────────────────────────────────
+    results.push(bench_pair(
+        "CSS resolve 1K classes",
+        0,
         rounds,
         || {
-            std::hint::black_box(arena_deep(d));
+            for _ in 0..1000 {
+                std::hint::black_box(sheet.class("card"));
+            }
         },
         || {
-            std::hint::black_box(heap_deep(d));
+            for _ in 0..1000 {
+                std::hint::black_box(Style::default());
+            }
         },
-        d + 1,
     ));
 
-    // 3. Layout pass on flat tree
-    {
-        results.push(measure(
-            "layout flat 1K",
-            rounds,
-            || {
-                let mut t = arena_flat(n);
-                t.layout(VIEWPORT);
-                std::hint::black_box(&t);
-            },
-            || {
-                // Heap tree has no layout solver — just measure creation overhead (baseline)
-                let h = heap_flat(n);
-                std::hint::black_box(&h);
-            },
-            n + 1,
-        ));
-    }
-
-    // 4. Paint pass
+    // ── Paint ───────────────────────────────────────────────────────
     {
         let mut a = arena_flat(100);
         a.layout(VIEWPORT);
-        results.push(measure(
+        results.push(bench_pair(
             "paint 100 nodes",
+            101,
             rounds * 5,
             || {
                 let mut list = RenderList::default();
@@ -342,84 +366,98 @@ pub fn run_dom_benchmarks() -> Vec<Measurement> {
                 std::hint::black_box(&list);
             },
             || {
-                // Reference: just allocating a Vec with equivalent capacity
                 let v: Vec<u8> = Vec::with_capacity(100 * 64);
                 std::hint::black_box(&v);
             },
-            101,
         ));
     }
 
-    // 5. CSS parse
-    results.push(measure(
-        "CSS parse (bench.css)",
-        rounds,
-        || {
-            std::hint::black_box(StyleSheet::parse(BENCH_CSS));
-        },
-        || {
-            // Reference: just allocation of comparable HashMap
-            let m: std::collections::HashMap<String, Vec<(String, String)>> =
-                std::collections::HashMap::with_capacity(30);
-            std::hint::black_box(&m);
-        },
-        0,
-    ));
-
-    // 6. CSS class resolution
+    // ── HTML parsing ────────────────────────────────────────────────
     {
-        results.push(measure(
-            "CSS resolve 1K classes",
-            rounds,
-            || {
-                for _ in 0..1000 {
-                    std::hint::black_box(sheet.class("card"));
-                }
-            },
-            || {
-                // Reference: HashMap lookup + Style::default()
-                for _ in 0..1000 {
-                    std::hint::black_box(Style::default());
-                }
-            },
-            0,
-        ));
-    }
-
-    // 7. HTML parse
-    {
-        let html = r##"<div w="1400" h="900" direction="row"><div w="220" pad="12" gap="8"><span font="16">Sidebar</span></div><div grow="1" pad="24" gap="16"><span font="22">Main</span><progress value="0.6" color="#a6e3a1" h="8" /></div></div>"##;
-        results.push(measure(
+        let small_html = r##"<div w="1400" h="900" direction="row"><div w="220" pad="12" gap="8"><span font="16">Sidebar</span></div><div grow="1" pad="24" gap="16"><span font="22">Main</span><progress value="0.6" color="#a6e3a1" h="8" /></div></div>"##;
+        results.push(bench_pair(
             "HTML parse (small doc)",
+            6,
             rounds,
             || {
-                std::hint::black_box(any_compute_dom::parse::parse(html));
+                drop(std::hint::black_box(any_compute_dom::parse::parse(
+                    small_html,
+                )))
             },
             || {
-                // Reference: just string scanning (find all '<')
-                let count = html.bytes().filter(|&b| b == b'<').count();
-                std::hint::black_box(count);
+                let _ = std::hint::black_box(small_html.bytes().filter(|&b| b == b'<').count());
             },
-            6,
         ));
     }
 
-    // 8. Dashboard tree build + layout + paint (full frame)
-    results.push(measure(
-        "full frame (dashboard)",
+    // ── Website parsing (full static site) ──────────────────────────
+    {
+        let tree = any_compute_dom::parse::parse_with_css(WEBSITE_HTML, &website_sheet);
+        let website_nodes = tree.arena.len();
+        results.push(bench_pair(
+            "website parse (HTML only)",
+            website_nodes,
+            rounds,
+            || {
+                drop(std::hint::black_box(any_compute_dom::parse::parse(
+                    WEBSITE_HTML,
+                )))
+            },
+            || {
+                let _ = std::hint::black_box(WEBSITE_HTML.bytes().filter(|&b| b == b'<').count());
+            },
+        ));
+        results.push(bench_pair(
+            "website parse + CSS resolve",
+            website_nodes,
+            rounds,
+            || {
+                drop(std::hint::black_box(
+                    any_compute_dom::parse::parse_with_css(WEBSITE_HTML, &website_sheet),
+                ))
+            },
+            || {
+                drop(std::hint::black_box(any_compute_dom::parse::parse(
+                    WEBSITE_HTML,
+                )))
+            },
+        ));
+    }
+
+    // ── Website full pipeline (parse + layout + paint) ──────────────
+    {
+        let tree = any_compute_dom::parse::parse_with_css(WEBSITE_HTML, &website_sheet);
+        let website_nodes = tree.arena.len();
+        results.push(bench_pair(
+            "website full frame",
+            website_nodes,
+            rounds / 2,
+            || {
+                let mut t = any_compute_dom::parse::parse_with_css(WEBSITE_HTML, &website_sheet);
+                t.layout(VIEWPORT);
+                let mut list = RenderList::default();
+                t.paint(&mut list);
+                drop(std::hint::black_box(list));
+            },
+            || drop(std::hint::black_box(heap_dashboard())),
+        ));
+    }
+
+    // ── Dashboard full frame ────────────────────────────────────────
+    results.push(bench_pair(
+        "dashboard full frame",
+        arena_dashboard().arena.len(),
         rounds / 2,
         || {
             let mut t = arena_dashboard();
             t.layout(VIEWPORT);
             let mut list = RenderList::default();
             t.paint(&mut list);
-            std::hint::black_box(&list);
+            drop(std::hint::black_box(list));
         },
         || {
-            let h = heap_dashboard();
-            std::hint::black_box(h.node_count());
+            let _ = std::hint::black_box(heap_dashboard().node_count());
         },
-        arena_dashboard().arena.len(),
     ));
 
     results
@@ -428,10 +466,10 @@ pub fn run_dom_benchmarks() -> Vec<Measurement> {
 /// Print benchmark results to stdout in a table.
 pub fn print_results(results: &[Measurement]) {
     println!(
-        "\n{:<30} {:>8} {:>14} {:>14} {:>10}",
+        "\n{:<35} {:>8} {:>14} {:>14} {:>10}",
         "Benchmark", "Nodes", "Arena ops/s", "Heap ops/s", "Speedup"
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(85));
     for m in results {
         let nodes_str = if m.nodes > 0 {
             format!("{}", m.nodes)
@@ -439,7 +477,7 @@ pub fn print_results(results: &[Measurement]) {
             "—".into()
         };
         println!(
-            "{:<30} {:>8} {:>14.0} {:>14.0} {:>9.1}x",
+            "{:<35} {:>8} {:>14.0} {:>14.0} {:>9.1}x",
             m.name,
             nodes_str,
             m.arena_ops,
@@ -457,7 +495,6 @@ pub fn print_results(results: &[Measurement]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use any_compute_core::render::RenderList;
 
     #[test]
     fn dashboard_builds_and_lays_out() {
@@ -467,5 +504,51 @@ mod tests {
         let mut list = RenderList::default();
         t.paint(&mut list);
         assert!(list.len() > 10, "dashboard should produce 10+ primitives");
+    }
+
+    #[test]
+    fn website_parses_to_large_tree() {
+        let sheet = StyleSheet::parse(WEBSITE_CSS);
+        let tree = any_compute_dom::parse::parse_with_css(WEBSITE_HTML, &sheet);
+        // Website fixture has ~150+ nodes
+        assert!(
+            tree.arena.len() > 100,
+            "website should parse to 100+ nodes, got {}",
+            tree.arena.len()
+        );
+    }
+
+    #[test]
+    fn website_full_pipeline() {
+        let sheet = StyleSheet::parse(WEBSITE_CSS);
+        let mut tree = any_compute_dom::parse::parse_with_css(WEBSITE_HTML, &sheet);
+        tree.layout(VIEWPORT);
+        let mut list = RenderList::default();
+        tree.paint(&mut list);
+        assert!(
+            list.len() > 50,
+            "website should produce 50+ primitives, got {}",
+            list.len()
+        );
+    }
+
+    #[test]
+    fn bench_throughput_returns_positive() {
+        let (ops, us) = bench_throughput(2, 100, || {
+            std::hint::black_box(42);
+        });
+        assert!(ops > 0.0);
+        assert!(us > 0.0);
+    }
+
+    #[test]
+    fn bench_scenarios_macro_works() {
+        let results = bench_scenarios! {
+            "test_a", 10, 50, arena_flat(10), heap_flat(10);
+            "test_b", 5, 50, arena_deep(5), heap_deep(5);
+        };
+        assert_eq!(results.len(), 2);
+        assert!(results[0].arena_ops > 0.0);
+        assert!(results[1].arena_ops > 0.0);
     }
 }
