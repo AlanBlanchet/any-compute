@@ -99,6 +99,12 @@ hr {
   margin-bottom: 8px;
 }
 
+/* BR — forces line break in flex-wrap containers */
+br {
+  width: 100%;
+  height: 0;
+}
+
 /* Table */
 table {
   flex-direction: column;
@@ -112,6 +118,14 @@ th {
 }
 th {
   font-weight: bold;
+}
+
+/* Center (deprecated HTML element) */
+center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
 }
 
 /* Strong / Bold */
@@ -131,4 +145,64 @@ blockquote {
   margin-bottom: 16px;
   margin-left: 40px;
   margin-right: 40px;
+}
+
+/* ── Interactive elements ───────────────────────────────────────────── */
+
+/* Button — pointer cursor, centered text, padding, border */
+button {
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-width: 1px;
+  border-style: solid;
+  border-color: rgba(128, 128, 128, 128);
+  border-radius: 4px;
+  font-size: 14px;
+  flex-direction: row;
+}
+
+/* Anchor — pointer cursor, text color */
+a {
+  cursor: pointer;
+  color: rgba(100, 149, 237, 255);
+  text-decoration: underline;
+}
+
+/* Input / Select / Textarea — text cursor, border, padding */
+input,
+textarea,
+select {
+  cursor: text;
+  padding: 4px 8px;
+  border-width: 1px;
+  border-style: solid;
+  border-color: rgba(128, 128, 128, 128);
+  border-radius: 4px;
+  font-size: 14px;
+  min-width: 150px;
+  min-height: 22px;
+}
+
+/* Image — inline block behavior, placeholder bg for missing images */
+img {
+  flex-shrink: 0;
+  background: rgba(200, 200, 200, 40);
+}
+
+/* Hidden elements */
+script,
+style,
+link,
+meta,
+title,
+head {
+  display: none;
+}
+
+/* Focus outline — browser-like highlight ring */
+:focus {
+  outline: 2px solid rgba(100, 149, 237, 200);
+  outline-offset: 1px;
 }
