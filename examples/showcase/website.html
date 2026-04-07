@@ -1,8 +1,8 @@
 <div class="root">
   <!-- Sidebar with navigation -->
-  <div class="sidebar">
+  <div class="ws-sidebar">
     <div class="brand-row">
-      <div class="brand-icon"></div>
+      <div class="ws-brand-icon"></div>
       <div class="brand-label">any-compute</div>
     </div>
     <div class="nav-item nav-active" tag="nav-dashboard">Dashboard</div>
@@ -19,37 +19,58 @@
       <div class="header-actions">
         <div class="demo-btn" tag="btn-refresh">Refresh</div>
         <div class="demo-btn" tag="btn-export">Export</div>
+        <div class="badge badge-green" id="js-status">No JS</div>
       </div>
     </div>
 
     <!-- Metric cards row -->
     <div class="metrics-row">
-      <div class="metric-card">
+      <div class="ws-metric-card">
         <div class="metric-label">Total Nodes</div>
-        <div class="metric-value">24,831</div>
+        <div class="metric-value" id="metric-nodes">24,831</div>
         <div class="metric-bar">
-          <div class="progress-track"><div class="progress-fill" style="width: 72%; background: var(--green);"></div></div>
+          <div class="ws-progress-track">
+            <div
+              class="ws-progress-fill"
+              style="width: 72%; background: var(--green)"
+            ></div>
+          </div>
         </div>
       </div>
-      <div class="metric-card">
+      <div class="ws-metric-card">
         <div class="metric-label">Render FPS</div>
         <div class="metric-value">60</div>
         <div class="metric-bar">
-          <div class="progress-track"><div class="progress-fill" style="width: 95%; background: var(--blue);"></div></div>
+          <div class="ws-progress-track">
+            <div
+              class="ws-progress-fill"
+              style="width: 95%; background: var(--blue)"
+            ></div>
+          </div>
         </div>
       </div>
-      <div class="metric-card">
+      <div class="ws-metric-card">
         <div class="metric-label">Memory</div>
         <div class="metric-value">42 MB</div>
         <div class="metric-bar">
-          <div class="progress-track"><div class="progress-fill" style="width: 35%; background: var(--yellow);"></div></div>
+          <div class="ws-progress-track">
+            <div
+              class="ws-progress-fill"
+              style="width: 35%; background: var(--yellow)"
+            ></div>
+          </div>
         </div>
       </div>
-      <div class="metric-card">
+      <div class="ws-metric-card">
         <div class="metric-label">GPU Load</div>
         <div class="metric-value">28%</div>
         <div class="metric-bar">
-          <div class="progress-track"><div class="progress-fill" style="width: 28%; background: var(--mauve);"></div></div>
+          <div class="ws-progress-track">
+            <div
+              class="ws-progress-fill"
+              style="width: 28%; background: var(--mauve)"
+            ></div>
+          </div>
         </div>
       </div>
     </div>
@@ -60,22 +81,34 @@
       <div class="cards-grid">
         <div class="demo-card" tag="card-layout">
           <div class="card-title">Flexbox Layout</div>
-          <div class="card-desc">Row, column, wrap, gap, grow, shrink, align, justify — full CSS flex model.</div>
+          <div class="card-desc">
+            Row, column, wrap, gap, grow, shrink, align, justify — full CSS flex
+            model.
+          </div>
           <div class="badge badge-green">Active</div>
         </div>
         <div class="demo-card" tag="card-css">
           <div class="card-title">CSS Parser</div>
-          <div class="card-desc">Selectors, cascade, specificity, variables, calc(), transitions, @keyframes.</div>
+          <div class="card-desc">
+            Selectors, cascade, specificity, variables, calc(), transitions,
+            @keyframes.
+          </div>
           <div class="badge badge-green">Active</div>
         </div>
         <div class="demo-card" tag="card-events">
           <div class="card-title">Event System</div>
-          <div class="card-desc">Hover, active, focus, click propagation, hit-testing, cursor handling.</div>
+          <div class="card-desc">
+            Hover, active, focus, click propagation, hit-testing, cursor
+            handling.
+          </div>
           <div class="badge badge-blue">Interactive</div>
         </div>
         <div class="demo-card" tag="card-gpu">
           <div class="card-title">GPU Renderer</div>
-          <div class="card-desc">Instanced SDF rects, glyphon text, scissor clips, 50K+ elements per frame.</div>
+          <div class="card-desc">
+            Instanced SDF rects, glyphon text, scissor clips, 50K+ elements per
+            frame.
+          </div>
           <div class="badge badge-yellow">GPU</div>
         </div>
       </div>
@@ -96,15 +129,15 @@
     <div class="swatch-section">
       <div class="section-title">Palette</div>
       <div class="swatch-row">
-        <div class="swatch" style="background: var(--red);"></div>
-        <div class="swatch" style="background: var(--peach);"></div>
-        <div class="swatch" style="background: var(--yellow);"></div>
-        <div class="swatch" style="background: var(--green);"></div>
-        <div class="swatch" style="background: var(--teal);"></div>
-        <div class="swatch" style="background: var(--blue);"></div>
-        <div class="swatch" style="background: var(--lavender);"></div>
-        <div class="swatch" style="background: var(--mauve);"></div>
-        <div class="swatch" style="background: var(--pink);"></div>
+        <div class="swatch" style="background: var(--red)"></div>
+        <div class="swatch" style="background: var(--peach)"></div>
+        <div class="swatch" style="background: var(--yellow)"></div>
+        <div class="swatch" style="background: var(--green)"></div>
+        <div class="swatch" style="background: var(--teal)"></div>
+        <div class="swatch" style="background: var(--blue)"></div>
+        <div class="swatch" style="background: var(--lavender)"></div>
+        <div class="swatch" style="background: var(--mauve)"></div>
+        <div class="swatch" style="background: var(--pink)"></div>
       </div>
     </div>
 
@@ -150,42 +183,70 @@
       <div class="section-title">Data Grid</div>
       <div class="data-table">
         <div class="table-row table-header-row">
-          <div class="th" style="width: 120px;">Name</div>
-          <div class="th" style="width: 80px;">Type</div>
-          <div class="th" style="width: 100px;">Status</div>
-          <div class="th" style="flex-grow: 1;">Description</div>
+          <div class="th" style="width: 120px">Name</div>
+          <div class="th" style="width: 80px">Type</div>
+          <div class="th" style="width: 100px">Status</div>
+          <div class="th" style="flex-grow: 1">Description</div>
         </div>
         <div class="table-row">
-          <div class="td" style="width: 120px;">Device::cpu()</div>
-          <div class="td" style="width: 80px;">Compute</div>
-          <div class="td" style="width: 100px;"><div class="badge badge-green">Ready</div></div>
-          <div class="td" style="flex-grow: 1;">SIMD-accelerated CPU backend</div>
+          <div class="td" style="width: 120px">Device::cpu()</div>
+          <div class="td" style="width: 80px">Compute</div>
+          <div class="td" style="width: 100px">
+            <div class="badge badge-green">Ready</div>
+          </div>
+          <div class="td" style="flex-grow: 1">
+            SIMD-accelerated CPU backend
+          </div>
         </div>
         <div class="table-row table-row-alt">
-          <div class="td" style="width: 120px;">OpQueue</div>
-          <div class="td" style="width: 80px;">Batch</div>
-          <div class="td" style="width: 100px;"><div class="badge badge-green">Ready</div></div>
-          <div class="td" style="flex-grow: 1;">Lazy batched dispatch</div>
+          <div class="td" style="width: 120px">OpQueue</div>
+          <div class="td" style="width: 80px">Batch</div>
+          <div class="td" style="width: 100px">
+            <div class="badge badge-green">Ready</div>
+          </div>
+          <div class="td" style="flex-grow: 1">Lazy batched dispatch</div>
         </div>
         <div class="table-row">
-          <div class="td" style="width: 120px;">OpCache</div>
-          <div class="td" style="width: 80px;">Cache</div>
-          <div class="td" style="width: 100px;"><div class="badge badge-green">Ready</div></div>
-          <div class="td" style="flex-grow: 1;">Content-addressed memoization</div>
+          <div class="td" style="width: 120px">OpCache</div>
+          <div class="td" style="width: 80px">Cache</div>
+          <div class="td" style="width: 100px">
+            <div class="badge badge-green">Ready</div>
+          </div>
+          <div class="td" style="flex-grow: 1">
+            Content-addressed memoization
+          </div>
         </div>
         <div class="table-row table-row-alt">
-          <div class="td" style="width: 120px;">Scene</div>
-          <div class="td" style="width: 80px;">3D</div>
-          <div class="td" style="width: 100px;"><div class="badge badge-blue">New</div></div>
-          <div class="td" style="flex-grow: 1;">Mesh + Camera + Light + Material</div>
+          <div class="td" style="width: 120px">Scene</div>
+          <div class="td" style="width: 80px">3D</div>
+          <div class="td" style="width: 100px">
+            <div class="badge badge-blue">New</div>
+          </div>
+          <div class="td" style="flex-grow: 1">
+            Mesh + Camera + Light + Material
+          </div>
         </div>
         <div class="table-row">
-          <div class="td" style="width: 120px;">Ray</div>
-          <div class="td" style="width: 80px;">3D</div>
-          <div class="td" style="width: 100px;"><div class="badge badge-blue">New</div></div>
-          <div class="td" style="flex-grow: 1;">AABB slab + Moller-Trumbore tri</div>
+          <div class="td" style="width: 120px">Ray</div>
+          <div class="td" style="width: 80px">3D</div>
+          <div class="td" style="width: 100px">
+            <div class="badge badge-blue">New</div>
+          </div>
+          <div class="td" style="flex-grow: 1">
+            AABB slab + Moller-Trumbore tri
+          </div>
         </div>
       </div>
     </div>
   </div>
 </div>
+<script>
+  var total = document.getElementById("metric-nodes");
+  if (total) {
+    total.set_textContent("24,831 (JS)");
+  }
+  var status = document.getElementById("js-status");
+  if (status) {
+    status.set_textContent("JS engine active");
+  }
+</script>

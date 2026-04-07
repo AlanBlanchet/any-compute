@@ -3,471 +3,80 @@
 //! Run: `cargo run -p showcase` or `make showcase`
 //!
 //! Tabs:
-//!   0. DOM Website    — full HTML/CSS parsing, animations, hover, z-index, scroll
-//!   1. 3D Scene       — mesh, camera, transform, ray intersection, normals
-//!   2. Compute        — kernel benchmarks, OpQueue batch, OpCache hit/miss
-//!   3. Live Metrics   — real-time throughput, FPS, memory, background workers
+//!   0. Browser      — Split: Preview (left) + DevTools (right, Elements default)
+//!   1. 3D Scene     — mesh, camera, transform, ray intersection, normals
+//!   2. Compute      — Benchmarks | Live metrics
+//!   3. AI           — Planner (left) + tabbed center (Training | Models | Datasets)
 
+mod app;
 mod tabs;
 
-use any_compute_core::Lerp;
-use any_compute_core::animation::{Easing, Transition, TransitionManager};
-use any_compute_core::compute::Device;
 use any_compute_core::interaction::{Button, InputEvent};
-use any_compute_core::kernel::{ReduceOp, UnaryOp, best_kernel};
 use any_compute_core::layout::{Point, Size};
-use any_compute_core::render::{Color, RenderList};
-use any_compute_dom::PALETTE_CSS;
-use any_compute_dom::css::StyleSheet;
+use any_compute_core::render::RenderList;
 use any_compute_dom::gpu::Gpu;
-use any_compute_dom::parse::parse_with_css;
-use any_compute_dom::style::*;
-use any_compute_dom::theme;
+use any_compute_dom::page::Page;
 use any_compute_dom::tree::*;
 use any_compute_dom::winit;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+use app::{AppData, COMBINED_CSS, TAB_LABELS, WEBSITE_HTML, build_sheet};
+use std::sync::Arc;
+use std::time::Instant;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use winit::event::{ElementState, Event, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, WindowBuilder};
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Constants
-// ═══════════════════════════════════════════════════════════════════════════
 
-const SHOWCASE_CSS: &str = include_str!("showcase.css");
-const WEBSITE_HTML: &str = include_str!("website.html");
-const WEBSITE_CSS: &str = include_str!("website.css");
-const VIEWPORT: Size = Size::new(1400.0, 900.0);
-const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
-const MAX_FRAME_DT: f64 = 0.032;
-
-const TAB_LABELS: &[&str] = &["DOM Website", "3D Scene", "Compute", "Live Metrics"];
-
-/// Parsed once at startup.
-fn build_sheet() -> StyleSheet {
-    let css = format!("{PALETTE_CSS}\n{SHOWCASE_CSS}\n{WEBSITE_CSS}");
-    StyleSheet::parse(&css)
-}
-
-/// Shorthand: one class from sheet.
-fn s(sheet: &StyleSheet, class: &str) -> Style {
-    sheet.class(class)
-}
-
-/// Shorthand: merge multiple classes.
-fn sm(sheet: &StyleSheet, classes: &[&str]) -> Style {
-    sheet.classes(classes)
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Shared state
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[derive(Clone)]
-struct Shared {
-    inner: Arc<Mutex<AppData>>,
-}
-
-struct AppData {
-    tab: usize,
-    scroll_y: f64,
-    scroll_target: f64,
-    transitions: TransitionManager,
-
-    // FPS
-    fps: u32,
-    fps_count: u32,
-    fps_timer: Instant,
-    frame_times: Vec<f64>,
-
-    // DOM tab: parsed website tree (built once, then interacted)
-    dom_tree: Option<Tree>,
-    dom_cursor: Point,
-    dom_needs_measure: bool,
-
-    // 3D tab
-    scene_info: tabs::scene::SceneInfo,
-
-    // Compute tab
-    compute_results: Vec<(String, f64)>,
-    compute_running: bool,
-
-    // Live metrics
-    live_ac_ops: f64,
-    live_rayon_ops: f64,
-    live_std_ops: f64,
-    live_running: bool,
-
-    // Hardware
-    hw: Option<any_compute_bench::runner::HardwareReport>,
-}
-
-impl Shared {
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(AppData {
-                tab: 0,
-                scroll_y: 0.0,
-                scroll_target: 0.0,
-                transitions: {
-                    let mut mgr = TransitionManager::default();
-                    let mut t = Transition::new(0.0, 1.0, Duration::ZERO);
-                    t.start();
-                    mgr.add("tab-0", t);
-                    mgr
-                },
-                fps: 0,
-                fps_count: 0,
-                fps_timer: Instant::now(),
-                frame_times: Vec::with_capacity(120),
-                dom_tree: None,
-                dom_cursor: Point::ZERO,
-                dom_needs_measure: true,
-                scene_info: tabs::scene::SceneInfo::default(),
-                compute_results: Vec::new(),
-                compute_running: false,
-                live_ac_ops: 0.0,
-                live_rayon_ops: 0.0,
-                live_std_ops: 0.0,
-                live_running: false,
-                hw: None,
-            })),
-        }
-    }
-
-    fn read<R>(&self, f: impl FnOnce(&AppData) -> R) -> R {
-        f(&self.inner.lock().unwrap())
-    }
-
-    fn write<R>(&self, f: impl FnOnce(&mut AppData) -> R) -> R {
-        f(&mut self.inner.lock().unwrap())
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Background workers
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn spawn_hw_detect(state: Shared) {
-    std::thread::spawn(move || {
-        let hw = any_compute_bench::runner::detect_hardware();
-        state.write(|d| d.hw = Some(hw));
-    });
-}
-
-fn spawn_compute_bench(state: Shared) {
-    if state.read(|d| d.compute_running) {
-        return;
-    }
-    state.write(|d| {
-        d.compute_running = true;
-        d.compute_results.clear();
-    });
-    std::thread::spawn(move || {
-        let dev = Device::cpu();
-        let sizes = [10_000usize, 100_000, 1_000_000];
-        for &n in &sizes {
-            let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
-            // Unary throughput
-            let t0 = Instant::now();
-            for _ in 0..10 {
-                std::hint::black_box(dev.unary(&data, UnaryOp::Sqrt));
-            }
-            let ops = 10.0 / t0.elapsed().as_secs_f64();
-            state.write(|d| d.compute_results.push((format!("Sqrt {n}"), ops)));
-
-            // Reduce throughput
-            let t0 = Instant::now();
-            for _ in 0..10 {
-                std::hint::black_box(dev.reduce(&data, ReduceOp::Sum));
-            }
-            let ops = 10.0 / t0.elapsed().as_secs_f64();
-            state.write(|d| d.compute_results.push((format!("Sum {n}"), ops)));
-        }
-
-        // OpQueue batch benchmark
-        {
-            use any_compute_core::kernel::UnaryOp;
-            let data: Vec<f64> = (0..100_000).map(|i| i as f64).collect();
-            let t0 = Instant::now();
-            for _ in 0..10 {
-                let mut q = dev.queue();
-                for _ in 0..10 {
-                    q.push(any_compute_core::compute::QueuedOp::Unary {
-                        data: data.clone(),
-                        op: UnaryOp::Sqrt,
-                    });
-                }
-                std::hint::black_box(q.flush());
-            }
-            let ops = 100.0 / t0.elapsed().as_secs_f64();
-            state.write(|d| {
-                d.compute_results
-                    .push(("OpQueue batch 100K×10".into(), ops))
-            });
-        }
-
-        // OpCache hit rate
-        {
-            use any_compute_core::compute::OpCache;
-            let cache = OpCache::new(64);
-            let data: Vec<f64> = (0..10_000).map(|i| i as f64).collect();
-            // Warm
-            let _ = cache.reduce(&dev, &data, ReduceOp::Sum);
-            let t0 = Instant::now();
-            for _ in 0..1000 {
-                std::hint::black_box(cache.reduce(&dev, &data, ReduceOp::Sum));
-            }
-            let ops = 1000.0 / t0.elapsed().as_secs_f64();
-            state.write(|d| d.compute_results.push(("OpCache hit ×1K".into(), ops)));
-        }
-
-        state.write(|d| d.compute_running = false);
-    });
-}
-
-fn spawn_live_sim(state: Shared) {
-    if state.read(|d| d.live_running) {
-        return;
-    }
-    state.write(|d| d.live_running = true);
-    std::thread::spawn(move || {
-        let kern = best_kernel();
-        let n = 100_000usize;
-        let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
-        let iters = 5u32;
-
-        loop {
-            if !state.read(|d| d.live_running) {
-                break;
-            }
-            let fi = iters as f64;
-            // Our kernel
-            let t0 = Instant::now();
-            for _ in 0..iters {
-                std::hint::black_box(kern.map_unary_f64(&data, UnaryOp::Sqrt));
-            }
-            let ac = fi / t0.elapsed().as_secs_f64();
-
-            // Rayon
-            let t0 = Instant::now();
-            for _ in 0..iters {
-                let _: Vec<f64> = data.par_iter().map(|x| x.sqrt()).collect();
-            }
-            let ray = fi / t0.elapsed().as_secs_f64();
-
-            // Std
-            let t0 = Instant::now();
-            for _ in 0..iters {
-                let _: Vec<f64> = data.iter().map(|x| x.sqrt()).collect();
-            }
-            let st = fi / t0.elapsed().as_secs_f64();
-
-            state.write(|d| {
-                d.live_ac_ops = ac;
-                d.live_rayon_ops = ray;
-                d.live_std_ops = st;
-            });
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    });
-}
-
-use rayon::prelude::*;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Tree building
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn build_tree(state: &Shared, sheet: &StyleSheet, w: f64, h: f64) -> Tree {
-    let mut data = state.inner.lock().unwrap();
-
-    // Smooth scroll
-    let scroll_speed = 0.18;
-    data.scroll_y += (data.scroll_target - data.scroll_y) * scroll_speed;
-    if (data.scroll_target - data.scroll_y).abs() < 0.5 {
-        data.scroll_y = data.scroll_target;
-    }
-
-    // FPS tracking
-    data.fps_count += 1;
-    if data.fps_timer.elapsed().as_secs() >= 1 {
-        data.fps = data.fps_count;
-        data.fps_count = 0;
-        data.fps_timer = Instant::now();
-    }
-
-    let mut t = Tree::new(sm(sheet, &["bg", "row"]).w(w).h(h));
-    let root = t.root;
-
-    // ── Sidebar ──
-    let sb = t.add_box(root, s(sheet, "sidebar"));
-    let brand = t.add_box(sb, s(sheet, "brand"));
-    t.add_box(brand, s(sheet, "brand-icon"));
-    let bt = t.add_box(brand, s(sheet, "brand-text"));
-    t.add_text(bt, "any-compute", s(sheet, "heading-text"));
-    t.add_text(bt, VERSION, s(sheet, "small-dim"));
-    t.add_box(sb, s(sheet, "spacer-12"));
-
-    for (i, &label) in TAB_LABELS.iter().enumerate() {
-        let tag_name = format!("tab-{i}");
-        let alpha = data
-            .transitions
-            .value(&tag_name)
-            .unwrap_or(if data.tab == i { 1.0 } else { 0.0 });
-        let hover_alpha = data
-            .transitions
-            .value(&format!("hover-{tag_name}"))
-            .unwrap_or(0.0);
-        let base_bg = Color::TRANSPARENT.lerp(theme::ACCENT, alpha);
-        let bg = base_bg.lerp(theme::SURFACE_BRIGHT, hover_alpha * (1.0 - alpha));
-        let fg = theme::TEXT_DIM.lerp(theme::SIDEBAR_BG, alpha);
-        let mut tab_s = s(sheet, "tab-btn");
-        tab_s.background = bg;
-        tab_s.color = fg;
-        let btn = t.add_box(sb, tab_s);
-        t.add_text(btn, label, s(sheet, "font-13").color(fg));
-        t.tag(btn, &tag_name);
-    }
-
-    // Spacer + FPS overlay at bottom of sidebar
-    let _spacer = t.add_box(sb, s(sheet, "grow"));
-    let fps_box = t.add_box(sb, s(sheet, "fps-overlay"));
-    t.add_text(
-        fps_box,
-        &format!("{}fps", data.fps),
-        s(sheet, "font-9").color(theme::ACCENT),
-    );
-    let node_count = t.arena.len();
-    t.add_text(
-        fps_box,
-        &format!("{node_count}n"),
-        s(sheet, "font-9").color(Color::from((180, 180, 180))),
-    );
-
-    // ── Main area ──
-    let main_col = t.add_box(root, s(sheet, "grow"));
-    let hdr = t.add_box(main_col, s(sheet, "header"));
-    t.add_text(hdr, TAB_LABELS[data.tab], sm(sheet, &["font-18", "text"]));
-
-    // HW info in header
-    if let Some(hw) = &data.hw {
-        let _hw_box = t.add_box(hdr, s(sheet, "grow"));
-        let right = t.add_box(hdr, sm(sheet, &["row-gap-8"]));
-        t.add_text(
-            right,
-            &hw.cpu.brand,
-            s(sheet, "font-9").color(theme::TEXT_DIM),
-        );
-        t.add_text(
-            right,
-            &format!("{}c", hw.cpu.physical_cores),
-            sm(sheet, &["font-9", "blue"]),
-        );
-    }
-
-    let content = t.add_box(main_col, s(sheet, "content"));
-    t.slot_mut(content).scroll.y = data.scroll_y;
-
-    match data.tab {
-        0 => tabs::dom::build(sheet, &mut t, content, &data),
-        1 => tabs::scene::build(sheet, &mut t, content, &data),
-        2 => tabs::compute::build(sheet, &mut t, content, &data),
-        3 => tabs::live::build(sheet, &mut t, content, &data),
-        _ => {}
-    }
-
-    t
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Event handling
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn handle_click(state: &Shared, tag: &str) {
-    // Tab switching
-    if let Some(idx_str) = tag.strip_prefix("tab-") {
-        if let Ok(idx) = idx_str.parse::<usize>() {
-            state.write(|d| {
-                if d.tab != idx {
-                    let old = d.tab;
-                    d.tab = idx;
-                    d.scroll_y = 0.0;
-                    d.scroll_target = 0.0;
-                    // Transition old tab out, new tab in
-                    d.transitions.add(
-                        &format!("tab-{old}"),
-                        Transition::new(1.0, 0.0, Duration::from_millis(200))
-                            .with_easing(Easing::EaseOut),
-                    );
-                    d.transitions.add(
-                        &format!("tab-{idx}"),
-                        Transition::new(0.0, 1.0, Duration::from_millis(200))
-                            .with_easing(Easing::EaseOut),
-                    );
-                }
-            });
-        }
-    }
-
-    // Compute tab: run benchmarks
-    if tag == "run-bench" {
-        spawn_compute_bench(state.clone());
-    }
-
-    // Live tab: toggle simulation
-    if tag == "toggle-sim" {
-        let running = state.read(|d| d.live_running);
-        if running {
-            state.write(|d| d.live_running = false);
-        } else {
-            spawn_live_sim(state.clone());
-        }
-    }
-}
-
-fn handle_hover(state: &Shared, tag: Option<String>) {
-    state.write(|d| {
-        // Clear old hover transitions
-        for i in 0..TAB_LABELS.len() {
-            let key = format!("hover-tab-{i}");
-            let is_hovered = tag.as_deref() == Some(&format!("tab-{i}"));
-            let current = d.transitions.value(&key).unwrap_or(0.0);
-            let target = if is_hovered { 1.0 } else { 0.0 };
-            if (current - target).abs() > 0.01 {
-                d.transitions.add(
-                    &key,
-                    Transition::new(current, target, Duration::from_millis(150))
-                        .with_easing(Easing::EaseOut),
-                );
-            }
-        }
-    });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Main
-// ═══════════════════════════════════════════════════════════════════════════
+mod shared;
+use shared::*;
 
 fn main() {
-    env_logger::init();
+    // Logging — dual output: stderr (compact) + log file (verbose, timestamped).
+    // The log file is written to `showcase.log` in the working directory.
+    // Set RUST_LOG env to control level, e.g. RUST_LOG=debug cargo run -p showcase
+    let log_file = tracing_appender::rolling::never(".", "showcase.log");
+    let (file_writer, _guard) = tracing_appender::non_blocking(log_file);
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "warn,showcase=debug,any_compute_dom=info,any_compute_core=info,cosmic_text=warn"
+                    .parse()
+                    .unwrap()
+            }),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .compact(),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+                .with_thread_ids(true)
+                .with_target(true),
+        )
+        .init();
+
+    log::info!("Showcase starting — log file: showcase.log");
 
     let sheet = build_sheet();
     let state = Shared::new();
 
-    // Build DOM tree for tab 0 (parsed website)
+    // Build browser page for tab 0 with default website content.
     {
-        let full_css = format!("{PALETTE_CSS}\n{WEBSITE_CSS}\n{SHOWCASE_CSS}");
-        let ws = StyleSheet::parse(&full_css);
-        let tree = parse_with_css(WEBSITE_HTML, &ws);
-        state.write(|d| d.dom_tree = Some(tree));
+        state.write(|d| {
+            d.browser.html = WEBSITE_HTML.to_string();
+            d.browser.reload(&COMBINED_CSS);
+        });
     }
 
-    spawn_hw_detect(state.clone());
-    spawn_compute_bench(state.clone());
-    spawn_live_sim(state.clone());
+    state.spawn_hw_detect();
+    state.spawn_compute_bench();
+    state.spawn_live_sim();
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -476,19 +85,20 @@ fn main() {
         WindowBuilder::new()
             .with_title("any-compute — Showcase")
             .with_inner_size(winit::dpi::LogicalSize::new(VIEWPORT.w(), VIEWPORT.h()))
+            .with_maximized(true)
             .build(&event_loop)
             .unwrap(),
     );
 
     let mut gpu = Gpu::init(window.clone());
 
-    // Measure text in the DOM tree with real font metrics
+    // Measure text in the DOM page with real font metrics
     state.write(|d| {
-        if let Some(tree) = &mut d.dom_tree {
-            tree.measure_text_nodes(|text, font_size| gpu.measure_text(text, font_size));
-            tree.layout(Size::new(VIEWPORT.w() - 220.0, VIEWPORT.h() - 56.0));
-            tree.start_animations();
-            d.dom_needs_measure = false;
+        if let Some(page) = &mut d.browser.page {
+            page.measure_text_nodes(|text, font_size| gpu.measure_text(text, font_size));
+            page.layout(Size::new(VIEWPORT.w() - 220.0, VIEWPORT.h() - 56.0));
+            page.start_animations();
+            d.browser.needs_measure = false;
         }
     });
 
@@ -497,20 +107,11 @@ fn main() {
     let mut last_tree: Option<Tree> = None;
     let mut list = RenderList::default();
     let mut current_cursor = CursorIcon::Default;
-    let frame_budget = Duration::from_micros(16_667); // ~60 fps
-
+    let mut modifiers = Modifiers::default();
+    let mut last_hover_tag: Option<String> = None;
     let _ = event_loop.run(move |event, elwt| match event {
         Event::AboutToWait => {
-            if last_frame.elapsed() >= frame_budget {
-                window.request_redraw();
-            } else {
-                // Yield CPU until next frame
-                let remaining = frame_budget.saturating_sub(last_frame.elapsed());
-                if !remaining.is_zero() {
-                    std::thread::sleep(remaining);
-                }
-                window.request_redraw();
-            }
+            window.request_redraw();
         }
         Event::WindowEvent {
             event: wevent,
@@ -524,28 +125,120 @@ fn main() {
 
             WindowEvent::CursorMoved { position, .. } => {
                 cursor_pos = Point::new(position.x, position.y);
-                // Hover tracking on sidebar tags
+
+                // Scene drag (tab 1): orbit camera — checked FIRST so hover
+                // tracking is suppressed while dragging.
+                let scene_dragging = state.on_scene() && state.read(|d| d.scene_info.drag_active);
+                if scene_dragging {
+                    state.write(|d| {
+                        let (lx, ly) = d.scene_info.drag_last;
+                        let dx = position.x - lx;
+                        let dy = position.y - ly;
+                        d.scene_info.on_drag(dx, dy);
+                        d.scene_info.drag_last = (position.x, position.y);
+                    });
+                    if CursorIcon::Grabbing != current_cursor {
+                        window.set_cursor_icon(CursorIcon::Grabbing);
+                        current_cursor = CursorIcon::Grabbing;
+                    }
+                    return;
+                }
+
+                // AI Graph drag (tab 3): pan the graph view
+                let graph_dragging = state.on_graph() && state.read(|d| d.ai.drag_active);
+                if graph_dragging {
+                    state.write(|d| {
+                        let (lx, ly) = d.ai.drag_last;
+                        let dx = position.x - lx;
+                        let dy = position.y - ly;
+                        d.ai.on_drag(dx, dy);
+                        d.ai.drag_last = (position.x, position.y);
+                    });
+                    if CursorIcon::Grabbing != current_cursor {
+                        window.set_cursor_icon(CursorIcon::Grabbing);
+                        current_cursor = CursorIcon::Grabbing;
+                    }
+                    return;
+                }
+
+                // Hover tracking on sidebar tags — only fire on change
                 if let Some(tree) = &last_tree {
                     let tag = tree.tag_at(cursor_pos);
-                    handle_hover(&state, tag);
+                    if tag != last_hover_tag {
+                        state.handle_hover(tag.clone());
+                        last_hover_tag = tag;
+                    }
                 }
-                // Dispatch to DOM tree if on DOM tab
-                let on_dom = state.read(|d| d.tab == 0);
-                if on_dom {
+
+                // Determine cursor icon from browser DOM page, showcase tree, or default
+                let desired = if state.on_browser_preview() {
+                    last_tree
+                        .as_ref()
+                        .and_then(|t| t.tagged_rect(BVP))
+                        .filter(|vp| vp.contains(Point::new(cursor_pos.x, cursor_pos.y)))
+                        .map(|vp| {
+                            let dom_pos = AppData::to_dom_pos(cursor_pos, vp);
+                            state.write(|d| {
+                                d.browser.cursor = dom_pos;
+                                if let Some(page) = &mut d.browser.page {
+                                    let result =
+                                        page.dispatch(InputEvent::PointerMove { pos: dom_pos });
+                                    match result.cursor.as_str() {
+                                        "pointer" => CursorIcon::Pointer,
+                                        "text" => CursorIcon::Text,
+                                        "not-allowed" => CursorIcon::NotAllowed,
+                                        _ => CursorIcon::Default,
+                                    }
+                                } else {
+                                    CursorIcon::Default
+                                }
+                            })
+                        })
+                        .unwrap_or_else(|| {
+                            // Cursor is outside browser viewport — check showcase tree
+                            last_tree.as_ref().map_or(CursorIcon::Default, |t| {
+                                use any_compute_dom::style::Cursor;
+                                match t.cursor_at(cursor_pos) {
+                                    Cursor::Pointer => CursorIcon::Pointer,
+                                    Cursor::Text => CursorIcon::Text,
+                                    Cursor::NotAllowed => CursorIcon::NotAllowed,
+                                    Cursor::Grab => CursorIcon::Grab,
+                                    _ => CursorIcon::Default,
+                                }
+                            })
+                        })
+                } else {
+                    // Non-browser tabs: resolve cursor from showcase tree
+                    last_tree.as_ref().map_or(CursorIcon::Default, |t| {
+                        use any_compute_dom::style::Cursor;
+                        match t.cursor_at(cursor_pos) {
+                            Cursor::Pointer => CursorIcon::Pointer,
+                            Cursor::Text => CursorIcon::Text,
+                            Cursor::NotAllowed => CursorIcon::NotAllowed,
+                            Cursor::Grab => CursorIcon::Grab,
+                            _ => CursorIcon::Default,
+                        }
+                    })
+                };
+                if desired != current_cursor {
+                    window.set_cursor_icon(desired);
+                    current_cursor = desired;
+                }
+            }
+
+            WindowEvent::CursorLeft { .. } => {
+                // Clear all hover effects when cursor exits the window
+                if last_hover_tag.is_some() {
+                    state.handle_hover(None);
+                    last_hover_tag = None;
+                }
+                // Also clear DOM page hover
+                if state.on_browser_preview() {
                     state.write(|d| {
-                        d.dom_cursor = cursor_pos;
-                        if let Some(tree) = &mut d.dom_tree {
-                            let result = tree.dispatch(InputEvent::PointerMove { pos: cursor_pos });
-                            let icon = match result.cursor.as_str() {
-                                "pointer" => CursorIcon::Pointer,
-                                "text" => CursorIcon::Text,
-                                "not-allowed" => CursorIcon::NotAllowed,
-                                _ => CursorIcon::Default,
-                            };
-                            if icon != current_cursor {
-                                window.set_cursor_icon(icon);
-                                current_cursor = icon;
-                            }
+                        if let Some(page) = &mut d.browser.page {
+                            page.dispatch(InputEvent::PointerMove {
+                                pos: Point::new(-1.0, -1.0),
+                            });
                         }
                     });
                 }
@@ -564,38 +257,141 @@ fn main() {
                 };
 
                 if elem_state == ElementState::Released {
+                    // End scene drag + graph drag
+                    let graph_click = state.write(|d| {
+                        if d.scene_info.drag_active {
+                            d.scene_info.drag_active = false;
+                        }
+                        let click = if d.ai.drag_active {
+                            d.ai.drag_active = false;
+                            d.ai.click_pos.take().filter(|&(sx, sy)| {
+                                (cursor_pos.x - sx).abs() < 4.0 && (cursor_pos.y - sy).abs() < 4.0
+                            })
+                        } else {
+                            d.ai.click_pos.take();
+                            None
+                        };
+                        click
+                    });
+                    // Graph single-click: enter node or click breadcrumb
+                    if let Some(_) = graph_click {
+                        if let Some(vp) = last_tree
+                            .as_ref()
+                            .and_then(|t| t.tagged_rect(tabs::graph::VIEWPORT_TAG))
+                        {
+                            let local = Point::new(cursor_pos.x - vp.x(), cursor_pos.y - vp.y());
+                            state.write(|d| {
+                                if !d.ai.view.breadcrumb.is_empty() && local.y < 28.0 {
+                                    if local.x < 100.0 {
+                                        d.ai.view.to_root();
+                                    } else {
+                                        d.ai.view.back();
+                                    }
+                                    return;
+                                }
+                                if let Some(info) = d.ai.cached_visual() {
+                                    let vg = &info.visual;
+                                    let target = vg.resolve_breadcrumb_pub(&d.ai.view.breadcrumb);
+                                    if let Some(idx) = d.ai.view.hit_test(target, local) {
+                                        if target.node(idx).children().is_some() {
+                                            d.ai.view.enter(idx);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    if current_cursor == CursorIcon::Grabbing {
+                        window.set_cursor_icon(CursorIcon::Default);
+                        current_cursor = CursorIcon::Default;
+                    }
+
                     // Check sidebar tags first
                     if let Some(tree) = &last_tree {
                         if let Some(tag) = tree.tag_at(cursor_pos) {
-                            handle_click(&state, &tag);
+                            // Browser-input special handling: position cursor on re-click
+                            if tag == "browser-input" {
+                                let already = state.read(|d| d.browser.input.focused);
+                                if already {
+                                    if let Some(rect) = tree.tagged_rect("browser-input") {
+                                        let pad_border = 11.0; // 10px padding + 1px border
+                                        let local_x =
+                                            (cursor_pos.x - rect.x() - pad_border).max(0.0);
+                                        let cw = 9.0 * any_compute_dom::style::CHAR_WIDTH_RATIO;
+                                        state.write(|d| {
+                                            let ci = (local_x / cw).round() as usize;
+                                            let byte_off = d
+                                                .browser
+                                                .input
+                                                .text
+                                                .char_indices()
+                                                .nth(ci)
+                                                .map(|(i, _)| i)
+                                                .unwrap_or(d.browser.input.text.len());
+                                            d.browser.input.sel = None;
+                                            d.browser.input.cursor = byte_off;
+                                        });
+                                    }
+                                } else {
+                                    state.write(|d| d.browser.focus());
+                                }
+                            } else {
+                                state.handle_click(&tag);
+                            }
                         }
                     }
-                    // DOM tree dispatch on tab 0
-                    let on_dom = state.read(|d| d.tab == 0);
-                    if on_dom {
-                        state.write(|d| {
-                            if let Some(tree) = &mut d.dom_tree {
-                                let result = tree.dispatch(InputEvent::PointerUp {
-                                    pos: cursor_pos,
-                                    button: btn,
-                                });
-                                if let Some(tag) = result.target_tag() {
-                                    println!("  click → {tag}");
+                    // DOM page dispatch
+                    if state.on_browser_preview() {
+                        if let Some(vp) = last_tree.as_ref().and_then(|t| t.tagged_rect(BVP)) {
+                            state.write(|d| {
+                                if let Some(page) = &mut d.browser.page {
+                                    let result = page.dispatch(InputEvent::PointerUp {
+                                        pos: AppData::to_dom_pos(cursor_pos, vp),
+                                        button: btn,
+                                    });
+                                    if let Some(tag) = result.target_tag() {
+                                        log::debug!("browser click → {tag}");
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
                 } else {
-                    let on_dom = state.read(|d| d.tab == 0);
-                    if on_dom {
+                    // Start scene drag if on scene tab and clicking in the content area
+                    if state.on_scene() && AppData::in_content_area(cursor_pos) {
                         state.write(|d| {
-                            if let Some(tree) = &mut d.dom_tree {
-                                tree.dispatch(InputEvent::PointerDown {
-                                    pos: cursor_pos,
-                                    button: btn,
+                            d.scene_info.drag_active = true;
+                            d.scene_info.drag_last = (cursor_pos.x, cursor_pos.y);
+                        });
+                    }
+
+                    // AI Graph: single-click to enter node or click breadcrumb to go back
+                    if state.on_graph() && AppData::in_content_area(cursor_pos) {
+                        let vp_rect = last_tree
+                            .as_ref()
+                            .and_then(|t| t.tagged_rect(tabs::graph::VIEWPORT_TAG));
+                        if let Some(vp) = vp_rect {
+                            if vp.contains(cursor_pos) {
+                                state.write(|d| {
+                                    d.ai.drag_active = true;
+                                    d.ai.drag_last = (cursor_pos.x, cursor_pos.y);
+                                    d.ai.click_pos = Some((cursor_pos.x, cursor_pos.y));
                                 });
                             }
-                        });
+                        }
+                    }
+
+                    if state.on_browser_preview() {
+                        if let Some(vp) = last_tree.as_ref().and_then(|t| t.tagged_rect(BVP)) {
+                            state.write(|d| {
+                                if let Some(page) = &mut d.browser.page {
+                                    page.dispatch(InputEvent::PointerDown {
+                                        pos: AppData::to_dom_pos(cursor_pos, vp),
+                                        button: btn,
+                                    });
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -605,19 +401,90 @@ fn main() {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64 * 40.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
                 };
-                // DOM tab: dispatch scroll to DOM tree
-                let on_dom = state.read(|d| d.tab == 0);
-                if on_dom {
-                    state.write(|d| {
-                        if let Some(tree) = &mut d.dom_tree {
-                            tree.dispatch(InputEvent::Scroll {
-                                delta: Point::new(0.0, dy),
-                            });
-                        }
-                    });
+                // Scene tab: zoom camera only when cursor is in scene viewport
+                if state.on_scene() && AppData::in_content_area(cursor_pos) {
+                    let in_viewport = last_tree
+                        .as_ref()
+                        .and_then(|t| t.tagged_rect("scene-viewport"))
+                        .map_or(false, |vp| vp.contains(cursor_pos));
+                    if in_viewport {
+                        state.write(|d| d.scene_info.on_zoom(dy));
+                        return;
+                    }
                 }
-                // Also scroll the shell content
+                // AI Graph tab: zoom the graph view relative to cursor
+                if state.on_graph() && AppData::in_content_area(cursor_pos) {
+                    let vp_rect = last_tree
+                        .as_ref()
+                        .and_then(|t| t.tagged_rect(tabs::graph::VIEWPORT_TAG));
+                    if let Some(vp) = vp_rect {
+                        // Only zoom when cursor is inside the graph viewport
+                        if vp.contains(cursor_pos) {
+                            let local = Point::new(cursor_pos.x - vp.x(), cursor_pos.y - vp.y());
+                            state.write(|d| {
+                                let factor = if dy > 0.0 { 1.1 } else { 1.0 / 1.1 };
+                                d.ai.on_zoom((local.x, local.y), factor);
+                            });
+                            return;
+                        }
+                    }
+                }
+                // DOM tab: dispatch scroll to DOM page or DevTools panel
+                if state.on_browser_preview() {
+                    // DevTools panel scroll — use tree's built-in scroll method
+                    if let Some(dt) = last_tree.as_ref().and_then(|t| t.tagged_rect(BDT)) {
+                        if dt.contains(Point::new(cursor_pos.x, cursor_pos.y)) {
+                            state.write(|d| {
+                                // Compute max scroll from content extent
+                                d.browser.devtools_scroll =
+                                    (d.browser.devtools_scroll - dy).max(0.0);
+                            });
+                            // Clamp against actual content extent from laid-out tree
+                            if let Some(tree) = &last_tree {
+                                if let Some(slot) =
+                                    tree.arena.iter().find(|s| s.tag.as_deref() == Some(BDT))
+                                {
+                                    let visible_h = slot.rect.size.h();
+                                    let mut content_h = 0.0_f64;
+                                    for &cid in &slot.children {
+                                        let cr = tree.arena[cid.0].rect;
+                                        let cy = cr.origin.y + cr.size.h() + slot.scroll.y
+                                            - slot.rect.origin.y;
+                                        content_h = content_h.max(cy);
+                                    }
+                                    let max_y = (content_h - visible_h).max(0.0);
+                                    state.write(|d| {
+                                        d.browser.devtools_scroll =
+                                            d.browser.devtools_scroll.min(max_y);
+                                    });
+                                }
+                            }
+                            return;
+                        }
+                    }
+                    // Browser viewport scroll
+                    if let Some(vp) = last_tree.as_ref().and_then(|t| t.tagged_rect(BVP)) {
+                        if vp.contains(Point::new(cursor_pos.x, cursor_pos.y)) {
+                            state.write(|d| {
+                                if let Some(page) = &mut d.browser.page {
+                                    let local =
+                                        Point::new(cursor_pos.x - vp.x(), cursor_pos.y - vp.y());
+                                    page.dispatch(InputEvent::Scroll {
+                                        pos: local,
+                                        delta: Point::new(0.0, dy),
+                                    });
+                                }
+                            });
+                            return; // don't also scroll the shell
+                        }
+                    }
+                }
+                // Scroll the shell content
                 state.write(|d| d.scroll_target = (d.scroll_target - dy).max(0.0));
+            }
+
+            WindowEvent::ModifiersChanged(new_mods) => {
+                modifiers = new_mods;
             }
 
             WindowEvent::KeyboardInput {
@@ -625,26 +492,164 @@ fn main() {
                     winit::event::KeyEvent {
                         logical_key,
                         state: ElementState::Pressed,
+                        text,
                         ..
                     },
                 ..
             } => {
-                // Tab key or number keys to switch tabs
-                match &logical_key {
-                    Key::Character(c) => {
-                        if let Ok(n) = c.as_str().parse::<usize>() {
-                            if n > 0 && n <= TAB_LABELS.len() {
-                                handle_click(&state, &format!("tab-{}", n - 1));
+                let editing = state.read(|d| d.browser.input.focused && d.tab == 0);
+
+                if editing {
+                    let shift = modifiers.state().shift_key();
+                    let ctrl = modifiers.state().control_key();
+                    let mods = any_compute_core::interaction::Modifiers {
+                        shift,
+                        ctrl,
+                        ..Default::default()
+                    };
+
+                    // Enter/Escape are browser-level, not text editing
+                    match &logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            let fetch_url = state.write(|d| d.browser.navigate(&COMBINED_CSS));
+                            if let Some(url) = fetch_url {
+                                let s2 = state.clone();
+                                std::thread::spawn(move || {
+                                    let result = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(|| {
+                                            let html = match ureq::get(&url).call() {
+                                                Ok(mut resp) => {
+                                                    let ct = resp
+                                                        .headers()
+                                                        .get("content-type")
+                                                        .and_then(|v| v.to_str().ok())
+                                                        .map(str::to_owned);
+                                                    // Read up to 200KB to avoid OOM
+                                                    let mut buf = Vec::with_capacity(200_000);
+                                                    let mut reader = resp.body_mut().as_reader();
+                                                    let mut chunk = [0u8; 8192];
+                                                    loop {
+                                                        match std::io::Read::read(
+                                                            &mut reader,
+                                                            &mut chunk,
+                                                        ) {
+                                                            Ok(0) => break,
+                                                            Ok(n) => {
+                                                                buf.extend_from_slice(&chunk[..n]);
+                                                                if buf.len() > 200_000 {
+                                                                    break;
+                                                                }
+                                                            }
+                                                            Err(_) => break,
+                                                        }
+                                                    }
+                                                    decode_http_body(&buf, ct.as_deref())
+                                                }
+                                                Err(e) => format!(
+                                                    "<h1>Error</h1><p>{}</p>",
+                                                    html_escape(&e.to_string())
+                                                ),
+                                            };
+                                            s2.write(|d| {
+                                                d.browser.load_fetched(html, &COMBINED_CSS)
+                                            });
+                                        }),
+                                    );
+                                    if let Err(e) = result {
+                                        log::error!(
+                                            "fetch thread panicked: {:?}",
+                                            e.downcast_ref::<&str>()
+                                        );
+                                        s2.write(|d| {
+                                            d.browser.html = ERROR_PAGE_HTML.into();
+                                            d.browser.reload(&COMBINED_CSS);
+                                        });
+                                    }
+                                });
+                            }
+                            state.write(|d| d.browser.input.blur());
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            state.write(|d| d.browser.input.blur());
+                        }
+                        _ => {
+                            // Map logical key to string for TextInput::handle_key
+                            let key_str = match &logical_key {
+                                Key::Character(c) if ctrl => c.as_str().to_string(),
+                                Key::Named(n) => format!("{n:?}"),
+                                _ => String::new(),
+                            };
+                            let handled =
+                                state.write(|d| d.browser.input.handle_key(&key_str, mods));
+                            if !handled && !ctrl {
+                                if let Some(txt) = &text {
+                                    state.write(|d| d.browser.input.handle_text(txt.as_str()));
+                                }
                             }
                         }
                     }
-                    Key::Named(NamedKey::Tab) => {
+                } else {
+                    // Track held keys for WASD camera controls on scene tab
+                    if let Key::Character(c) = &logical_key {
+                        let k = c.as_str().to_lowercase();
+                        if state.on_scene()
+                            && matches!(k.as_str(), "w" | "a" | "s" | "d" | "q" | "e")
+                        {
+                            state.write(|d| {
+                                d.keys_held.insert(k);
+                            });
+                            // Don't fall through to tab switching
+                        } else if let Ok(n) = c.as_str().parse::<usize>() {
+                            if n > 0 && n <= TAB_LABELS.len() {
+                                state.handle_click(&AppData::tab_tag(n - 1));
+                            }
+                        }
+                    } else if let Key::Named(NamedKey::Tab) = &logical_key {
                         let next = state.read(|d| (d.tab + 1) % TAB_LABELS.len());
-                        handle_click(&state, &format!("tab-{next}"));
+                        state.handle_click(&AppData::tab_tag(next));
+                    } else if let Key::Named(NamedKey::Space) = &logical_key {
+                        if state.on_scene() {
+                            state.write(|d| {
+                                d.keys_held.insert("space".into());
+                            });
+                        }
+                    } else if let Key::Named(NamedKey::Shift) = &logical_key {
+                        if state.on_scene() {
+                            state.write(|d| {
+                                d.keys_held.insert("shift".into());
+                            });
+                        }
                     }
-                    _ => {}
                 }
             }
+
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Released,
+                        ..
+                    },
+                ..
+            } => match &logical_key {
+                Key::Character(c) => {
+                    let k = c.as_str().to_lowercase();
+                    state.write(|d| {
+                        d.keys_held.remove(&k);
+                    });
+                }
+                Key::Named(NamedKey::Space) => {
+                    state.write(|d| {
+                        d.keys_held.remove("space");
+                    });
+                }
+                Key::Named(NamedKey::Shift) => {
+                    state.write(|d| {
+                        d.keys_held.remove("shift");
+                    });
+                }
+                _ => {}
+            },
 
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
@@ -654,27 +659,163 @@ fn main() {
                 // Tick transitions
                 state.write(|d| {
                     d.transitions.start_all();
-                    d.transitions.gc();
                     // Record frame time
                     d.frame_times.push(dt * 1000.0);
                     if d.frame_times.len() > 120 {
                         d.frame_times.remove(0);
                     }
-                    // Tick DOM tree animations
-                    if let Some(tree) = &mut d.dom_tree {
-                        tree.tick(dt);
+                    // Tick DOM page animations
+                    if let Some(page) = &mut d.browser.page {
+                        page.tick(dt);
                     }
+                    // Tick scene physics + WASD camera
+                    if d.tab == 1 {
+                        d.scene_info.tick(dt);
+                        let speed = 5.0 * dt;
+                        if d.keys_held.contains("w") {
+                            d.scene_info.scene.camera.fly(speed);
+                        }
+                        if d.keys_held.contains("s") {
+                            d.scene_info.scene.camera.fly(-speed);
+                        }
+                        if d.keys_held.contains("a") {
+                            d.scene_info.scene.camera.strafe(-speed);
+                        }
+                        if d.keys_held.contains("d") {
+                            d.scene_info.scene.camera.strafe(speed);
+                        }
+                        if d.keys_held.contains("q") || d.keys_held.contains("space") {
+                            d.scene_info.scene.camera.elevate(speed);
+                        }
+                        if d.keys_held.contains("e") || d.keys_held.contains("shift") {
+                            d.scene_info.scene.camera.elevate(-speed);
+                        }
+                    }
+                    // Tick AI training simulation
+                    if d.tab == 3 && d.ai.training {
+                        d.ai.tick_training(dt);
+                    }
+                    // Poll dataset provider loading
+                    if d.tab == 3 {
+                        d.ai.tick_ds_fetch();
+                    }
+                    d.dt = dt;
                 });
 
                 let sz = window.inner_size();
                 if sz.width > 0 && sz.height > 0 {
                     let w = sz.width as f64;
                     let h = sz.height as f64;
-                    let mut tree = build_tree(&state, &sheet, w, h);
+                    let mut tree = state.build_tree(&sheet, w, h);
+                    tree.measure_text_nodes(|text, font_size| gpu.measure_text(text, font_size));
                     tree.layout(Size::new(w, h));
+
                     list.clear();
                     tree.paint(&mut list);
                     tree.post_paint();
+
+                    // On scene tab, push viewport primitives offset by the viewport node's position
+                    if state.on_scene() {
+                        if let Some(vp) = tree.tagged_rect("scene-viewport") {
+                            // Update viewport size for next frame's camera aspect
+                            state.write(|d| {
+                                d.scene_info.vp_size = (vp.w(), vp.h());
+                                // Update camera aspect ratio
+                                if let any_compute_core::scene::Projection::Perspective {
+                                    aspect,
+                                    ..
+                                } = &mut d.scene_info.scene.camera.projection
+                                {
+                                    *aspect = vp.w() / vp.h().max(1.0);
+                                }
+                            });
+                            let prims = state.read(|d| d.scene_info.viewport_prims.clone());
+                            list.composite(vp, &prims);
+                        }
+                    }
+
+                    // Graph mode: composite graph prims into viewport (any tab)
+                    if state.read(|d| d.graph_mode) {
+                        if let Some(vp) = tree.tagged_rect(tabs::graph::VIEWPORT_TAG) {
+                            let prims = state.read(|d| d.ai.prims.clone());
+                            list.composite(vp, &prims);
+                        }
+                    }
+
+                    // AI tab (non-graph-mode): composite loss chart or model graph
+                    if !state.read(|d| d.graph_mode) && state.read(|d| d.tab == 3) {
+                        let is_graph =
+                            state.read(|d| d.ai.center == tabs::graph::CenterView::ModelGraph);
+                        if is_graph {
+                            if let Some(vp) = tree.tagged_rect(tabs::graph::VIEWPORT_TAG) {
+                                let prims = state.read(|d| d.ai.prims.clone());
+                                list.composite(vp, &prims);
+                            }
+                        } else if let Some(vp) = tree.tagged_rect("ai-loss-chart") {
+                            let prims = state.read(|d| d.ai.prims.clone());
+                            list.composite(vp, &prims);
+                        }
+
+                        // Embedding scatter plot
+                        if let Some(vp) = tree.tagged_rect("ai-ds-scatter") {
+                            state.write(|d| d.ai.build_scatter_prims(vp.w(), vp.h()));
+                            let prims = state.read(|d| d.ai.scatter_prims.clone());
+                            list.composite(vp, &prims);
+                        }
+                    }
+
+                    // On Browser → Preview subtab, overlay the Page below the nav bar
+                    if state.on_browser_preview() {
+                        // Re-measure text if the page was reloaded
+                        let needs = state.read(|d| d.browser.needs_measure);
+                        if needs {
+                            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                state.write(|d| {
+                                    if let Some(page) = &mut d.browser.page {
+                                        page.measure_text_nodes(|text, font_size| {
+                                            gpu.measure_text(text, font_size)
+                                        });
+                                        page.start_animations();
+                                    }
+                                    d.browser.needs_measure = false;
+                                });
+                            }));
+                            if ok.is_err() {
+                                log::error!("measure_text_nodes panicked — replacing page");
+                                state.write(|d| {
+                                    d.browser.page = Some(Page::load(ERROR_PAGE_HTML));
+                                    d.browser.needs_measure = false;
+                                });
+                            }
+                        }
+
+                        if let Some(vp) = tree.tagged_rect(BVP) {
+                            let dom_list =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    state.write(|d| {
+                                        d.browser.page.as_mut().map(|page| {
+                                            page.layout(Size::new(vp.w(), vp.h()));
+                                            let mut dl = RenderList::default();
+                                            page.paint(&mut dl);
+                                            page.post_paint();
+                                            dl
+                                        })
+                                    })
+                                }));
+                            match dom_list {
+                                Ok(Some(dl)) => list.composite(vp, &dl),
+                                Ok(None) => {}
+                                Err(_) => {
+                                    log::error!("page layout/paint panicked — replacing page");
+                                    state.write(|d| {
+                                        d.browser.page = Some(Page::load(ERROR_PAGE_HTML));
+                                        d.browser.needs_measure = true;
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     gpu.paint(&list);
                     last_tree = Some(tree);
 

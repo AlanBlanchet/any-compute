@@ -4,14 +4,23 @@ description = "Unified showcase — DOM, 3D, compute, shaders, benchmarks, live 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "showcase"
 
 [dependencies]
 any-compute-core = { workspace = true, features = ["wgpu-backend"] }
+any-compute-ai = { path = "../../crates/ai", features = ["dataset"] }
 any-compute-dom = { workspace = true, features = ["gpu"] }
 any-compute-bench = { workspace = true, features = ["window"] }
 rayon = { workspace = true }
-env_logger = "0.11"
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+log = { workspace = true }
+ureq = { workspace = true }
 
 [[bin]]
 name = "showcase"
 path = "main.rs"
+
+[[bin]]
+name = "snapshot"
+path = "snapshot.rs"
