@@ -1,0 +1,21 @@
+[package]
+name = "any-compute-ai"
+description = "AI/ML layer — neural network builders, dataset providers, ML taxonomy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Dataset providers (HuggingFace Hub) — pulls HTTP + base64 + PNG decode
+dataset = ["dep:ureq", "dep:base64", "dep:png"]
+
+[dependencies]
+any-compute-core = { path = "../core" }
+log.workspace = true
+serde_json.workspace = true
+
+# Optional deps behind feature flags
+ureq = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
