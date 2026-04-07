@@ -6,171 +6,21 @@ applyTo: "crates/bench/**"
 
 # Benchmarks — `crates/bench/`
 
-Standalone benchmark crate — the **single home** for all benchmark code.
-Depends on `any-compute-core` (compute, layout, render) and `any-compute-dom`
-(CSS parsing, tree building, flexbox, GPU renderer behind `gpu` feature,
-theme) for the dashboard window.
-
-**No CSS/HTML tests here** — CSS parser correctness and fault-tolerance belong in
-`crates/dom/`. GPU rendering, scenario replay, and visual comparison belong in
-`crates/dom/` (behind `gpu` feature). This crate only benchmarks and provides the dashboard window.
-
-**No benchmark code in core** — `crates/core/` is purely compute primitives.
-Core exposes `FEATURES` (compile-time feature flags) for the runner to query.
+Standalone benchmark crate. No CSS/HTML tests here (those belong in `crates/dom/`).
+No benchmark code in core.
 
 ## Running
 
-```sh
-make dashboard  # launches the GPU dashboard window
-make bench      # CLI benchmark (writes to out/)
-cargo test -p any-compute-bench  # 1 integration test (dashboard build+layout)
-```
+- `make dashboard` — GPU dashboard window
+- `make bench` — CLI benchmark (writes to `out/`)
+- `cargo test -p any-compute-bench` — integration test
 
-## Crate Structure
+## Key Patterns
 
-| File                    | Purpose                                                                    |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `lib.rs`                | DOM perf benchmarks vs heap-per-node reference, shared constants + helpers |
-| `runner.rs`             | Categories, hardware detection, runners, comparison tables, live metrics   |
-| `runner_references.rs`  | Static reference comparison data (80+ library comparison entries)          |
-| `window.rs`             | GPU dashboard binary (canvas + winit), feature-gated `window`              |
-| `bench.css`             | Catppuccin Mocha theme — single source of truth for dashboard styling      |
-| `bin/anc_bench.rs`      | CLI benchmark binary — writes JSON reports to `out/`                       |
-| `fixtures/website.html` | Realistic static landing page (~200 DOM nodes) for parse benchmarks        |
-| `fixtures/website.css`  | CSS for website fixture — 90+ rules, variables, selectors                  |
-| `Cargo.toml`            | `window` + `hwinfo` features gate canvas/sysinfo deps                      |
-
-### `bench_categories!` Macro
-
-Declares the `BenchCategory` enum + all metadata + dispatch from a single declarative block.
-Each entry provides: id, label, group, domain, desc, runner function.
-The macro generates: enum variants (with optional doc comments), `ALL` const, five accessor
-methods (`id`, `label`, `group`, `domain`, `description`), and `run_category()` dispatch.
-Adding a new benchmark = one block. No match arms to update elsewhere.
-
-`all_domains()` and `for_domain()` stay manual in a separate `impl` block since they need
-curated domain ordering.
-
-## Shared Constants (exported from `lib.rs`)
-
-| Const / fn           | Purpose                                                |
-| -------------------- | ------------------------------------------------------ |
-| `BENCH_CSS`          | Raw CSS text (`include_str!`)                          |
-| `WEBSITE_HTML`       | Full website HTML fixture (`include_str!`)             |
-| `WEBSITE_CSS`        | Website CSS fixture (`include_str!`)                   |
-| `VIEWPORT`           | Default `Size(1400, 900)`                              |
-| `VERSION`            | `"vX.Y.Z"` from `Cargo.toml`                           |
-| `TAB_LABELS`         | `["Hardware", "Benchmarks", "Live Showdown"]`          |
-| `SHEET`              | `LazyLock<StyleSheet>` — parsed once, O(1) lookups     |
-| `s(cls)`/`sm()`      | Shorthand class resolution via `SHEET`                 |
-| `kv_row()`           | Key-value row helper (label 72px + value)              |
-| `build_shell()`      | Common sidebar + tab shell (returns content NodeId)    |
-| `bench_throughput()` | Generic ops/sec measurement (warmup + timed rounds)    |
-| `bench_pair()`       | A/B comparative measurement → `Measurement`            |
-| `bench_scenarios!`   | Declarative macro — batch paired benchmarks into `Vec` |
-
-`kv_row` and `build_shell` use the global `SHEET` directly — no `&StyleSheet` parameter.
-`window.rs` imports `SHEET` from `lib.rs` and defines local `s()`/`sm()` wrappers.
-
-## DOM Performance Comparison
-
-Compares our arena `Tree` against a naive `Box<RefNode>` heap-per-node reference tree
-(mimicking browser DOM allocation patterns).
-
-| Benchmark                   | Node count | What it measures                           |
-| --------------------------- | ---------- | ------------------------------------------ |
-| create flat 1K nodes        | 1001       | Allocation throughput                      |
-| create deep 500 chain       | 501        | Linked-list pattern                        |
-| layout flat 1K              | 1001       | Flexbox solver vs heap creation            |
-| paint 100 nodes             | 101        | Render list generation                     |
-| CSS parse (bench.css)       | —          | Parse throughput vs HashMap alloc          |
-| CSS parse (website.css)     | —          | Parse throughput on 90+ rule stylesheet    |
-| CSS resolve 1K classes      | —          | Lookup speed vs Style::default             |
-| HTML parse (small doc)      | 6          | Scanner throughput vs byte scanning        |
-| website parse (HTML only)   | ~150+      | Full static site HTML parse throughput     |
-| website parse + CSS resolve | ~150+      | HTML parse + CSS class resolution pipeline |
-| website full frame          | ~150+      | Parse + layout + paint end-to-end          |
-| dashboard full frame        | ~40        | Build + layout + paint end-to-end          |
-
-### Runner Categories (`runner.rs`)
-
-Two DOM categories in the `bench_categories!` macro (group = "DOM", domain = "DOM / Layout"):
-
-| Category       | Runner                 | What it benchmarks                                   |
-| -------------- | ---------------------- | ---------------------------------------------------- |
-| `DomParse`     | `run_dom_parse()`      | HTML/CSS parse throughput: small doc + full website  |
-| `DomFullFrame` | `run_dom_full_frame()` | Full pipeline: parse→layout→paint on website fixture |
-
-### Website Fixtures
-
-`fixtures/website.html` — Realistic ~230 line landing page with nav, hero section,
-feature cards, benchmark table, code example, platform grid, footer (~150+ DOM nodes).
-
-`fixtures/website.css` — Full CSS with `:root` variables, 90+ rules, layout/color styles.
-Both are `include_str!`'d as `WEBSITE_HTML` and `WEBSITE_CSS` constants in `lib.rs`.
-
-## GPU Dashboard (`window` feature)
-
-- `anv-bench-window` binary — launched via `make` (default target)
-- Makefile target: `cargo run -p any-compute-bench --bin anv-bench-window`
-- wgpu instanced draw + glyphon text
-- Background threads via rayon: hardware detection, compute benchmarks, live throughput loop
-- `build_tree()` constructs sidebar + tabs + tab-specific content builders per frame
-- Three tabs: Hardware (system info), Benchmarks (results + comparisons), Live Showdown (sigmoid throughput)
-- Styling: Tailwind CSS utilities + bench.css component classes, merged via `combined_css()` at startup
-- `theme` module provides const `Color` values for dynamic logic (bar graphs, clear color)
-- `TAILWIND_CSS` exported from `any-compute-dom` — compiled Tailwind v3 subset, no runtime
-
-### CSS Pipeline
-
-- `combined_css()` in `lib.rs` concatenates `TAILWIND_CSS` + `BENCH_CSS` → one string
-- `SHEET = LazyLock::new(|| StyleSheet::parse(&combined_css()))` — parsed once, O(1) lookups
-- Tailwind utilities provide spacing, layout, colors; bench.css provides component classes
-- Compound CSS classes (`.row-gap-8`, `.row-gap-12`, `.section-hdr`, `.small-dim`, `.heading-text`) reduce multi-class lookups to single `s()` calls
-- Both parsed by the same CSS engine, same `StyleOp` compilation, zero duplication
-
-### GPU Renderer
-
-Lives in `crates/dom/` behind `gpu` feature — see `dom` skill file. The bench dashboard imports
-`any_compute_dom::gpu::Gpu` and `any_compute_dom::theme` for rendering.
-
-### Scenario Runner
-
-Lives in `crates/dom/` behind `gpu` feature — see `dom` skill file.
-
-### Event System (V8-like)
-
-All winit events are converted to `InputEvent` and dispatched through `Tree::dispatch()`:
-
-| winit Event         | InputEvent  | Action                                      |
-| ------------------- | ----------- | ------------------------------------------- |
-| MouseInput Pressed  | PointerDown | Set focus, track active tag                 |
-| MouseInput Released | PointerUp   | Fire click if same tag as press (web model) |
-| CursorMoved         | PointerMove | Hover tracking → transition fade in/out     |
-| CursorLeft          | —           | Clear hover                                 |
-| MouseWheel          | Scroll      | Smooth scroll + dispatch                    |
-| KeyboardInput       | KeyDown     | Tab/Arrow navigation, Enter/Space activate  |
-| Focused(false)      | —           | Clear hover                                 |
-| ModifiersChanged    | —           | Track modifier state                        |
-
-- `HoverState` tracks hovered tag; emits `HoverDelta` → starts 120ms EaseOut fade transitions
-- `FocusState` tracks focused tag for keyboard activation (Enter/Space)
-- Pointer click only fires on release _if_ released on the same tag as pressed (web behavior)
-- `winit_key_to_string()` / `winit_button()` / `winit_modifiers()` convert winit types → our types
-
-### Transitions & Animations
-
-- `ease_transition(mgr, key, from, to, dur)` — centralized helper for all transitions
-- `switch_tab(d, new)` — single source of truth for tab-switch animation (fade out old, fade in new, reset scroll)
-- Tab switch: 180ms EaseOut via `TransitionManager`
-- Hover: 120ms EaseOut fade, blended into background color at draw time via `Color::lerp`
-- Buttons: hover brightens background by 15% toward white
-- Scroll: exponential smoothing (0.18 speed, `scroll_y` lerps toward `scroll_target` each frame)
-
-### Click / Keyboard Handling
-
-- `handle_click(state, tag)` — dispatches tags: `"tab-N"` → `switch_tab`, `"run-bench"`, `"toggle-sim"`
-- `handle_keyboard(state, key, mods)` — Tab/ArrowDown/ArrowUp cycle tabs, Enter/Space activate focused, Escape stops sim
-- `handle_hover(state, tag)` — hover transition management
-- **Critical**: tab buttons must stretch to fill the sidebar width (cross-axis stretch) — if they
-  collapse to padding-only width, clicks miss them entirely
+- `bench_categories!` macro: declares `BenchCategory` enum + metadata + dispatch. Adding a benchmark = one block
+- `SHEET` / `s()` / `sm()` pattern for O(1) CSS class resolution (parsed once via `LazyLock`)
+- `combined_css()` merges `TAILWIND_CSS` + `BENCH_CSS`
+- DOM perf: arena `Tree` vs naive `Box<RefNode>` heap-per-node reference
+- Dashboard: GPU-gated (`window` feature), three tabs (Hardware/Benchmarks/Live Showdown)
+- Background workers via `std::thread` for hw detection, benchmarks, live throughput
+- Uses `any_compute_dom::gpu::Gpu` and `any_compute_dom::theme` for rendering

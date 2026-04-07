@@ -16,9 +16,7 @@ applyTo: "crates/core/**"
 
 - `TransitionManager` composes named `Transition<f64>` instances — use for multiple simultaneous values.
 - For non-`f64` types use `Transition<T>` directly; `TransitionManager` is a `f64` convenience wrapper.
+- `TransitionManager::ease(key, from, to, dur, easing)` — shorthand to create and add in one call.
+- **Do not call `gc()`** on long-lived managers where finished transitions should keep returning their final value (e.g. hover states). Finished transitions' `value()` returns their `to` field. `gc()` removes finished entries, causing `value()` to return `None` — which can snap visual state back to default.
 
-## RSX integration
 
-- `crates/rsx/src/hooks.rs` owns dioxus lifecycle only — no timing math lives there.
-- Hooks (`use_transition`, `use_presence`) start/tick the core `Transition<T>` inside `use_signal`.
-- Triggering a transition means calling `.start()` on the core type, not re-creating it.

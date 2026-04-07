@@ -8,54 +8,29 @@ applyTo: "crates/core/**,crates/dom/**"
 
 ## Propagation
 
-- Three-phase propagation: **Capture → Target → Bubble** — mirrors the W3C DOM model exactly.
-- `EventContext` wraps every event; call `.stop_propagation()` / `.prevent_default()` to control flow.
-- Never implement custom propagation outside `EventContext` — extend it instead.
-- `Tree::dispatch(event) → DispatchResult` performs full propagation and returns the tag chain from root → target.
+- Three-phase: Capture → Target → Bubble (W3C model)
+- `EventContext` wraps every event: `.stop_propagation()` / `.prevent_default()`
+- `Tree::dispatch(event) → DispatchResult` — full propagation, returns tag chain
 
-## DispatchResult
+## Input Coverage
 
-- `DispatchResult` carries `tags: Vec<String>` (root → target order), `stopped`, `default_prevented`.
-- `.target_tag()` — deepest (innermost) tag.
-- `.bubble_tags()` — iterator from innermost → outermost (bubble order).
-- The host uses `DispatchResult` to decide actions; per-node handlers are a future extension point.
+- `InputEvent` — single enum for pointer, keyboard, text input, focus/blur, scroll
+- `Modifiers` tracks shift/ctrl/alt/meta
+- `TextInput { text }` separate from KeyDown for IME support
 
-## Input coverage
+## Dispatch
 
-- `InputEvent` is the single enum covering pointer, keyboard, focus/blur, and scroll events.
-- `InputEvent::pos()` extracts position from pointer events; `None` for keyboard/focus.
-- `Modifiers` tracks shift/ctrl/alt/meta — included in every keyboard event.
+- `DispatchResult` carries `tags`, `stopped`, `default_prevented`, `restyled`, `cursor`
+- Editable nodes: `TextInput` inserts at caret, `KeyDown` forwarded to `handle_edit_key`
+- `PointerDown` on editable node auto-focuses and places caret
 
-## Hover tracking
+## State Tracking
 
-- `HoverState` tracks the currently hovered tag across frames.
-- `.update(new_tag)` returns `Option<HoverDelta>` with `left` / `entered` tags.
-- The host starts transitions when `HoverDelta` is emitted (fade in/out hover effects).
-- Hover is tag-based (not node-based) because the tree is rebuilt every frame (immediate-mode).
-
-## Focus tracking
-
-- `FocusState` tracks the focused tag for keyboard dispatch.
-- `.focus(tag)` moves focus and returns the previously focused tag.
-- Focus is set on pointer click and cleared on Escape.
-
-## Hit testing
-
-- `Tree::hit_test(pos) → Option<NodeId>` — deepest node under cursor (reverse z-order).
-- `Tree::click(pos)` — walk parents from hit node to find deepest tagged node (legacy helper).
-- `Tree::tag_at(pos)` — same as `click` but returns `String` (owned).
-
-## Scenario Replay — `crates/dom/scenario.rs`
-
-- `Scenario` — builder for scripted interactions, lives in dom crate (behind `gpu` feature).
-- `Action` enum: `Click(Point)`, `Hover(Point)`, `Scroll{pos,delta}`, `Dispatch(InputEvent)`, `AssertTag{pos,expected}`, `Capture`.
-- `StepResult` — constructors: `dispatched`, `silent`, `asserted`, `captured`.
-- `replay_step(tree, action, index)` and `replay(tree, scenario)` — free functions, not Tree methods.
-- Click dispatches pointer-down + pointer-up pair; Hover dispatches pointer-move.
-- `Capture` marks frames for GPU screenshot — the host inspects `StepResult::capture` to trigger `Gpu::capture()`.
-- Works headlessly in CI — no window, no mouse, no keyboard interaction with the OS.
+- `HoverState` — tag-based hover across frames (tree rebuilt each frame in immediate-mode)
+- `FocusState` — focused tag for keyboard dispatch
+- `Tree::hit_test(pos)` — deepest node under cursor (reverse z-order)
 
 ## No framework deps
 
-- Core event model has zero UI framework dependencies.
-- To add a new input source: add a variant to `InputEvent`, not a new type.
+Core event model has zero UI framework dependencies.
+To add a new input source: add a variant to `InputEvent`, not a new type.
