@@ -4,18 +4,18 @@
 //! Runs real `any_compute_bench::runner` workloads on background threads and
 //! streams results into the render loop at 60+ FPS with zero stutter.
 
-use any_compute_dom::gpu::Gpu;
-use any_compute_dom::theme;
-use any_compute_dom::winit;
+use any_compute_bench::runner::*;
 use any_compute_core::Lerp;
 use any_compute_core::animation::{Easing, Transition, TransitionManager};
-use any_compute_bench::runner::*;
 use any_compute_core::interaction::{Button, FocusState, HoverState, InputEvent, Modifiers};
 use any_compute_core::kernel::{UnaryOp, best_kernel};
 use any_compute_core::layout::{Point, Size};
 use any_compute_core::render::{Color, RenderList};
+use any_compute_dom::gpu::Gpu;
 use any_compute_dom::style::*;
+use any_compute_dom::theme;
 use any_compute_dom::tree::*;
+use any_compute_dom::winit;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -728,6 +728,7 @@ pub fn main() {
                 // Dispatch scroll event through tree.
                 if let Some(tree) = &mut last_tree {
                     let _result = tree.dispatch(InputEvent::Scroll {
+                        pos: Point::new(cursor_pos.x, cursor_pos.y),
                         delta: Point::new(0.0, dy),
                     });
                 }

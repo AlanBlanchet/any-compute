@@ -1,439 +1,12 @@
-//! Parse HTML-like markup into our arena-based [`Tree`].
-//!
-//! Zero external dependencies — a purpose-built scanner that maps a small
-//! subset of HTML/CSS onto our [`Style`] + [`NodeKind`] model.
-//!
-//! ## Supported elements
-//!
-//! | Markup tag   | Maps to          | Notes                                    |
-//! |-------------|------------------|------------------------------------------|
-//! | `<div>`     | `NodeKind::Box`  | Container, default column layout         |
-//! | `<span>`    | `NodeKind::Text` | Inline text (body = text content)        |
-//! | `<p>`       | `NodeKind::Text` | Paragraph text                           |
-//! | `<progress>`| `NodeKind::Bar`  | `value` attr → fraction, `color` → fill  |
-//! | any other   | `NodeKind::Box`  | Unknown tags become generic containers   |
-//!
-//! ## Supported attributes
-//!
-//! Style attributes mirror our [`Style`] builder names for zero-friction
-//! mapping.  CSS-like inline `style="..."` is **not** parsed — instead use
-//! direct attributes which are friendlier and type-safe:
-//!
-//! ```html
-//! <div w="200" h="100" bg="#1e1e2e" direction="row" gap="8" pad="12">
-//!   <span font="16" color="#cdd2f4">Hello</span>
-//!   <progress value="0.7" color="#a6e3a1" h="8" radius="4" />
-//! </div>
-//! ```
-//!
-//! ## Usage
-//!
-//! ```
-//! use any_compute_dom::parse::parse;
-//! let tree = parse(r#"<div w="400" h="300"><span>Hello</span></div>"#);
-//! assert_eq!(tree.arena.len(), 2);
-//! ```
-
-use any_compute_core::render::Color;
-
 use crate::css::StyleSheet;
 use crate::style::*;
-use crate::tree::*;
+use any_compute_core::render::Color;
 
-/// Parse error with position context.
-///
-/// Kept for external consumers — the built-in parsers are fault-tolerant
-/// and never return errors, but downstream code may still define custom
-/// parse errors using this type.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParseError {
-    pub offset: usize,
-    pub message: String,
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "parse error at byte {}: {}", self.offset, self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-/// Parse HTML-like markup into a [`Tree`].
-///
-/// Fault-tolerant: malformed tags/attributes are silently skipped.
-/// Empty input produces a default root node.  Never panics.
-pub fn parse(input: &str) -> Tree {
-    let tokens = tokenize(input);
-    build_tree(&tokens, None)
-}
-
-/// Parse HTML-like markup with CSS class resolution via a [`StyleSheet`].
-///
-/// Fault-tolerant: malformed markup is silently skipped.  Never panics.
-pub fn parse_with_css(input: &str, sheet: &StyleSheet) -> Tree {
-    let tokens = tokenize(input);
-    let mut tree = build_tree(&tokens, Some(sheet));
-    tree.set_sheet(std::sync::Arc::new(sheet.clone()));
-    tree
-}
-
-// ── Tokenizer ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-enum Token {
-    /// `<tag attr="val" ...>` or `<tag ... />`
-    OpenTag {
-        name: String,
-        attrs: Vec<(String, String)>,
-        self_closing: bool,
-    },
-    /// `</tag>`
-    CloseTag { name: String },
-    /// Text content between tags (trimmed, non-empty).
-    Text { content: String },
-}
-
-fn tokenize(input: &str) -> Vec<Token> {
-    let bytes = input.as_bytes();
-    let mut tokens = Vec::new();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            // Skip markup declarations and processing instructions:
-            //   <!-- comment -->   |   <!DOCTYPE ...>   |   <?xml ...?>
-            if let Some(skip) = skip_markup_special(&input[i..]) {
-                i += skip;
-                continue;
-            }
-            if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                // Close tag.
-                i += 2;
-                let name_start = i;
-                while i < bytes.len() && bytes[i] != b'>' {
-                    i += 1;
-                }
-                if i >= bytes.len() {
-                    break; // unclosed close tag — skip
-                }
-                let name = input[name_start..i].trim().to_ascii_lowercase();
-                tokens.push(Token::CloseTag { name });
-                i += 1; // skip '>'
-            } else {
-                // Open tag.
-                i += 1;
-                // Tag name.
-                let name_start = i;
-                while i < bytes.len()
-                    && !bytes[i].is_ascii_whitespace()
-                    && bytes[i] != b'>'
-                    && bytes[i] != b'/'
-                {
-                    i += 1;
-                }
-                let name = input[name_start..i].trim().to_ascii_lowercase();
-
-                // Attributes.
-                let mut attrs = Vec::new();
-                loop {
-                    // Skip whitespace.
-                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                        i += 1;
-                    }
-                    if i >= bytes.len() {
-                        break; // unclosed open tag — use attrs gathered so far
-                    }
-                    if bytes[i] == b'>' || bytes[i] == b'/' {
-                        break;
-                    }
-                    // Attribute name.
-                    let attr_start = i;
-                    while i < bytes.len()
-                        && bytes[i] != b'='
-                        && !bytes[i].is_ascii_whitespace()
-                        && bytes[i] != b'>'
-                        && bytes[i] != b'/'
-                    {
-                        i += 1;
-                    }
-                    let attr_name = input[attr_start..i].to_ascii_lowercase();
-                    // Skip '='
-                    if i < bytes.len() && bytes[i] == b'=' {
-                        i += 1;
-                    }
-                    // Value — quoted or bare.
-                    let value = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
-                        let quote = bytes[i];
-                        i += 1;
-                        let val_start = i;
-                        while i < bytes.len() && bytes[i] != quote {
-                            i += 1;
-                        }
-                        let val = input[val_start..i].to_string();
-                        if i < bytes.len() {
-                            i += 1;
-                        } // skip closing quote
-                        val
-                    } else {
-                        // Bare value — until whitespace or '>' or '/'.
-                        let val_start = i;
-                        while i < bytes.len()
-                            && !bytes[i].is_ascii_whitespace()
-                            && bytes[i] != b'>'
-                            && bytes[i] != b'/'
-                        {
-                            i += 1;
-                        }
-                        input[val_start..i].to_string()
-                    };
-                    if !attr_name.is_empty() {
-                        attrs.push((attr_name, value));
-                    }
-                }
-
-                let self_closing = i < bytes.len() && bytes[i] == b'/';
-                if self_closing {
-                    i += 1;
-                }
-                if i < bytes.len() && bytes[i] == b'>' {
-                    i += 1;
-                }
-
-                tokens.push(Token::OpenTag {
-                    name,
-                    attrs,
-                    self_closing,
-                });
-            }
-        } else {
-            // Text content.
-            let start = i;
-            while i < bytes.len() && bytes[i] != b'<' {
-                i += 1;
-            }
-            let text = input[start..i].trim();
-            if !text.is_empty() {
-                tokens.push(Token::Text {
-                    content: text.to_string(),
-                });
-            }
-        }
-    }
-
-    tokens
-}
-
-/// Skip HTML comments (`<!-- -->`), declarations (`<!DOCTYPE>`, `<![CDATA[]]>`),
-/// and processing instructions (`<?...?>`).  Returns bytes consumed, or `None`.
-fn skip_markup_special(s: &str) -> Option<usize> {
-    if s.starts_with("<!--") {
-        return Some(find_end(s, 4, "-->"));
-    }
-    if s.starts_with("<![CDATA[") {
-        return Some(find_end(s, 9, "]]>"));
-    }
-    if s.starts_with("<!") {
-        return Some(find_end(s, 2, ">"));
-    }
-    if s.starts_with("<?") {
-        return Some(find_end(s, 2, "?>"));
-    }
-    None
-}
-
-/// Scan forward from `start` in `s` for `end_marker`, returning total bytes consumed.
-fn find_end(s: &str, start: usize, end_marker: &str) -> usize {
-    match s[start..].find(end_marker) {
-        Some(pos) => start + pos + end_marker.len(),
-        None => s.len(), // unterminated — consume rest
-    }
-}
-
-// ── Tree builder ────────────────────────────────────────────────────────────
-
-fn build_tree(tokens: &[Token], sheet: Option<&StyleSheet>) -> Tree {
-    if tokens.is_empty() {
-        return Tree::new(Style::default());
-    }
-
-    // The first token must be an open tag — it becomes the root.
-    // If not, create a default root and treat everything as children.
-    let (root_name, root_attrs, root_self_closing, start_idx) = match &tokens[0] {
-        Token::OpenTag {
-            name,
-            attrs,
-            self_closing,
-            ..
-        } => (name.clone(), attrs.clone(), *self_closing, 1),
-        _ => {
-            // No root open tag — wrap everything in a default container.
-            (String::from("div"), Vec::new(), false, 0)
-        }
-    };
-
-    let root_style = resolve_style(&root_name, &root_attrs, sheet);
-    let mut tree = Tree::new(root_style);
-    let root_id = tree.root;
-
-    // Transform root kind if it maps to text/bar (rare but possible).
-    set_kind(&mut tree, root_id, &root_name, &root_attrs);
-    apply_tag(&mut tree, root_id, &root_attrs);
-    populate_identity(&mut tree, root_id, &root_name, &root_attrs);
-
-    if root_self_closing {
-        return tree;
-    }
-
-    // Stack of (NodeId, tag_name) for nesting.
-    let mut stack: Vec<(NodeId, String)> = vec![(root_id, root_name.clone())];
-
-    let mut ti = start_idx;
-    while ti < tokens.len() {
-        match &tokens[ti] {
-            Token::OpenTag {
-                name,
-                attrs,
-                self_closing,
-                ..
-            } => {
-                let parent = stack.last().map(|(id, _)| *id).unwrap_or(tree.root);
-                let id = spawn_child(&mut tree, parent, name, attrs, sheet);
-
-                if !self_closing {
-                    stack.push((id, name.clone()));
-                }
-            }
-            Token::CloseTag { name, .. } => {
-                // Pop the stack until we find a matching open tag.
-                // Unmatched close tags are silently skipped.
-                if let Some(pos) = stack.iter().rposition(|(_, n)| n == name) {
-                    stack.truncate(pos);
-                }
-            }
-            Token::Text { content, .. } => {
-                // Text between tags → Text node child.
-                let parent = stack.last().map(|(id, _)| *id).unwrap_or(tree.root);
-                // Check if parent is already a Text node — if so, replace its content.
-                if matches!(tree.slot(parent).kind, NodeKind::Text(_)) {
-                    tree.slot_mut(parent).kind = NodeKind::Text(content.clone());
-                } else {
-                    let parent_style = tree.slot(parent).style.clone();
-                    tree.add_text(
-                        parent,
-                        content.as_str(),
-                        Style {
-                            font_size: parent_style.font_size,
-                            color: parent_style.color,
-                            ..Style::default()
-                        },
-                    );
-                }
-            }
-        }
-        ti += 1;
-    }
-
-    tree
-}
-
-// ── Tag → NodeKind mapping ──────────────────────────────────────────────────
-
-enum TagMapping {
-    Box,
-    Text,
-    Bar,
-}
-
-fn map_tag(name: &str) -> TagMapping {
-    match name {
-        "span" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "label" | "text" => {
-            TagMapping::Text
-        }
-        "progress" | "bar" | "meter" => TagMapping::Bar,
-        _ => TagMapping::Box, // div, section, header, footer, nav, ...
-    }
-}
-
-/// Create a child node from tag + attributes and apply tag/data-tag.
-/// Extract bar fraction + fill from element attributes.
-fn bar_from_attrs(attrs: &[(String, String)]) -> (f64, Color) {
-    let frac = find_attr(attrs, "value")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0);
-    let fill = find_attr(attrs, "color")
-        .and_then(|v| parse_color(&v))
-        .unwrap_or(Color::WHITE);
-    (frac, fill)
-}
-
-fn spawn_child(
-    tree: &mut Tree,
-    parent: NodeId,
+pub(super) fn resolve_style(
     tag: &str,
     attrs: &[(String, String)],
     sheet: Option<&StyleSheet>,
-) -> NodeId {
-    let style = resolve_style(tag, attrs, sheet);
-    let id = match map_tag(tag) {
-        TagMapping::Box => tree.add_box(parent, style),
-        TagMapping::Text => {
-            let text = find_attr(attrs, "text").unwrap_or_default();
-            tree.add_text(parent, text, style)
-        }
-        TagMapping::Bar => {
-            let (frac, fill) = bar_from_attrs(attrs);
-            tree.add_bar(parent, frac, fill, style)
-        }
-    };
-    apply_tag(tree, id, attrs);
-
-    // Store identity for restyle matching
-    populate_identity(tree, id, tag, attrs);
-
-    id
-}
-
-/// Store element tag name + class list + id on a slot for runtime restyle matching.
-fn populate_identity(tree: &mut Tree, id: NodeId, tag: &str, attrs: &[(String, String)]) {
-    let slot = tree.slot_mut(id);
-    slot.element = tag.to_string();
-    slot.class_list = find_attr(attrs, "class")
-        .map(|c| c.split_whitespace().map(String::from).collect())
-        .unwrap_or_default();
-    slot.id = find_attr(attrs, "id").map(|s| s.to_string());
-    slot.base_style = slot.style.clone();
-}
-
-/// Set kind on an existing node (used for the root which Tree::new always creates as Box).
-fn set_kind(tree: &mut Tree, id: NodeId, tag: &str, attrs: &[(String, String)]) {
-    match map_tag(tag) {
-        TagMapping::Text => {
-            let text = find_attr(attrs, "text").unwrap_or_default();
-            tree.slot_mut(id).kind = NodeKind::Text(text);
-        }
-        TagMapping::Bar => {
-            let (frac, fill) = bar_from_attrs(attrs);
-            tree.slot_mut(id).kind = NodeKind::Bar {
-                fraction: frac,
-                fill,
-            };
-        }
-        TagMapping::Box => {} // already Box by default
-    }
-}
-
-/// Apply data-tag / tag attribute if present.
-fn apply_tag(tree: &mut Tree, id: NodeId, attrs: &[(String, String)]) {
-    if let Some(tag_val) = find_attr(attrs, "data-tag").or_else(|| find_attr(attrs, "tag")) {
-        tree.tag(id, tag_val);
-    }
-}
-
-// ── Style resolution ────────────────────────────────────────────────────────
-
-/// Resolve style for an element: CSS (tag < classes < id) then inline attrs.
-fn resolve_style(tag: &str, attrs: &[(String, String)], sheet: Option<&StyleSheet>) -> Style {
+) -> Style {
     match sheet {
         Some(sheet) => sheet.resolve(
             tag,
@@ -461,9 +34,71 @@ pub(crate) fn find_attr(attrs: &[(String, String)], key: &str) -> Option<String>
 /// so there is exactly one attribute → style mapping in the whole crate.
 pub(crate) fn apply_style_attrs(s: &mut Style, attrs: &[(String, String)]) {
     for (key, val) in attrs {
+        if key == "style" {
+            // Inline CSS: `style="prop: val; prop2: val2; ..."`
+            apply_inline_css(s, val);
+            continue;
+        }
         if let Some(op) = compile_attr(key, val) {
             op.apply(s);
         }
+    }
+}
+
+/// Compile a single CSS `property: value` declaration into [`StyleOp`]s.
+///
+/// Handles multi-op shorthands (transform, filter, box/text-shadow),
+/// longhand expansion via [`expand_css_property`], and [`compile_attr`].
+/// This is the single pipeline shared by inline `style="..."` and CSS rules.
+pub(crate) fn compile_declaration(prop: &str, value: &str) -> Vec<StyleOp> {
+    match prop {
+        "transform" => parse_transform(value),
+        "filter" => parse_filter(value),
+        "box-shadow" => parse_shadow(value)
+            .into_iter()
+            .map(StyleOp::BoxShadow)
+            .collect(),
+        "text-shadow" => parse_shadow(value)
+            .into_iter()
+            .map(StyleOp::TextShadow)
+            .collect(),
+        _ => crate::css::expand_css_property(prop, value)
+            .into_iter()
+            .filter_map(|(k, v)| compile_attr(&k, &v))
+            .collect(),
+    }
+}
+
+/// CSS spec: `display:flex` implies `flex-direction:row` by default.
+/// Our ua.css defaults block elements to column, so inject Row when flex is
+/// requested without an explicit direction.
+pub(crate) fn inject_flex_row(ops: &mut Vec<StyleOp>) {
+    let has_flex = ops
+        .iter()
+        .any(|op| matches!(op, StyleOp::Display(crate::style::Display::Flex)));
+    let has_dir = ops.iter().any(|op| matches!(op, StyleOp::Direction(_)));
+    if has_flex && !has_dir {
+        ops.push(StyleOp::Direction(crate::style::Direction::Row));
+    }
+}
+
+/// Parse and apply an inline CSS `style="..."` attribute value.
+fn apply_inline_css(s: &mut Style, css_text: &str) {
+    let mut ops = Vec::new();
+    for decl in css_text.split(';') {
+        let decl = decl.trim();
+        if decl.is_empty() {
+            continue;
+        }
+        let Some((prop, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let prop = prop.trim().to_ascii_lowercase();
+        ops.extend(compile_declaration(&prop, value.trim()));
+    }
+    inject_flex_row(&mut ops);
+    for op in ops {
+        op.apply(s);
     }
 }
 
@@ -637,6 +272,10 @@ pub(crate) fn parse_px(val: &str) -> Option<f64> {
     }
     if let Some(num) = val.strip_suffix("em") {
         return num.trim().parse::<f64>().ok().map(|v| v * REM_PX);
+    }
+    // CSS pt → px: 1pt = 4/3 px
+    if let Some(num) = val.strip_suffix("pt") {
+        return num.trim().parse::<f64>().ok().map(|v| v * (4.0 / 3.0));
     }
     val.strip_suffix("px").unwrap_or(val).trim().parse().ok()
 }
@@ -1076,153 +715,3 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use any_compute_core::layout::Size;
-
-    #[test]
-    fn parse_simple_div() {
-        let tree = parse(r#"<div w="400" h="300"></div>"#);
-        assert_eq!(tree.arena.len(), 1);
-        assert_eq!(tree.arena[0].style.width, Dimension::Px(400.0));
-        assert_eq!(tree.arena[0].style.height, Dimension::Px(300.0));
-    }
-
-    #[test]
-    fn parse_nested_with_text() {
-        let tree = parse(r#"<div w="400" h="300"><span font="16">Hello</span></div>"#);
-        assert_eq!(tree.arena.len(), 2);
-        match &tree.arena[1].kind {
-            NodeKind::Text(s) => assert_eq!(s, "Hello"),
-            other => panic!("expected Text, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_bar() {
-        let tree = parse(r##"<div><progress value="0.7" color="#00ff00" h="8" /></div>"##);
-        assert_eq!(tree.arena.len(), 2);
-        match &tree.arena[1].kind {
-            NodeKind::Bar { fraction, fill } => {
-                assert!((fraction - 0.7).abs() < 1e-10);
-                assert_eq!(*fill, Color::rgb(0, 255, 0));
-            }
-            other => panic!("expected Bar, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_percentage_dimensions() {
-        let tree = parse(r#"<div w="50%" h="100%"></div>"#);
-        assert_eq!(tree.arena[0].style.width, Dimension::Percent(50.0));
-        assert_eq!(tree.arena[0].style.height, Dimension::Percent(100.0));
-    }
-
-    #[test]
-    fn parse_hex_colors() {
-        assert_eq!(parse_color("#ff0000"), Some(Color::rgb(255, 0, 0)));
-        assert_eq!(parse_color("#f00"), Some(Color::rgb(255, 0, 0)));
-        assert_eq!(parse_color("#ff000080"), Some(Color::rgba(255, 0, 0, 128)));
-    }
-
-    #[test]
-    fn parse_named_colors() {
-        assert_eq!(parse_color("white"), Some(Color::WHITE));
-        assert_eq!(parse_color("transparent"), Some(Color::TRANSPARENT));
-    }
-
-    #[test]
-    fn parse_rgb_function() {
-        assert_eq!(
-            parse_color("rgb(100,200,50)"),
-            Some(Color::rgb(100, 200, 50))
-        );
-        assert_eq!(
-            parse_color("rgba(100,200,50,128)"),
-            Some(Color::rgba(100, 200, 50, 128))
-        );
-    }
-
-    #[test]
-    fn parse_tag_attribute() {
-        let tree = parse(r#"<div w="100" h="50" data-tag="my-btn"></div>"#);
-        assert_eq!(tree.arena[0].tag.as_deref(), Some("my-btn"));
-    }
-
-    #[test]
-    fn parse_self_closing() {
-        let tree = parse(
-            r#"<div w="400" h="300"><span font="14" text="hi" /><div w="10" h="10" /></div>"#,
-        );
-        assert_eq!(tree.arena.len(), 3);
-    }
-
-    #[test]
-    fn parse_direction_and_flex() {
-        let tree = parse(r#"<div direction="row" gap="8"><div grow="1" /><div w="50" /></div>"#);
-        assert_eq!(tree.arena[0].style.direction, Direction::Row);
-        assert_eq!(tree.arena[0].style.gap, 8.0);
-        assert_eq!(tree.arena[1].style.flex_grow, 1.0);
-    }
-
-    #[test]
-    fn parsed_tree_layouts_correctly() {
-        let mut tree =
-            parse(r##"<div w="400" h="300" bg="#000"><div w="200" h="100" bg="#fff" /></div>"##);
-        tree.layout(Size::new(400.0, 300.0));
-        assert_eq!(tree.arena[1].rect.size.w(), 200.0);
-        assert_eq!(tree.arena[1].rect.size.h(), 100.0);
-    }
-
-    #[test]
-    fn parse_complex_layout() {
-        let markup = r##"
-            <div w="800" h="600" direction="row" bg="#1e1e2e">
-                <div w="200" bg="#181825" pad="12" gap="8">
-                    <span font="16" color="#cdd2f4">Sidebar</span>
-                </div>
-                <div grow="1" pad="24" gap="16">
-                    <span font="22" color="#cdd2f4">Main Content</span>
-                    <progress value="0.65" color="#a6e3a1" h="8" radius="4" />
-                </div>
-            </div>
-        "##;
-        let mut tree = parse(markup);
-        tree.layout(Size::new(800.0, 600.0));
-        // Root is row layout.
-        assert_eq!(tree.arena[0].style.direction, Direction::Row);
-        // Sidebar has fixed width 200.
-        assert_eq!(tree.arena[1].rect.size.w(), 200.0);
-        // Main content is flex-grow, should take remaining space.
-        assert!(tree.arena[4].rect.size.w() > 500.0, "main should be >500px");
-    }
-
-    #[test]
-    fn empty_input_does_not_crash() {
-        let tree = parse("");
-        // Empty input → default root node.
-        assert_eq!(tree.arena.len(), 1);
-    }
-
-    #[test]
-    fn unclosed_tag_does_not_crash() {
-        let tree = parse("<div");
-        // Unclosed tag → still produces a tree with best-effort parsing.
-        assert!(!tree.arena.is_empty());
-    }
-
-    #[test]
-    fn broken_html_does_not_crash() {
-        let tree = parse("<broken attr=");
-        let _ = tree;
-    }
-
-    #[test]
-    fn malformed_attr_values_ignored() {
-        let tree = parse(r#"<div w="notanumber" h="300"></div>"#);
-        assert_eq!(tree.arena[0].style.width, Dimension::Auto); // bad → default
-        assert_eq!(tree.arena[0].style.height, Dimension::Px(300.0));
-    }
-}

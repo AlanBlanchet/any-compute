@@ -14,6 +14,27 @@ pub enum CellValue {
     Int(i64),
     Float(f64),
     Text(String),
+    /// Raw bytes (images, embeddings, binary blobs).
+    Bytes(Vec<u8>),
+}
+
+impl std::fmt::Display for CellValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => Ok(()),
+            Self::Bool(v) => write!(f, "{v}"),
+            Self::Int(v) => write!(f, "{v}"),
+            Self::Float(v) => write!(f, "{v}"),
+            Self::Text(v) => f.write_str(v),
+            Self::Bytes(v) => write!(f, "[{} bytes]", v.len()),
+        }
+    }
+}
+
+impl From<Vec<u8>> for CellValue {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Bytes(v)
+    }
 }
 
 impl From<bool> for CellValue {
@@ -79,6 +100,14 @@ impl CellValue {
             _ => None,
         }
     }
+
+    /// Try to extract as byte slice.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 /// Metadata for one column.
@@ -94,6 +123,7 @@ pub enum ColumnKind {
     Int,
     Float,
     Text,
+    Bytes,
 }
 
 /// Trait that any data backend implements.
@@ -221,5 +251,59 @@ mod tests {
         assert_eq!(CellValue::Bool(false).as_i64(), Some(0));
         assert_eq!(CellValue::Text("hi".into()).as_str(), Some("hi"));
         assert_eq!(CellValue::Int(1).as_str(), None);
+        assert_eq!(
+            CellValue::Bytes(vec![1, 2, 3]).as_bytes(),
+            Some(&[1, 2, 3][..])
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Ops trait impls ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl crate::ops::Export for VecSource {
+    fn to_json(&self) -> String {
+        let cols: Vec<&str> = self.columns().iter().map(|c| c.name.as_str()).collect();
+        let rows = self.fetch(0..self.row_count());
+        let row_strs: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                let cells: Vec<String> = row
+                    .iter()
+                    .map(|c| match c {
+                        CellValue::Empty => "null".to_string(),
+                        CellValue::Bool(v) => v.to_string(),
+                        CellValue::Int(v) => v.to_string(),
+                        CellValue::Float(v) => v.to_string(),
+                        CellValue::Text(v) => format!("\"{v}\""),
+                        CellValue::Bytes(v) => format!("\"<{} bytes>\"", v.len()),
+                    })
+                    .collect();
+                format!("[{}]", cells.join(","))
+            })
+            .collect();
+        let cols_json: Vec<String> = cols.iter().map(|c| format!("\"{c}\"")).collect();
+        format!(
+            "{{\"columns\":[{}],\"rows\":[{}]}}",
+            cols_json.join(","),
+            row_strs.join(",")
+        )
+    }
+
+    fn to_csv(&self) -> String {
+        let mut out = self
+            .columns()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push('\n');
+        for row in self.fetch(0..self.row_count()) {
+            let line: Vec<String> = row.iter().map(|c| format!("{c}")).collect();
+            out.push_str(&line.join(","));
+            out.push('\n');
+        }
+        out
     }
 }

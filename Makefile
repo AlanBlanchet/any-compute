@@ -62,6 +62,14 @@ test-bench:
 test-ffi:
 	$(CARGO) test -p any-compute-ffi
 
+test-visual:
+	@mkdir -p $(OUT)/visual
+	$(CARGO) test -p any-compute-dom --features gpu --test visual -- --test-threads=1
+	@echo "Visual snapshots saved to $(OUT)/visual/"
+
+test-js:
+	$(CARGO) test -p any-compute-js
+
 clean:
 	$(CARGO) clean
 	rm -rf $(OUT)

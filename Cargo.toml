@@ -2,9 +2,11 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/ai",
     "crates/dom",
     "crates/bench",
     "crates/ffi",
+    "crates/js",
     "examples/dom",
     "examples/showcase",
 ]
@@ -20,6 +22,7 @@ any-compute-core = { path = "crates/core" }
 any-compute-dom = { path = "crates/dom", default-features = false }
 any-compute-bench = { path = "crates/bench" }
 any-compute-ffi = { path = "crates/ffi" }
+any-compute-js = { path = "crates/js" }
 
 # Shared deps — pinned once, inherited everywhere
 thiserror = "2"
@@ -29,6 +32,8 @@ parking_lot = "0.12"
 rayon = "1"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 num_cpus = "1"
@@ -47,3 +52,12 @@ winit = "0.29"
 pollster = "0.3"
 glyphon = "0.8"
 png = "0.17"
+ureq = "3"
+base64 = "0.22"
+
+# Debug builds: opt-level=1 keeps the app interactive while preserving debuginfo.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

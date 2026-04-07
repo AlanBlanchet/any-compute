@@ -1,161 +1,5 @@
-//! Shader compilation and management — WGSL, GLSL, SPIR-V cross-compilation.
-//!
-//! This module provides a unified shader pipeline:
-//! 1. Write shaders in any supported language (WGSL, GLSL, SPIR-V)
-//! 2. Cross-compile to any target via [`naga`] (behind `shader` feature)
-//! 3. Cache compiled artifacts for fast re-use
-//!
-//! ## Shader Object Model
-//!
-//! A [`ShaderObject`] is a compiled, inspectable shader ready for dispatch.
-//! It carries metadata about inputs/outputs, uniforms, and workgroup size
-//! so the engine can validate bindings at creation time rather than at dispatch.
-//!
-//! ## Pipeline
-//!
-//! ```text
-//! ShaderSource (WGSL / GLSL / SPIR-V bytes)
-//!     │
-//!     ▼
-//! ShaderCompiler::compile()          ◄── validates + cross-compiles
-//!     │
-//!     ▼
-//! ShaderObject { module, metadata }  ◄── cached, inspectable
-//!     │
-//!     ▼
-//! ShaderObject::to_*()               ◄── emit WGSL / GLSL / SPIR-V
-//! ```
-//!
-//! ## Without the `shader` feature
-//!
-//! When `shader` is not enabled, only [`ShaderSource`] and placeholder types
-//! are available. Compilation requires the feature.
+use super::types::*;
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-// ── Source representation ─────────────────────────────────────────────────
-
-/// A shader in its source form — not yet compiled or validated.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ShaderSource {
-    /// WebGPU Shading Language (recommended — most portable).
-    Wgsl(String),
-    /// GLSL (specify version + stage).
-    Glsl {
-        code: String,
-        stage: ShaderStage,
-        version: GlslVersion,
-    },
-    /// Pre-compiled SPIR-V binary.
-    SpirV(Vec<u8>),
-}
-
-/// GPU pipeline stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ShaderStage {
-    Vertex,
-    Fragment,
-    Compute,
-}
-
-display_enum!(ShaderStage {
-    Vertex   => "vertex",
-    Fragment => "fragment",
-    Compute  => "compute",
-});
-
-/// GLSL version target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GlslVersion {
-    /// OpenGL ES 3.0 (mobile, WebGL2)
-    Es300,
-    /// OpenGL ES 3.1 (mobile compute)
-    Es310,
-    /// Desktop OpenGL 4.5
-    V450,
-}
-
-// ── Compiled shader object ────────────────────────────────────────────────
-
-/// A compiled, validated shader ready for binding and dispatch.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShaderObject {
-    /// Human-readable label (for debugging / profiling).
-    pub label: String,
-    /// The stage this shader targets.
-    pub stage: ShaderStage,
-    /// Metadata extracted from the compiled module.
-    pub metadata: ShaderMetadata,
-    /// The original source format.
-    pub source_format: SourceFormat,
-    /// Compiled SPIR-V (if available). Backends consume this.
-    #[serde(skip)]
-    spirv: Option<Vec<u8>>,
-    /// Compiled WGSL (if available).
-    wgsl: Option<String>,
-}
-
-/// Which format the shader was originally written in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SourceFormat {
-    Wgsl,
-    Glsl,
-    SpirV,
-}
-
-/// Metadata extracted from a compiled shader module.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ShaderMetadata {
-    /// Entry point name.
-    pub entry_point: String,
-    /// Uniform / storage buffer bindings: (group, binding) → name.
-    pub bindings: HashMap<(u32, u32), BindingInfo>,
-    /// Workgroup size for compute shaders [x, y, z].
-    pub workgroup_size: Option<[u32; 3]>,
-    /// Push constant size in bytes (0 if none).
-    pub push_constant_bytes: u32,
-}
-
-/// Info about a single binding slot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BindingInfo {
-    pub name: String,
-    pub kind: BindingKind,
-    /// Size in bytes (0 if runtime-sized array).
-    pub size_bytes: u32,
-}
-
-/// Type of binding resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BindingKind {
-    UniformBuffer,
-    StorageBuffer,
-    ReadOnlyStorageBuffer,
-    Sampler,
-    Texture2D,
-    Texture3D,
-    StorageTexture,
-}
-
-// ── Shader compiler (requires `shader` feature) ──────────────────────────
-
-/// Error type for shader compilation.
-#[derive(Debug, thiserror::Error)]
-pub enum ShaderError {
-    #[error("parse error: {0}")]
-    Parse(String),
-    #[error("validation error: {0}")]
-    Validation(String),
-    #[error("cross-compilation error: {0}")]
-    CrossCompile(String),
-    #[error("shader feature not enabled — add `shader` to Cargo features")]
-    FeatureDisabled,
-}
-
-/// Shader compiler — validates and cross-compiles between WGSL, GLSL, SPIR-V.
-///
-/// Requires the `shader` cargo feature (which pulls in `naga`).
 pub struct ShaderCompiler;
 
 impl ShaderCompiler {
@@ -388,9 +232,9 @@ pub mod templates {
     /// Default tile dimension for 2D dispatches (GEMM). Shared memory = TILE^2.
     pub const DEFAULT_TILE_SIZE: u32 = 16;
 
-    const MAP_TEMPLATE: &str = include_str!("../shaders/map.wgsl");
-    const REDUCE_TEMPLATE: &str = include_str!("../shaders/reduce.wgsl");
-    const GEMM_TEMPLATE: &str = include_str!("../shaders/gemm.wgsl");
+    const MAP_TEMPLATE: &str = include_str!("../../shaders/map.wgsl");
+    const REDUCE_TEMPLATE: &str = include_str!("../../shaders/reduce.wgsl");
+    const GEMM_TEMPLATE: &str = include_str!("../../shaders/gemm.wgsl");
 
     /// Replace `{{KEY}}` placeholders in a template with concrete values.
     fn instantiate(template: &str, vars: &[(&str, &str)]) -> String {
@@ -404,128 +248,33 @@ pub mod templates {
     /// A simple element-wise map shader in WGSL.
     pub fn map_shader(body: &str) -> ShaderSource {
         let wg = DEFAULT_WORKGROUP_SIZE.to_string();
-        ShaderSource::Wgsl(instantiate(MAP_TEMPLATE, &[
-            ("WORKGROUP_SIZE", &wg),
-            ("BODY", body),
-        ]))
+        ShaderSource::Wgsl(instantiate(
+            MAP_TEMPLATE,
+            &[("WORKGROUP_SIZE", &wg), ("BODY", body)],
+        ))
     }
 
     /// A reduction shader in WGSL (workgroup-level reduce).
     pub fn reduce_shader(op: &str) -> ShaderSource {
         let wg = DEFAULT_WORKGROUP_SIZE.to_string();
         let half = (DEFAULT_WORKGROUP_SIZE / 2).to_string();
-        ShaderSource::Wgsl(instantiate(REDUCE_TEMPLATE, &[
-            ("WORKGROUP_SIZE", &wg),
-            ("HALF_WORKGROUP", &half),
-            ("OP", op),
-        ]))
+        ShaderSource::Wgsl(instantiate(
+            REDUCE_TEMPLATE,
+            &[
+                ("WORKGROUP_SIZE", &wg),
+                ("HALF_WORKGROUP", &half),
+                ("OP", op),
+            ],
+        ))
     }
 
     /// A matrix multiply shader in WGSL (tiled, shared memory).
     pub fn gemm_shader() -> ShaderSource {
         let tile = DEFAULT_TILE_SIZE.to_string();
         let elems = (DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE).to_string();
-        ShaderSource::Wgsl(instantiate(GEMM_TEMPLATE, &[
-            ("TILE_SIZE", &tile),
-            ("TILE_ELEMENTS", &elems),
-        ]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shader_source_wgsl_roundtrip() {
-        let src = ShaderSource::Wgsl("fn main() {}".into());
-        let json = serde_json::to_string(&src).unwrap();
-        let back: ShaderSource = serde_json::from_str(&json).unwrap();
-        match back {
-            ShaderSource::Wgsl(code) => assert!(code.contains("main")),
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn shader_source_glsl_roundtrip() {
-        let src = ShaderSource::Glsl {
-            code: "void main() {}".into(),
-            stage: ShaderStage::Compute,
-            version: GlslVersion::V450,
-        };
-        let json = serde_json::to_string(&src).unwrap();
-        let back: ShaderSource = serde_json::from_str(&json).unwrap();
-        match back {
-            ShaderSource::Glsl { stage, .. } => assert_eq!(stage, ShaderStage::Compute),
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn template_map_shader() {
-        let src = templates::map_shader("v * 2.0");
-        match src {
-            ShaderSource::Wgsl(code) => {
-                assert!(code.contains("@compute"));
-                assert!(code.contains("v * 2.0"));
-                let wg = templates::DEFAULT_WORKGROUP_SIZE.to_string();
-                assert!(code.contains(&format!("@workgroup_size({wg})")));
-            }
-            _ => panic!("expected WGSL"),
-        }
-    }
-
-    #[test]
-    fn template_reduce_shader() {
-        let src = templates::reduce_shader("shared[lid.x] + shared[lid.x + stride]");
-        match src {
-            ShaderSource::Wgsl(code) => {
-                assert!(code.contains("workgroupBarrier"));
-                assert!(code.contains("shared[lid.x] + shared[lid.x + stride]"));
-                // No unresolved placeholders
-                assert!(!code.contains("{{"));
-            }
-            _ => panic!("expected WGSL"),
-        }
-    }
-
-    #[test]
-    fn template_gemm_shader() {
-        match templates::gemm_shader() {
-            ShaderSource::Wgsl(code) => {
-                assert!(code.contains("tileA"));
-                assert!(code.contains("workgroupBarrier"));
-                // Tile size should be resolved
-                let tile = templates::DEFAULT_TILE_SIZE.to_string();
-                assert!(code.contains(&format!("const TILE: u32 = {tile}u")));
-                // No unresolved placeholders
-                assert!(!code.contains("{{"));
-            }
-            _ => panic!("expected WGSL"),
-        }
-    }
-
-    #[test]
-    fn shader_stage_display() {
-        assert_eq!(ShaderStage::Compute.to_string(), "compute");
-        assert_eq!(ShaderStage::Vertex.to_string(), "vertex");
-        assert_eq!(ShaderStage::Fragment.to_string(), "fragment");
-    }
-
-    #[test]
-    fn metadata_default() {
-        let m = ShaderMetadata::default();
-        assert!(m.entry_point.is_empty());
-        assert!(m.bindings.is_empty());
-        assert!(m.workgroup_size.is_none());
-    }
-
-    #[cfg(not(feature = "shader"))]
-    #[test]
-    fn compile_disabled_without_feature() {
-        let src = ShaderSource::Wgsl("fn main() {}".into());
-        let result = ShaderCompiler::compile(&src, "test");
-        assert!(matches!(result, Err(ShaderError::FeatureDisabled)));
+        ShaderSource::Wgsl(instantiate(
+            GEMM_TEMPLATE,
+            &[("TILE_SIZE", &tile), ("TILE_ELEMENTS", &elems)],
+        ))
     }
 }

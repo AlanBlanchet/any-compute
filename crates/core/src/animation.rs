@@ -175,6 +175,18 @@ impl TransitionManager {
         }
     }
 
+    /// Convenience: create and add an eased transition in one call.
+    pub fn ease(
+        &mut self,
+        key: impl Into<String>,
+        from: f64,
+        to: f64,
+        dur: Duration,
+        easing: Easing,
+    ) {
+        self.add(key, Transition::new(from, to, dur).with_easing(easing));
+    }
+
     /// Start all idle transitions.
     pub fn start_all(&mut self) {
         for (_, t) in &mut self.transitions {

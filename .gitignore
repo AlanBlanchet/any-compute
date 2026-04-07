@@ -1,2 +1,5 @@
 /target
 /out
+*.log
+tools/__pycache__/
+.github/memories/

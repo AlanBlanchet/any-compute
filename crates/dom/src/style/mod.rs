@@ -9,6 +9,12 @@ use any_compute_core::animation::Easing;
 use any_compute_core::layout::Rect;
 use any_compute_core::render::Color;
 
+// Re-export layout primitives from core — single source of truth.
+pub use any_compute_core::flex::{
+    Align, BoxSizing, Dimension, Direction, Display, Edges, FlexStyle, FlexWrap, Justify, Overflow,
+    Position,
+};
+
 /// Baseline rem-to-px multiplier (browser default: 1rem = 16px).
 pub const REM_PX: f64 = 16.0;
 /// Default font size in pixels.
@@ -68,34 +74,6 @@ macro_rules! css_enums {
 }
 
 css_enums! {
-    /// Display mode (CSS `display`).
-    Display [Flex, Flex] { "flex" => Flex, "block" => Block, "none" => None }
-
-    /// Main axis direction for child layout (flexbox model).
-    Direction [Row, Column] { "row" => Row, "column" => Column }
-
-    /// Whether flex children can wrap to new lines.
-    FlexWrap [NoWrap, NoWrap] { "nowrap" | "no-wrap" => NoWrap, "wrap" => Wrap, "wrap-reverse" => WrapReverse }
-
-    /// Cross-axis alignment.
-    Align [Stretch, Start] {
-        "start" | "flex-start" => Start, "center" => Center,
-        "end" | "flex-end" => End, "stretch" => Stretch, "baseline" => Baseline
-    }
-
-    /// Main-axis distribution of remaining space.
-    Justify [Start, Start] {
-        "start" | "flex-start" => Start, "center" => Center,
-        "end" | "flex-end" => End, "space-between" => SpaceBetween,
-        "space-around" => SpaceAround, "space-evenly" => SpaceEvenly
-    }
-
-    /// How this node participates in parent layout.
-    Position [Relative, Relative] { "relative" => Relative, "absolute" => Absolute, "fixed" => Fixed }
-
-    /// Overflow behavior.
-    Overflow [Visible, Visible] { "visible" => Visible, "hidden" => Hidden, "scroll" => Scroll, "auto" => Auto }
-
     /// Text alignment within a text node.
     TextAlign [Left, Left] { "left" | "start" => Left, "center" => Center, "right" | "end" => Right }
 
@@ -104,9 +82,6 @@ css_enums! {
 
     /// White-space handling.
     WhiteSpace [Normal, Normal] { "normal" => Normal, "nowrap" => NoWrap, "pre" => Pre }
-
-    /// Box-sizing model (CSS `box-sizing`).
-    BoxSizing [BorderBox, BorderBox] { "border-box" => BorderBox, "content-box" => ContentBox }
 
     /// Text decoration line (CSS `text-decoration`).
     TextDecoration [None, None] { "none" => None, "underline" => Underline, "overline" => Overline, "line-through" => LineThrough }
@@ -168,7 +143,6 @@ impl FontWeight {
             v => v.parse::<u16>().ok().map(Self),
         }
     }
-
 }
 
 impl Lerp for FontWeight {
@@ -183,132 +157,183 @@ impl Default for FontWeight {
     }
 }
 
-/// A single dimension that can be auto, fixed, percentage, or calc.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Dimension {
-    Auto,
-    Px(f64),
-    Percent(f64),
-    /// `calc(A% ± Bpx)` — resolved at layout time with parent size.
-    /// Covers the vast majority of real-world `calc()` usage while staying `Copy`.
-    Calc {
-        percent: f64,
-        px: f64,
-    },
+// ── HTML tag classification ─────────────────────────────────────────────────
+//
+// Single source of truth for HTML element semantics.
+// The macro generates: enum variants, from_str, kind (box/text/bar),
+// and semantic queries (is_interactive, is_hidden, is_heading).
+//
+// Adding a new HTML tag = one line in the macro invocation.
+
+/// Semantic category of an HTML tag used for NodeKind and default behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagKind {
+    /// Container — maps to NodeKind::Box.
+    Box,
+    /// Text leaf — maps to NodeKind::Text.
+    Text,
+    /// Progress bar — maps to NodeKind::Bar.
+    Bar,
 }
 
-impl Default for Dimension {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-impl Dimension {
-    /// Resolve against a parent length. `Auto` returns `None`.
-    pub fn resolve(self, parent: f64) -> Option<f64> {
-        match self {
-            Self::Auto => None,
-            Self::Px(v) => Some(v),
-            Self::Percent(p) => Some(parent * p / 100.0),
-            Self::Calc { percent, px } => Some(parent * percent / 100.0 + px),
+/// Generates the `HtmlTag` enum and its `From<&str>`, `kind()`, `is_*()` methods
+/// from a compact tag table.
+///
+/// Syntax per entry: `VariantName "tag-string" kind [flags...]`
+/// Flags: `interactive` (cursor:pointer), `hidden` (display:none), `heading`
+macro_rules! html_tags {
+    ($( $variant:ident $tag:literal $kind:ident $( $flag:ident )* ),* $(,)?) => {
+        /// HTML element type — classifies tags for node creation and default styles.
+        ///
+        /// Convert any tag string via `HtmlTag::from("button")` or `"button".into()`.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum HtmlTag {
+            $( $variant, )*
+            /// Unrecognized tags become generic containers.
+            Custom,
         }
-    }
 
-    /// Clamp a computed value between min/max dimensions resolved against parent.
-    pub fn clamp(value: f64, min: Self, max: Self, parent: f64) -> f64 {
-        let lo = min.resolve(parent).unwrap_or(0.0);
-        let hi = max.resolve(parent).unwrap_or(f64::INFINITY);
-        value.clamp(lo, hi)
-    }
-
-}
-
-impl Lerp for Dimension {
-    fn lerp(self, other: Self, t: f64) -> Self {
-        match (self, other) {
-            (Self::Px(a), Self::Px(b)) => Self::Px(a.lerp(b, t)),
-            (Self::Percent(a), Self::Percent(b)) => Self::Percent(a.lerp(b, t)),
-            (
-                Self::Calc {
-                    percent: p1,
-                    px: x1,
-                },
-                Self::Calc {
-                    percent: p2,
-                    px: x2,
-                },
-            ) => Self::Calc {
-                percent: p1.lerp(p2, t),
-                px: x1.lerp(x2, t),
-            },
-            _ => {
-                if t < 0.5 {
-                    self
-                } else {
-                    other
+        impl From<&str> for HtmlTag {
+            fn from(tag: &str) -> Self {
+                match tag {
+                    $( $tag => Self::$variant, )*
+                    _ => Self::Custom,
                 }
             }
         }
-    }
-}
 
-/// Edge insets (padding / margin / border-width).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Edges {
-    pub top: f64,
-    pub right: f64,
-    pub bottom: f64,
-    pub left: f64,
-}
+        impl HtmlTag {
+            /// Tag string for this variant.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $tag, )*
+                    Self::Custom => "div",
+                }
+            }
 
-impl Edges {
-    pub const ZERO: Self = Self {
-        top: 0.0,
-        right: 0.0,
-        bottom: 0.0,
-        left: 0.0,
+            /// What NodeKind this tag maps to.
+            pub fn kind(self) -> TagKind {
+                match self {
+                    $( Self::$variant => TagKind::$kind, )*
+                    Self::Custom => TagKind::Box,
+                }
+            }
+
+            /// Interactive elements get cursor:pointer by default.
+            pub fn is_interactive(self) -> bool {
+                match self {
+                    $( Self::$variant => html_tags!(@has_flag interactive $( $flag )*), )*
+                    Self::Custom => false,
+                }
+            }
+
+            /// Hidden elements (script, style, head, etc.) get display:none.
+            pub fn is_hidden(self) -> bool {
+                match self {
+                    $( Self::$variant => html_tags!(@has_flag hidden $( $flag )*), )*
+                    Self::Custom => false,
+                }
+            }
+
+            /// Heading elements (h1-h6).
+            pub fn is_heading(self) -> bool {
+                match self {
+                    $( Self::$variant => html_tags!(@has_flag heading $( $flag )*), )*
+                    Self::Custom => false,
+                }
+            }
+
+            /// Inline elements (span, a, b, em, etc.) — flow horizontally in a parent.
+            pub fn is_inline(self) -> bool {
+                match self {
+                    $( Self::$variant => html_tags!(@has_flag inline $( $flag )*), )*
+                    Self::Custom => false,
+                }
+            }
+
+            /// Void elements (br, input, img, hr, meta, link) — cannot have children.
+            pub fn is_void(self) -> bool {
+                match self {
+                    $( Self::$variant => html_tags!(@has_flag void $( $flag )*), )*
+                    Self::Custom => false,
+                }
+            }
+        }
     };
-
-    pub const fn all(v: f64) -> Self {
-        Self {
-            top: v,
-            right: v,
-            bottom: v,
-            left: v,
-        }
-    }
-
-    pub const fn xy(x: f64, y: f64) -> Self {
-        Self {
-            top: y,
-            right: x,
-            bottom: y,
-            left: x,
-        }
-    }
-
-    pub fn horizontal(&self) -> f64 {
-        self.left + self.right
-    }
-    pub fn vertical(&self) -> f64 {
-        self.top + self.bottom
-    }
-    /// True when any side is non-zero.
-    pub fn any_nonzero(&self) -> bool {
-        self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0 || self.left > 0.0
-    }
-
+    // Flag detection: returns true if the target flag is in the list.
+    (@has_flag $target:ident $target2:ident $( $rest:ident )*) => {
+        if stringify!($target) == stringify!($target2) { true }
+        else { html_tags!(@has_flag $target $( $rest )*) }
+    };
+    (@has_flag $target:ident) => { false };
 }
 
-impl Lerp for Edges {
-    fn lerp(self, other: Self, t: f64) -> Self {
-        Self {
-            top: self.top.lerp(other.top, t),
-            right: self.right.lerp(other.right, t),
-            bottom: self.bottom.lerp(other.bottom, t),
-            left: self.left.lerp(other.left, t),
-        }
-    }
+html_tags! {
+    // ── Containers / structural ──
+    Div        "div"        Box,
+    Section    "section"    Box,
+    Article    "article"    Box,
+    Aside      "aside"      Box,
+    Nav        "nav"        Box,
+    Header     "header"     Box,
+    Footer     "footer"     Box,
+    Main       "main"       Box,
+    Body       "body"       Box,
+    // ── Interactive ──
+    Button     "button"     Box     interactive,
+    A          "a"          Text    interactive inline,
+    // ── Form elements ──
+    Form       "form"       Box,
+    Input      "input"      Box     void,
+    Textarea   "textarea"   Text,
+    Select     "select"     Box     interactive,
+    Fieldset   "fieldset"   Box,
+    // ── Text / inline ──
+    Span       "span"       Text    inline,
+    P          "p"          Text,
+    Label      "label"      Text    inline,
+    Strong     "strong"     Text    inline,
+    B          "b"          Text    inline,
+    Em         "em"         Text    inline,
+    I          "i"          Text    inline,
+    Small      "small"      Text    inline,
+    // ── Headings ──
+    H1         "h1"         Text    heading,
+    H2         "h2"         Text    heading,
+    H3         "h3"         Text    heading,
+    H4         "h4"         Text    heading,
+    H5         "h5"         Text    heading,
+    H6         "h6"         Text    heading,
+    // ── Lists ──
+    Ul         "ul"         Box,
+    Ol         "ol"         Box,
+    Li         "li"         Box,
+    // ── Table ──
+    Table      "table"      Box,
+    Tr         "tr"         Box,
+    Td         "td"         Box,
+    Th         "th"         Box,
+    // ── Media ──
+    Img        "img"        Box     void,
+    // ── Misc content ──
+    Center     "center"     Box,
+    Pre        "pre"        Text,
+    Code       "code"       Text    inline,
+    Blockquote "blockquote" Box,
+    Hr         "hr"         Box     void,
+    Br         "br"         Box     void,
+    Details    "details"    Box,
+    Summary    "summary"    Box     interactive,
+    // ── Progress / bars ──
+    Progress   "progress"   Bar,
+    Meter      "meter"      Bar,
+    // ── Hidden / metadata ──
+    Script     "script"     Box     hidden,
+    StyleTag   "style"      Box     hidden,
+    Link       "link"       Box     hidden void,
+    Meta       "meta"       Box     hidden void,
+    Title      "title"      Box     hidden,
+    Head       "head"       Box     hidden,
 }
 
 /// Box shadow (CSS `box-shadow`).
@@ -375,7 +400,6 @@ macro_rules! for_each_inheritable {
             INHERIT_TEXT_TRANSFORM => text_transform,
             INHERIT_TEXT_INDENT => text_indent,
             INHERIT_WORD_BREAK => word_break,
-            INHERIT_DIRECTION => direction,
             INHERIT_FONT_FAMILY => font_family,
         }
     };
@@ -522,6 +546,8 @@ pub struct Style {
     pub box_shadow: Option<Shadow>,
     pub outline_width: f64,
     pub outline_color: Color,
+    pub outline_style: BorderStyle,
+    pub outline_offset: f64,
 
     // ── Transform ───────────────────────────────────────
     pub transform_translate_x: f64,
@@ -615,6 +641,8 @@ impl Default for Style {
             box_shadow: None,
             outline_width: 0.0,
             outline_color: Color::TRANSPARENT,
+            outline_style: BorderStyle::None,
+            outline_offset: 0.0,
             transform_translate_x: 0.0,
             transform_translate_y: 0.0,
             transform_scale_x: 1.0,
@@ -728,12 +756,21 @@ impl Style {
     /// Builder: set text color.
     pub fn color(mut self, c: Color) -> Self {
         self.color = c;
+        self.written.set(INHERIT_COLOR);
+        self
+    }
+
+    /// Builder: set cursor style (marks `written` so inheritance doesn't override).
+    pub fn cursor(mut self, c: Cursor) -> Self {
+        self.cursor = c;
+        self.written.set(INHERIT_CURSOR);
         self
     }
 
     /// Builder: set font size.
     pub fn font(mut self, size: f64) -> Self {
         self.font_size = size;
+        self.written.set(INHERIT_FONT_SIZE);
         self
     }
 
@@ -790,12 +827,57 @@ impl Style {
     /// Builder: set font weight.
     pub fn bold(mut self) -> Self {
         self.font_weight = FontWeight::BOLD;
+        self.written.set(INHERIT_FONT_WEIGHT);
         self
     }
 
     /// Builder: set line-height multiplier.
     pub fn lh(mut self, lh: f64) -> Self {
         self.line_height = lh;
+        self.written.set(INHERIT_LINE_HEIGHT);
+        self
+    }
+
+    /// Builder: set text alignment.
+    pub fn text_align(mut self, a: TextAlign) -> Self {
+        self.text_align = a;
+        self.written.set(INHERIT_TEXT_ALIGN);
+        self
+    }
+
+    /// Builder: set visibility.
+    pub fn visibility(mut self, v: Visibility) -> Self {
+        self.visibility = v;
+        self.written.set(INHERIT_VISIBILITY);
+        self
+    }
+
+    /// Builder: set width and height in pixels.
+    pub fn wh(self, w: f64, h: f64) -> Self {
+        self.w(w).h(h)
+    }
+
+    /// Builder: set min-width in pixels.
+    pub fn min_w(mut self, px: f64) -> Self {
+        self.min_width = Dimension::Px(px);
+        self
+    }
+
+    /// Builder: set min-height in pixels.
+    pub fn min_h(mut self, px: f64) -> Self {
+        self.min_height = Dimension::Px(px);
+        self
+    }
+
+    /// Builder: set align-self.
+    pub fn align_self(mut self, a: Align) -> Self {
+        self.align_self = Some(a);
+        self
+    }
+
+    /// Builder: set flex-wrap.
+    pub fn wrap(mut self, w: FlexWrap) -> Self {
+        self.flex_wrap = w;
         self
     }
 
@@ -836,7 +918,7 @@ impl Style {
             [num] border_width, [num] border_top_width, [num] border_right_width,
             [num] border_bottom_width, [num] border_left_width,
             [num] corner_radius, [num] opacity, [opt_lerp] box_shadow,
-            [num] outline_width, [lerp] outline_color,
+            [num] outline_width, [lerp] outline_color, [snap] outline_style, [num] outline_offset,
             // Transform — lerp all
             [num] transform_translate_x, [num] transform_translate_y,
             [num] transform_scale_x, [num] transform_scale_y,
@@ -882,16 +964,6 @@ impl Style {
                 bw
             },
         }
-    }
-
-    /// True when this node is out-of-flow (absolute or fixed).
-    pub fn is_out_of_flow(&self) -> bool {
-        matches!(self.position, Position::Absolute | Position::Fixed)
-    }
-
-    /// True when display is none.
-    pub fn is_hidden(&self) -> bool {
-        self.display == Display::None
     }
 
     /// Whether `other` differs from `self` in any layout-affecting property.
@@ -981,7 +1053,7 @@ impl Style {
             return c;
         }
         let a = (c.a as f64 * self.opacity.clamp(0.0, 1.0)) as u8;
-        Color::rgba(c.r, c.g, c.b, a)
+        c.with_alpha(a)
     }
 
     /// Compute the effective text content after `text-transform`.
@@ -1014,12 +1086,21 @@ impl Style {
     /// Compute text width for a string accounting for letter-spacing and word-spacing.
     pub fn text_width(&self, s: &str) -> f64 {
         let char_w = self.char_width();
-        let base = s.len() as f64 * char_w;
+        let base = s.chars().count() as f64 * char_w;
         if self.word_spacing != 0.0 {
             let spaces = s.chars().filter(|c| *c == ' ').count() as f64;
             base + spaces * self.word_spacing
         } else {
             base
+        }
+    }
+
+    /// Horizontal offset for text-align within available width.
+    pub fn text_align_offset(&self, text_w: f64, avail_w: f64) -> f64 {
+        match self.text_align {
+            TextAlign::Center => (avail_w - text_w).max(0.0) / 2.0,
+            TextAlign::Right => (avail_w - text_w).max(0.0),
+            TextAlign::Left => 0.0,
         }
     }
 
@@ -1042,6 +1123,101 @@ impl Style {
     }
 }
 
+// ── FlexStyle bridge ────────────────────────────────────────────────────────
+
+impl FlexStyle for Style {
+    fn display(&self) -> Display {
+        self.display
+    }
+    fn box_sizing(&self) -> BoxSizing {
+        self.box_sizing
+    }
+    fn direction(&self) -> Direction {
+        self.direction
+    }
+    fn flex_wrap(&self) -> FlexWrap {
+        self.flex_wrap
+    }
+    fn align(&self) -> Align {
+        self.align
+    }
+    fn self_align(&self) -> Option<Align> {
+        self.align_self
+    }
+    fn justify(&self) -> Justify {
+        self.justify
+    }
+    fn position(&self) -> Position {
+        self.position
+    }
+    fn overflow(&self) -> Overflow {
+        self.overflow
+    }
+    fn width(&self) -> Dimension {
+        self.width
+    }
+    fn height(&self) -> Dimension {
+        self.height
+    }
+    fn min_width(&self) -> Dimension {
+        self.min_width
+    }
+    fn min_height(&self) -> Dimension {
+        self.min_height
+    }
+    fn max_width(&self) -> Dimension {
+        self.max_width
+    }
+    fn max_height(&self) -> Dimension {
+        self.max_height
+    }
+    fn aspect_ratio(&self) -> Option<f64> {
+        self.aspect_ratio
+    }
+    fn padding(&self) -> Edges {
+        self.padding
+    }
+    fn margin(&self) -> Edges {
+        self.margin
+    }
+    fn border_widths(&self) -> Edges {
+        self.effective_border()
+    }
+    fn gap(&self) -> f64 {
+        self.gap
+    }
+    fn row_gap(&self) -> Option<f64> {
+        self.row_gap
+    }
+    fn column_gap(&self) -> Option<f64> {
+        self.column_gap
+    }
+    fn flex_grow(&self) -> f64 {
+        self.flex_grow
+    }
+    fn flex_shrink(&self) -> f64 {
+        self.flex_shrink
+    }
+    fn flex_basis(&self) -> Dimension {
+        self.flex_basis
+    }
+    fn order(&self) -> i32 {
+        self.order
+    }
+    fn left(&self) -> Dimension {
+        self.left
+    }
+    fn top(&self) -> Dimension {
+        self.top
+    }
+    fn right(&self) -> Dimension {
+        self.right
+    }
+    fn bottom(&self) -> Dimension {
+        self.bottom
+    }
+}
+
 // ── Pre-compiled style operations ───────────────────────────────────────────
 
 /// Pre-compiled style mutation — zero string matching at apply time.
@@ -1049,378 +1225,5 @@ impl Style {
 /// Created at CSS parse time or by the Tailwind class compiler.
 /// Each variant maps to one or two `Style` field writes.
 /// Applying N ops is N enum matches — no string hashing or parsing.
-#[derive(Debug, Clone, PartialEq)]
-pub enum StyleOp {
-    // ── Display / Box Model ─────────────────────────────
-    Display(Display),
-    BoxSizing(BoxSizing),
-    Visibility(Visibility),
-
-    // ── Dimensions ──────────────────────────────────────
-    Width(Dimension),
-    Height(Dimension),
-    MinWidth(Dimension),
-    MinHeight(Dimension),
-    MaxWidth(Dimension),
-    MaxHeight(Dimension),
-    AspectRatio(f64),
-
-    // ── Flex layout ─────────────────────────────────────
-    Direction(Direction),
-    FlexWrap(FlexWrap),
-    Align(Align),
-    AlignSelf(Align),
-    Justify(Justify),
-    Gap(f64),
-    RowGap(f64),
-    ColumnGap(f64),
-
-    // ── Spacing ─────────────────────────────────────────
-    Padding(Edges),
-    PaddingX(f64),
-    PaddingY(f64),
-    PaddingTop(f64),
-    PaddingRight(f64),
-    PaddingBottom(f64),
-    PaddingLeft(f64),
-    Margin(Edges),
-    MarginX(f64),
-    MarginY(f64),
-    MarginTop(f64),
-    MarginRight(f64),
-    MarginBottom(f64),
-    MarginLeft(f64),
-
-    // ── Position ────────────────────────────────────────
-    Position(Position),
-    Left(Dimension),
-    Top(Dimension),
-    Right(Dimension),
-    Bottom(Dimension),
-    ZIndex(i32),
-
-    // ── Flex item ───────────────────────────────────────
-    FlexGrow(f64),
-    FlexShrink(f64),
-    FlexBasis(Dimension),
-    Order(i32),
-
-    // ── Overflow ────────────────────────────────────────
-    Overflow(Overflow),
-
-    // ── Visual ──────────────────────────────────────────
-    Background(Color),
-    BorderColor(Color),
-    BorderStyleOp(BorderStyle),
-    BorderWidth(f64),
-    BorderTopWidth(f64),
-    BorderRightWidth(f64),
-    BorderBottomWidth(f64),
-    BorderLeftWidth(f64),
-    CornerRadius(f64),
-    Opacity(f64),
-    BoxShadow(Shadow),
-    OutlineWidth(f64),
-    OutlineColor(Color),
-
-    // ── Transform ───────────────────────────────────────
-    TranslateX(f64),
-    TranslateY(f64),
-    ScaleX(f64),
-    ScaleY(f64),
-    Rotate(f64),
-    SkewX(f64),
-    SkewY(f64),
-
-    // ── Filter ──────────────────────────────────────────
-    FilterBlur(f64),
-    FilterBrightness(f64),
-    FilterContrast(f64),
-    FilterOpacity(f64),
-
-    // ── Text ────────────────────────────────────────────
-    FontFamily(String),
-    FontSize(f64),
-    FontWeight(FontWeight),
-    LineHeight(f64),
-    /// Absolute line-height in px (not a multiplier).
-    LineHeightPx(f64),
-    TextColor(Color),
-    TextAlign(TextAlign),
-    WhiteSpace(WhiteSpace),
-    TextDecorationOp(TextDecoration),
-    TextTransformOp(TextTransform),
-    LetterSpacing(f64),
-    WordSpacing(f64),
-    TextIndent(f64),
-    TextOverflowOp(TextOverflow),
-    TextShadow(Shadow),
-    WordBreakOp(WordBreak),
-
-    // ── Interaction ─────────────────────────────────────
-    CursorOp(Cursor),
-    PointerEventsOp(PointerEvents),
-    UserSelectOp(UserSelect),
-}
-
-impl StyleOp {
-    /// Apply this pre-compiled operation to a [`Style`].
-    #[inline]
-    pub fn apply(&self, s: &mut Style) {
-        match self {
-            Self::Display(d) => s.display = *d,
-            Self::BoxSizing(b) => s.box_sizing = *b,
-            Self::Visibility(v) => {
-                s.visibility = *v;
-                s.written.set(INHERIT_VISIBILITY);
-            }
-            Self::Width(d) => s.width = *d,
-            Self::Height(d) => s.height = *d,
-            Self::MinWidth(d) => s.min_width = *d,
-            Self::MinHeight(d) => s.min_height = *d,
-            Self::MaxWidth(d) => s.max_width = *d,
-            Self::MaxHeight(d) => s.max_height = *d,
-            Self::AspectRatio(v) => s.aspect_ratio = Some(*v),
-            Self::Direction(d) => {
-                s.direction = *d;
-                s.written.set(INHERIT_DIRECTION);
-            }
-            Self::FlexWrap(w) => s.flex_wrap = *w,
-            Self::Align(a) => s.align = *a,
-            Self::AlignSelf(a) => s.align_self = Some(*a),
-            Self::Justify(j) => s.justify = *j,
-            Self::Gap(v) => s.gap = *v,
-            Self::RowGap(v) => s.row_gap = Some(*v),
-            Self::ColumnGap(v) => s.column_gap = Some(*v),
-            Self::Padding(e) => s.padding = *e,
-            Self::PaddingX(v) => {
-                s.padding.left = *v;
-                s.padding.right = *v;
-            }
-            Self::PaddingY(v) => {
-                s.padding.top = *v;
-                s.padding.bottom = *v;
-            }
-            Self::PaddingTop(v) => s.padding.top = *v,
-            Self::PaddingRight(v) => s.padding.right = *v,
-            Self::PaddingBottom(v) => s.padding.bottom = *v,
-            Self::PaddingLeft(v) => s.padding.left = *v,
-            Self::Margin(e) => s.margin = *e,
-            Self::MarginX(v) => {
-                s.margin.left = *v;
-                s.margin.right = *v;
-            }
-            Self::MarginY(v) => {
-                s.margin.top = *v;
-                s.margin.bottom = *v;
-            }
-            Self::MarginTop(v) => s.margin.top = *v,
-            Self::MarginRight(v) => s.margin.right = *v,
-            Self::MarginBottom(v) => s.margin.bottom = *v,
-            Self::MarginLeft(v) => s.margin.left = *v,
-            Self::Position(p) => s.position = *p,
-            Self::Left(d) => s.left = *d,
-            Self::Top(d) => s.top = *d,
-            Self::Right(d) => s.right = *d,
-            Self::Bottom(d) => s.bottom = *d,
-            Self::ZIndex(z) => s.z_index = Some(*z),
-            Self::FlexGrow(v) => s.flex_grow = *v,
-            Self::FlexShrink(v) => s.flex_shrink = *v,
-            Self::FlexBasis(d) => s.flex_basis = *d,
-            Self::Order(v) => s.order = *v,
-            Self::Overflow(o) => s.overflow = *o,
-            Self::Background(c) => s.background = *c,
-            Self::BorderColor(c) => s.border_color = *c,
-            Self::BorderStyleOp(v) => s.border_style = *v,
-            Self::BorderWidth(v) => s.border_width = *v,
-            Self::BorderTopWidth(v) => s.border_top_width = *v,
-            Self::BorderRightWidth(v) => s.border_right_width = *v,
-            Self::BorderBottomWidth(v) => s.border_bottom_width = *v,
-            Self::BorderLeftWidth(v) => s.border_left_width = *v,
-            Self::CornerRadius(v) => s.corner_radius = *v,
-            Self::Opacity(v) => s.opacity = *v,
-            Self::BoxShadow(v) => s.box_shadow = Some(*v),
-            Self::OutlineWidth(v) => s.outline_width = *v,
-            Self::OutlineColor(c) => s.outline_color = *c,
-            Self::TranslateX(v) => s.transform_translate_x = *v,
-            Self::TranslateY(v) => s.transform_translate_y = *v,
-            Self::ScaleX(v) => s.transform_scale_x = *v,
-            Self::ScaleY(v) => s.transform_scale_y = *v,
-            Self::Rotate(v) => s.transform_rotate = *v,
-            Self::SkewX(v) => s.transform_skew_x = *v,
-            Self::SkewY(v) => s.transform_skew_y = *v,
-            Self::FilterBlur(v) => s.filter_blur = *v,
-            Self::FilterBrightness(v) => s.filter_brightness = *v,
-            Self::FilterContrast(v) => s.filter_contrast = *v,
-            Self::FilterOpacity(v) => s.filter_opacity = *v,
-            Self::FontFamily(v) => {
-                s.font_family = Some(v.clone());
-                s.written.set(INHERIT_FONT_FAMILY);
-            }
-            Self::FontSize(v) => {
-                s.font_size = *v;
-                s.written.set(INHERIT_FONT_SIZE);
-            }
-            Self::FontWeight(w) => {
-                s.font_weight = *w;
-                s.written.set(INHERIT_FONT_WEIGHT);
-            }
-            Self::LineHeight(v) => {
-                s.line_height = *v;
-                s.line_height_absolute = false;
-                s.written.set(INHERIT_LINE_HEIGHT);
-            }
-            Self::LineHeightPx(v) => {
-                s.line_height = *v;
-                s.line_height_absolute = true;
-                s.written.set(INHERIT_LINE_HEIGHT);
-            }
-            Self::TextColor(c) => {
-                s.color = *c;
-                s.written.set(INHERIT_COLOR);
-            }
-            Self::TextAlign(a) => {
-                s.text_align = *a;
-                s.written.set(INHERIT_TEXT_ALIGN);
-            }
-            Self::WhiteSpace(w) => {
-                s.white_space = *w;
-                s.written.set(INHERIT_WHITE_SPACE);
-            }
-            Self::TextDecorationOp(v) => s.text_decoration = *v,
-            Self::TextTransformOp(v) => {
-                s.text_transform = *v;
-                s.written.set(INHERIT_TEXT_TRANSFORM);
-            }
-            Self::LetterSpacing(v) => {
-                s.letter_spacing = *v;
-                s.written.set(INHERIT_LETTER_SPACING);
-            }
-            Self::WordSpacing(v) => {
-                s.word_spacing = *v;
-                s.written.set(INHERIT_WORD_SPACING);
-            }
-            Self::TextIndent(v) => {
-                s.text_indent = *v;
-                s.written.set(INHERIT_TEXT_INDENT);
-            }
-            Self::TextOverflowOp(v) => s.text_overflow = *v,
-            Self::TextShadow(v) => s.text_shadow = Some(*v),
-            Self::WordBreakOp(v) => {
-                s.word_break = *v;
-                s.written.set(INHERIT_WORD_BREAK);
-            }
-            Self::CursorOp(v) => {
-                s.cursor = *v;
-                s.written.set(INHERIT_CURSOR);
-            }
-            Self::PointerEventsOp(v) => s.pointer_events = *v,
-            Self::UserSelectOp(v) => s.user_select = *v,
-        }
-    }
-
-    /// Returns `true` when this op changes a property that affects layout
-    /// (box model, flex, position, text metrics). Visual-only props (colors,
-    /// opacity, transforms, filters, shadows, decorations, cursors) return `false`.
-    #[inline]
-    pub fn affects_layout(&self) -> bool {
-        !matches!(
-            self,
-            Self::Background(_)
-                | Self::BorderColor(_)
-                | Self::BorderStyleOp(_)
-                | Self::CornerRadius(_)
-                | Self::Opacity(_)
-                | Self::BoxShadow(_)
-                | Self::OutlineWidth(_)
-                | Self::OutlineColor(_)
-                | Self::TranslateX(_)
-                | Self::TranslateY(_)
-                | Self::ScaleX(_)
-                | Self::ScaleY(_)
-                | Self::Rotate(_)
-                | Self::SkewX(_)
-                | Self::SkewY(_)
-                | Self::FilterBlur(_)
-                | Self::FilterBrightness(_)
-                | Self::FilterContrast(_)
-                | Self::FilterOpacity(_)
-                | Self::TextColor(_)
-                | Self::TextDecorationOp(_)
-                | Self::TextTransformOp(_)
-                | Self::TextOverflowOp(_)
-                | Self::TextShadow(_)
-                | Self::CursorOp(_)
-                | Self::PointerEventsOp(_)
-                | Self::UserSelectOp(_)
-                | Self::Visibility(_)
-                | Self::ZIndex(_)
-        )
-    }
-}
-
-/// Apply a list of pre-compiled operations to a [`Style`].
-#[inline]
-pub fn apply_ops(s: &mut Style, ops: &[StyleOp]) {
-    for op in ops {
-        op.apply(s);
-    }
-}
-
-/// Copy a single CSS property from `src` into `dst`.
-///
-/// Used by per-property transition blending: each transition computes its
-/// own interpolated style, then only the relevant field is copied over.
-/// Multi-field CSS properties list all their fields in braces.
-pub fn copy_css_property(dst: &mut Style, src: &Style, prop: &str) {
-    css_property_copy!(dst, src, prop;
-        "background" | "background-color" => { background },
-        "color" => { color },
-        "border-color" => { border_color },
-        "border-width" => { border_width },
-        "border-radius" => { corner_radius },
-        "opacity" => { opacity },
-        "width" => { width },
-        "height" => { height },
-        "min-width" => { min_width },
-        "min-height" => { min_height },
-        "max-width" => { max_width },
-        "max-height" => { max_height },
-        "padding" => { padding },
-        "margin" => { margin },
-        "gap" => { gap },
-        "font-size" => { font_size },
-        "font-weight" => { font_weight },
-        "line-height" => { line_height, line_height_absolute },
-        "transform" => {
-            transform_translate_x, transform_translate_y,
-            transform_scale_x, transform_scale_y,
-            transform_rotate, transform_skew_x, transform_skew_y
-        },
-        "filter" => { filter_blur, filter_brightness, filter_contrast, filter_opacity },
-        "box-shadow" => { box_shadow },
-        "text-shadow" => { text_shadow },
-        "letter-spacing" => { letter_spacing },
-        "word-spacing" => { word_spacing },
-        "text-indent" => { text_indent },
-        "outline-color" => { outline_color },
-        "outline-width" => { outline_width },
-        "left" => { left },
-        "top" => { top },
-        "right" => { right },
-        "bottom" => { bottom },
-        "flex-grow" => { flex_grow },
-        "flex-shrink" => { flex_shrink },
-        "flex-basis" => { flex_basis },
-        "border-top-width" => { border_top_width },
-        "border-right-width" => { border_right_width },
-        "border-bottom-width" => { border_bottom_width },
-        "border-left-width" => { border_left_width },
-        "row-gap" => { row_gap },
-        "column-gap" => { column_gap },
-        "z-index" => { z_index },
-        "aspect-ratio" => { aspect_ratio },
-        "visibility" => { visibility },
-        "font-family" => { font_family },
-    );
-}
+mod ops;
+pub use ops::*;

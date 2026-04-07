@@ -17,63 +17,16 @@
 //! | JavaScript | WASM (wasm-bindgen)    | vitest / jest        |
 //! | Java       | JNI / Panama (FFM)     | JUnit 5              |
 
-use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
 // ── FFI type model ────────────────────────────────────────────────────────
 
-/// Primitive types supported across the FFI boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FfiType {
-    Void,
-    Bool,
-    U8,
-    I32,
-    I64,
-    U64,
-    Usize,
-    F32,
-    F64,
-    /// Opaque pointer (`*mut T` or `*const T`).
-    OpaquePtr,
-    /// Null-terminated C string (`*const c_char`).
-    CStr,
-    /// Pointer to a typed array + length.
-    Slice(SliceElementType),
-}
+mod output;
+mod types;
 
-/// Element type for slice parameters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SliceElementType {
-    I64,
-    F64,
-    U8,
-}
+pub use output::*;
+pub use types::*;
 
-/// A single FFI function definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FfiFunction {
-    /// The C symbol name (e.g. `anc_source_new`).
-    pub name: String,
-    /// Doc comment / purpose.
-    pub doc: String,
-    /// Parameters in order.
-    pub params: Vec<FfiParam>,
-    /// Return type.
-    pub ret: FfiType,
-    /// Whether a matching `_free` function exists (for allocators).
-    pub has_free: bool,
-}
-
-/// A single parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FfiParam {
-    pub name: String,
-    pub ty: FfiType,
-}
-
-/// Registry of all FFI functions — the single source of truth for codegen.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FfiRegistry {
     pub lib_name: String,
     pub functions: Vec<FfiFunction>,
@@ -163,28 +116,28 @@ impl FfiRegistry {
 // ── Template loading ─────────────────────────────────────────────────────
 
 mod tpl {
-    pub const PYTHON_WRAPPER: &str = include_str!("../templates/wrapper.py");
-    pub const PYTHON_TESTS: &str = include_str!("../templates/test.py");
-    pub const JS_WRAPPER: &str = include_str!("../templates/wrapper.js");
-    pub const JS_TESTS: &str = include_str!("../templates/test.js");
-    pub const TS_TYPES: &str = include_str!("../templates/types.d.ts");
-    pub const JAVA_WRAPPER: &str = include_str!("../templates/AnyCompute.java");
-    pub const JAVA_TESTS: &str = include_str!("../templates/AnyComputeTest.java");
+    pub const PYTHON_WRAPPER: &str = include_str!("../../templates/wrapper.py");
+    pub const PYTHON_TESTS: &str = include_str!("../../templates/test.py");
+    pub const JS_WRAPPER: &str = include_str!("../../templates/wrapper.js");
+    pub const JS_TESTS: &str = include_str!("../../templates/test.js");
+    pub const TS_TYPES: &str = include_str!("../../templates/types.d.ts");
+    pub const JAVA_WRAPPER: &str = include_str!("../../templates/AnyCompute.java");
+    pub const JAVA_TESTS: &str = include_str!("../../templates/AnyComputeTest.java");
 
     // Framework templates
-    pub const REACT_HOOKS: &str = include_str!("../templates/react_hooks.ts");
-    pub const REACT_BENCH: &str = include_str!("../templates/react_bench.ts");
-    pub const REACT_PKG: &str = include_str!("../templates/react_package.json");
-    pub const VUE_COMPOSABLES: &str = include_str!("../templates/vue_composables.ts");
-    pub const VUE_PKG: &str = include_str!("../templates/vue_package.json");
-    pub const SVELTE_STORES: &str = include_str!("../templates/svelte_stores.ts");
-    pub const SVELTE_PKG: &str = include_str!("../templates/svelte_package.json");
-    pub const ANGULAR_SERVICE: &str = include_str!("../templates/angular_service.ts");
-    pub const ANGULAR_MODULE: &str = include_str!("../templates/angular_module.ts");
-    pub const ANGULAR_PKG: &str = include_str!("../templates/angular_package.json");
-    pub const NODE_INDEX: &str = include_str!("../templates/node_index.ts");
-    pub const NODE_BENCH: &str = include_str!("../templates/node_bench.ts");
-    pub const NODE_PKG: &str = include_str!("../templates/node_package.json");
+    pub const REACT_HOOKS: &str = include_str!("../../templates/react_hooks.ts");
+    pub const REACT_BENCH: &str = include_str!("../../templates/react_bench.ts");
+    pub const REACT_PKG: &str = include_str!("../../templates/react_package.json");
+    pub const VUE_COMPOSABLES: &str = include_str!("../../templates/vue_composables.ts");
+    pub const VUE_PKG: &str = include_str!("../../templates/vue_package.json");
+    pub const SVELTE_STORES: &str = include_str!("../../templates/svelte_stores.ts");
+    pub const SVELTE_PKG: &str = include_str!("../../templates/svelte_package.json");
+    pub const ANGULAR_SERVICE: &str = include_str!("../../templates/angular_service.ts");
+    pub const ANGULAR_MODULE: &str = include_str!("../../templates/angular_module.ts");
+    pub const ANGULAR_PKG: &str = include_str!("../../templates/angular_package.json");
+    pub const NODE_INDEX: &str = include_str!("../../templates/node_index.ts");
+    pub const NODE_BENCH: &str = include_str!("../../templates/node_bench.ts");
+    pub const NODE_PKG: &str = include_str!("../../templates/node_package.json");
 
     /// Replace `{{KEY}}` placeholders in a template with concrete values.
     pub fn instantiate(template: &str, vars: &[(&str, &str)]) -> String {
@@ -512,195 +465,53 @@ pub fn generate_java(registry: &FfiRegistry) -> JavaOutput {
     JavaOutput { wrapper, tests }
 }
 
-// ── Output types ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct PythonOutput {
-    pub wrapper: String,
-    pub tests: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct JavaScriptOutput {
-    pub wrapper: String,
-    pub tests: String,
-    pub types: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct JavaOutput {
-    pub wrapper: String,
-    pub tests: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReactOutput {
-    pub hooks: String,
-    pub bench: String,
-    pub package_json: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct VueOutput {
-    pub composables: String,
-    pub package_json: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SvelteOutput {
-    pub stores: String,
-    pub package_json: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct AngularOutput {
-    pub service: String,
-    pub module: String,
-    pub package_json: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeOutput {
-    pub index: String,
-    pub bench: String,
-    pub package_json: String,
-}
-
-// ── Type mapping helpers ──────────────────────────────────────────────────
-
-fn ffi_type_to_python(ty: &FfiType) -> String {
-    match ty {
-        FfiType::Void => "None".into(),
-        FfiType::Bool => "ctypes.c_bool".into(),
-        FfiType::U8 => "ctypes.c_uint8".into(),
-        FfiType::I32 => "ctypes.c_int32".into(),
-        FfiType::I64 => "ctypes.c_int64".into(),
-        FfiType::U64 => "ctypes.c_uint64".into(),
-        FfiType::Usize => "ctypes.c_size_t".into(),
-        FfiType::F32 => "ctypes.c_float".into(),
-        FfiType::F64 => "ctypes.c_double".into(),
-        FfiType::OpaquePtr => "ctypes.c_void_p".into(),
-        FfiType::CStr => "ctypes.c_char_p".into(),
-        FfiType::Slice(SliceElementType::I64) => "ctypes.POINTER(ctypes.c_int64)".into(),
-        FfiType::Slice(SliceElementType::F64) => "ctypes.POINTER(ctypes.c_double)".into(),
-        FfiType::Slice(SliceElementType::U8) => "ctypes.POINTER(ctypes.c_uint8)".into(),
-    }
-}
-
-fn ffi_type_to_ts(ty: &FfiType) -> String {
-    match ty {
-        FfiType::Void => "void".into(),
-        FfiType::Bool => "boolean".into(),
-        FfiType::U8 | FfiType::I32 | FfiType::I64 | FfiType::U64 | FfiType::Usize => {
-            "number".into()
-        }
-        FfiType::F32 | FfiType::F64 => "number".into(),
-        FfiType::OpaquePtr => "number".into(), // WASM pointers are i32
-        FfiType::CStr => "string".into(),
-        FfiType::Slice(_) => "number".into(), // pointer
-    }
-}
-
-fn ffi_type_to_java_layout(ty: &FfiType) -> String {
-    match ty {
-        FfiType::Void => "ValueLayout.ADDRESS".into(), // placeholder
-        FfiType::Bool => "ValueLayout.JAVA_BOOLEAN".into(),
-        FfiType::U8 => "ValueLayout.JAVA_BYTE".into(),
-        FfiType::I32 => "ValueLayout.JAVA_INT".into(),
-        FfiType::I64 => "ValueLayout.JAVA_LONG".into(),
-        FfiType::U64 => "ValueLayout.JAVA_LONG".into(),
-        FfiType::Usize => "ValueLayout.JAVA_LONG".into(),
-        FfiType::F32 => "ValueLayout.JAVA_FLOAT".into(),
-        FfiType::F64 => "ValueLayout.JAVA_DOUBLE".into(),
-        FfiType::OpaquePtr => "ValueLayout.ADDRESS".into(),
-        FfiType::CStr => "ValueLayout.ADDRESS".into(),
-        FfiType::Slice(_) => "ValueLayout.ADDRESS".into(),
-    }
-}
-
-/// Convert `snake_case` to `camelCase` for JS/TS bindings.
-fn to_camel(s: &str) -> String {
-    let mut out = String::new();
-    let mut upper_next = false;
-    for (i, ch) in s.chars().enumerate() {
-        if ch == '_' {
-            upper_next = true;
-        } else if upper_next && i > 0 {
-            out.extend(ch.to_uppercase());
-            upper_next = false;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-// ── Convenience: write generated code to disk ─────────────────────────────
-
 /// Generate all bindings and write them to the given output directory.
 pub fn generate_all(registry: &FfiRegistry, out_dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
-
-    // Python
     let py = generate_python(registry);
     let py_dir = out_dir.join("python");
     std::fs::create_dir_all(&py_dir)?;
     std::fs::write(py_dir.join("any_compute.py"), &py.wrapper)?;
     std::fs::write(py_dir.join("test_any_compute.py"), &py.tests)?;
-
-    // JavaScript / TypeScript (WASM core)
     let js = generate_javascript(registry);
     let js_dir = out_dir.join("javascript");
     std::fs::create_dir_all(&js_dir)?;
     std::fs::write(js_dir.join("any_compute.js"), &js.wrapper)?;
     std::fs::write(js_dir.join("any_compute.d.ts"), &js.types)?;
     std::fs::write(js_dir.join("any_compute.test.js"), &js.tests)?;
-
-    // Java
     let java = generate_java(registry);
     let java_dir = out_dir.join("java/com/anycompute");
     std::fs::create_dir_all(&java_dir)?;
     std::fs::write(java_dir.join("AnyCompute.java"), &java.wrapper)?;
     std::fs::write(java_dir.join("AnyComputeTest.java"), &java.tests)?;
-
-    // React
     let react = generate_react(registry);
     let react_dir = out_dir.join("react/src");
     std::fs::create_dir_all(&react_dir)?;
     std::fs::write(react_dir.join("hooks.ts"), &react.hooks)?;
     std::fs::write(react_dir.join("bench.ts"), &react.bench)?;
     std::fs::write(out_dir.join("react/package.json"), &react.package_json)?;
-
-    // Vue
     let vue = generate_vue(registry);
     let vue_dir = out_dir.join("vue/src");
     std::fs::create_dir_all(&vue_dir)?;
     std::fs::write(vue_dir.join("composables.ts"), &vue.composables)?;
     std::fs::write(out_dir.join("vue/package.json"), &vue.package_json)?;
-
-    // Svelte
     let svelte = generate_svelte(registry);
     let svelte_dir = out_dir.join("svelte/src");
     std::fs::create_dir_all(&svelte_dir)?;
     std::fs::write(svelte_dir.join("stores.ts"), &svelte.stores)?;
     std::fs::write(out_dir.join("svelte/package.json"), &svelte.package_json)?;
-
-    // Angular
     let angular = generate_angular(registry);
     let angular_dir = out_dir.join("angular/src");
     std::fs::create_dir_all(&angular_dir)?;
     std::fs::write(angular_dir.join("any-compute.service.ts"), &angular.service)?;
     std::fs::write(angular_dir.join("any-compute.module.ts"), &angular.module)?;
     std::fs::write(out_dir.join("angular/package.json"), &angular.package_json)?;
-
-    // Node.js
     let node = generate_node(registry);
     let node_dir = out_dir.join("node/src");
     std::fs::create_dir_all(&node_dir)?;
     std::fs::write(node_dir.join("index.ts"), &node.index)?;
     std::fs::write(node_dir.join("bench.ts"), &node.bench)?;
     std::fs::write(out_dir.join("node/package.json"), &node.package_json)?;
-
     Ok(())
 }
 

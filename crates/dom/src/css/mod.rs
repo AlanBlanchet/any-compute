@@ -33,11 +33,8 @@
 
 use std::collections::HashMap;
 
-use crate::parse::{
-    apply_style_attrs, compile_attr, parse_filter, parse_px, parse_shadow, parse_time,
-    parse_transform,
-};
-use crate::style::{DEFAULT_EASING, Style, StyleOp, apply_ops};
+use crate::parse::{apply_style_attrs, compile_declaration, inject_flex_row, parse_px, parse_time};
+use crate::style::{DEFAULT_EASING, Style, apply_ops};
 use any_compute_core::animation::Easing;
 
 // ── CSS transition + animation metadata ─────────────────────────────────────
@@ -47,151 +44,10 @@ use any_compute_core::animation::Easing;
 /// Stored per-selector alongside [`StyleOp`]s. At runtime, when a style change
 /// occurs on a matching element, the transition system uses this spec to create
 /// a [`Transition<T>`] in the animation engine.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TransitionSpec {
-    /// CSS property name (`"all"`, `"opacity"`, `"transform"`, etc.).
-    pub property: String,
-    /// Duration in seconds.
-    pub duration_secs: f64,
-    /// Easing function.
-    pub easing: Easing,
-    /// Delay before start in seconds.
-    pub delay_secs: f64,
-}
 
-/// How many times an animation repeats.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AnimationIterCount {
-    /// Repeat a fixed number of times.
-    Count(f64),
-    /// Repeat forever.
-    Infinite,
-}
+mod rule;
+pub use rule::*;
 
-impl Default for AnimationIterCount {
-    fn default() -> Self {
-        Self::Count(1.0)
-    }
-}
-
-css_enums! {
-    /// Animation playback direction.
-    AnimationDirection [Normal, Normal] {
-        "normal" => Normal, "reverse" => Reverse,
-        "alternate" => Alternate, "alternate-reverse" => AlternateReverse
-    }
-
-    /// Animation fill mode (CSS `animation-fill-mode`).
-    AnimationFillMode [None, None] {
-        "none" => None, "forwards" => Forwards,
-        "backwards" => Backwards, "both" => Both
-    }
-}
-
-/// Parsed CSS animation declaration: `animation: name duration easing delay count direction fill`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AnimationSpec {
-    pub name: String,
-    pub duration_secs: f64,
-    pub easing: Easing,
-    pub delay_secs: f64,
-    pub iteration_count: AnimationIterCount,
-    pub direction: AnimationDirection,
-    pub fill_mode: AnimationFillMode,
-}
-
-/// A single keyframe stop within `@keyframes`.
-#[derive(Debug, Clone)]
-pub struct Keyframe {
-    /// Progress point: 0.0 = `from`, 1.0 = `to`, 0.5 = `50%`.
-    pub stop: f64,
-    /// Style operations to apply at this stop.
-    pub ops: Vec<StyleOp>,
-}
-
-// ── Selector model ──────────────────────────────────────────────────────────
-
-/// CSS pseudo-class.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PseudoClass {
-    Hover,
-    Focus,
-    Active,
-    Visited,
-    FirstChild,
-    LastChild,
-    /// `nth-child(an+b)` — stored as (a, b).
-    NthChild(i32, i32),
-}
-
-/// Combinator between selector segments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Combinator {
-    /// First segment (no combinator).
-    None,
-    /// Descendant (space): `A B`.
-    Descendant,
-    /// Direct child: `A > B`.
-    Child,
-}
-
-/// One compound segment of a selector: `div.card#main:hover`.
-#[derive(Debug, Clone, Default)]
-pub struct SelectorSegment {
-    pub tag: Option<String>,
-    pub classes: Vec<String>,
-    pub id: Option<String>,
-    pub pseudos: Vec<PseudoClass>,
-    pub universal: bool,
-}
-
-/// Selector specificity as (ids, classes+pseudos, tags).
-pub type Specificity = (u16, u16, u16);
-
-/// A fully parsed CSS selector with specificity.
-#[derive(Debug, Clone)]
-pub struct ParsedSelector {
-    /// Chain of (combinator, compound-selector) segments.
-    pub segments: Vec<(Combinator, SelectorSegment)>,
-    /// CSS specificity: (ids, classes+pseudos, tags).
-    pub specificity: Specificity,
-}
-
-/// A rule with a complex selector (descendant / child / pseudo-class).
-#[derive(Debug, Clone)]
-pub struct ComplexRule {
-    /// The parsed selector with specificity.
-    pub selector: ParsedSelector,
-    /// The compiled style operations + transition/animation metadata.
-    pub payload: RulePayload,
-}
-
-/// Everything compiled from one CSS rule block.
-#[derive(Debug, Clone, Default)]
-pub struct RulePayload {
-    pub ops: Vec<StyleOp>,
-    pub transitions: Vec<TransitionSpec>,
-    pub animations: Vec<AnimationSpec>,
-}
-
-impl RulePayload {
-    fn extend(&mut self, other: &RulePayload) {
-        self.ops.extend_from_slice(&other.ops);
-        self.transitions.extend_from_slice(&other.transitions);
-        self.animations.extend_from_slice(&other.animations);
-    }
-}
-
-// ── StyleSheet ──────────────────────────────────────────────────────────────
-
-/// Pre-parsed CSS stylesheet.
-///
-/// Simple selectors (class / tag / id) are O(1) HashMap lookups.
-/// Complex selectors (descendant, child, pseudo-class) are stored separately
-/// and matched via tree-walking in `resolve_with_context()`.
-///
-/// Transitions, animations, @keyframes, and CSS custom properties (variables)
-/// are fully parsed at stylesheet creation time.
 #[derive(Clone)]
 pub struct StyleSheet {
     // ── Fast-path lookups (simple selectors) ──
@@ -211,7 +67,8 @@ pub struct StyleSheet {
 }
 
 /// Browser-like user-agent defaults for HTML tags — loaded from `ua.css`.
-const UA_CSS: &str = include_str!("ua.css");
+/// Built-in user-agent stylesheet defaults for HTML elements (button, h1, etc.).
+pub const UA_CSS: &str = include_str!("../ua.css");
 
 impl StyleSheet {
     /// Parse a CSS string into a `StyleSheet`.
@@ -232,6 +89,7 @@ impl StyleSheet {
         let mut i = 0;
 
         while i < bytes.len() {
+            let start_i = i; // guard against infinite loops
             // Skip whitespace
             while i < bytes.len() && bytes[i].is_ascii_whitespace() {
                 i += 1;
@@ -441,6 +299,11 @@ impl StyleSheet {
                 } else {
                     store_simple_selector(sel, &payload, &mut classes, &mut tags, &mut ids);
                 }
+            }
+
+            // Safety: ensure progress — if i didn't advance, skip one byte.
+            if i == start_i {
+                i += 1;
             }
         }
 
@@ -769,37 +632,10 @@ fn compile_declarations(body: &str, variables: &HashMap<String, String>) -> Rule
             continue;
         }
 
-        // ── Multi-op shorthands ──
-        match prop.as_str() {
-            "transform" => {
-                payload.ops.extend(parse_transform(value));
-                continue;
-            }
-            "filter" => {
-                payload.ops.extend(parse_filter(value));
-                continue;
-            }
-            "box-shadow" => {
-                if let Some(s) = parse_shadow(value) {
-                    payload.ops.push(StyleOp::BoxShadow(s));
-                }
-                continue;
-            }
-            "text-shadow" => {
-                if let Some(s) = parse_shadow(value) {
-                    payload.ops.push(StyleOp::TextShadow(s));
-                }
-                continue;
-            }
-            _ => {}
-        }
-
-        for (key, val) in expand_css_property(&prop, value) {
-            if let Some(op) = compile_attr(&key, &val) {
-                payload.ops.push(op);
-            }
-        }
+        payload.ops.extend(compile_declaration(&prop, value));
     }
+
+    inject_flex_row(&mut payload.ops);
 
     // ── Assemble transition longhands ──
     if let Some(props) = tr_properties {
@@ -1058,9 +894,35 @@ fn parse_selector(sel: &str) -> Option<ParsedSelector> {
                 chars.next();
                 current.universal = true;
             }
+            '[' => {
+                // Attribute selector — skip until matching ']'
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if c == ']' {
+                        break;
+                    }
+                }
+            }
+            '+' | '~' => {
+                // Adjacent / general sibling combinators
+                chars.next();
+                if has_content(&current) {
+                    segments.push((combinator, current));
+                    current = SelectorSegment::default();
+                }
+                combinator = Combinator::Descendant; // treat as descendant
+            }
+            ',' => {
+                // Shouldn't reach here (split by caller), but skip to be safe
+                chars.next();
+            }
             _ => {
                 let name = consume_ident(&mut chars);
-                if !name.is_empty() {
+                if name.is_empty() {
+                    // Unknown char — skip it to avoid infinite loop
+                    chars.next();
+                } else {
                     current.tag = Some(name);
                 }
             }
@@ -1200,13 +1062,18 @@ fn norm_val(v: &str) -> String {
 }
 
 /// Map CSS property names to our attribute names and expand shorthands.
-fn expand_css_property(prop: &str, value: &str) -> Vec<(String, String)> {
+pub(crate) fn expand_css_property(prop: &str, value: &str) -> Vec<(String, String)> {
     match prop {
         // ── Shorthands with 1–4 values ──
         "padding" | "margin" => expand_box_shorthand(prop, value),
 
         // ── Border shorthand: `border: 1px solid #color` ──
         "border" => expand_border(value),
+
+        // ── Per-side border shorthands: `border-top: 1px solid #color` ──
+        "border-top" | "border-right" | "border-bottom" | "border-left" => {
+            expand_side_border(prop, value)
+        }
 
         // ── Outline shorthand: `outline: 1px solid #color` ──
         "outline" => expand_outline(value),
@@ -1259,6 +1126,7 @@ fn expand_css_property(prop: &str, value: &str) -> Vec<(String, String)> {
         | "bottom"
         | "flex-basis"
         | "outline-width"
+        | "outline-offset"
         | "letter-spacing"
         | "word-spacing"
         | "text-indent" => {
@@ -1272,7 +1140,8 @@ fn expand_css_property(prop: &str, value: &str) -> Vec<(String, String)> {
         "display" | "box-sizing" | "visibility" | "flex-wrap" | "font-weight" | "line-height"
         | "text-align" | "white-space" | "z-index" | "text-decoration" | "text-transform"
         | "text-overflow" | "word-break" | "overflow-wrap" | "cursor" | "pointer-events"
-        | "user-select" | "border-style" | "aspect-ratio" | "order" | "object-fit" => {
+        | "user-select" | "border-style" | "outline-style" | "aspect-ratio" | "order"
+        | "object-fit" => {
             vec![(prop.into(), value.into())]
         }
 
@@ -1318,8 +1187,39 @@ fn expand_border(value: &str) -> Vec<(String, String)> {
     expand_box_decl("border", value, true)
 }
 
+/// Expand `border-top/right/bottom/left: 1px solid #color` into longhands.
+/// Width goes to side-specific (`border-top-width`), color/style go to global
+/// (`border-color`, `border-style`) since the style system has no per-side color.
+fn expand_side_border(prop: &str, value: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for part in value.split_whitespace() {
+        if let Some(px) = crate::parse::parse_px(part) {
+            result.push((format!("{prop}-width"), px.to_string()));
+        } else if part.starts_with('#')
+            || part.starts_with("rgb")
+            || crate::parse::parse_color(part).is_some()
+        {
+            result.push(("border-color".into(), part.into()));
+        } else if matches!(
+            part,
+            "solid"
+                | "dashed"
+                | "dotted"
+                | "double"
+                | "groove"
+                | "ridge"
+                | "inset"
+                | "outset"
+                | "none"
+        ) {
+            result.push(("border-style".into(), part.into()));
+        }
+    }
+    result
+}
+
 fn expand_outline(value: &str) -> Vec<(String, String)> {
-    expand_box_decl("outline", value, false)
+    expand_box_decl("outline", value, true)
 }
 
 /// Expand `padding`/`margin` shorthand with 1–4 space-separated values.
@@ -1361,5 +1261,5 @@ fn expand_box_shorthand(prop: &str, value: &str) -> Vec<(String, String)> {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "css_tests.rs"]
+#[path = "../css_tests.rs"]
 mod tests;

@@ -1506,3 +1506,93 @@ fn conform_pixel_dashboard() {
     // Main panel header area should be surface0 #313244
     assert_eq!(buf.pixel(400, 10), Color::rgb(49, 50, 68));
 }
+
+// ── HtmlTag tests ───────────────────────────────────────────────────────
+
+#[test]
+fn html_tag_from_str() {
+    assert_eq!(HtmlTag::from("div"), HtmlTag::Div);
+    assert_eq!(HtmlTag::from("button"), HtmlTag::Button);
+    assert_eq!(HtmlTag::from("a"), HtmlTag::A);
+    assert_eq!(HtmlTag::from("span"), HtmlTag::Span);
+    assert_eq!(HtmlTag::from("unknown"), HtmlTag::Custom);
+}
+
+#[test]
+fn html_tag_kind() {
+    assert_eq!(HtmlTag::Div.kind(), TagKind::Box);
+    assert_eq!(HtmlTag::Span.kind(), TagKind::Text);
+    assert_eq!(HtmlTag::Progress.kind(), TagKind::Bar);
+    assert_eq!(HtmlTag::Button.kind(), TagKind::Box);
+    assert_eq!(HtmlTag::H1.kind(), TagKind::Text);
+}
+
+#[test]
+fn html_tag_interactive() {
+    assert!(HtmlTag::Button.is_interactive());
+    assert!(HtmlTag::A.is_interactive());
+    assert!(HtmlTag::Select.is_interactive());
+    assert!(HtmlTag::Summary.is_interactive());
+    assert!(!HtmlTag::Div.is_interactive());
+    assert!(!HtmlTag::Span.is_interactive());
+    assert!(!HtmlTag::P.is_interactive());
+}
+
+#[test]
+fn html_tag_hidden() {
+    assert!(HtmlTag::Script.is_hidden());
+    assert!(HtmlTag::StyleTag.is_hidden());
+    assert!(HtmlTag::Meta.is_hidden());
+    assert!(HtmlTag::Head.is_hidden());
+    assert!(!HtmlTag::Div.is_hidden());
+    assert!(!HtmlTag::Button.is_hidden());
+}
+
+#[test]
+fn html_tag_heading() {
+    assert!(HtmlTag::H1.is_heading());
+    assert!(HtmlTag::H6.is_heading());
+    assert!(!HtmlTag::P.is_heading());
+    assert!(!HtmlTag::Div.is_heading());
+}
+
+#[test]
+fn html_tag_as_str() {
+    assert_eq!(HtmlTag::Div.as_str(), "div");
+    assert_eq!(HtmlTag::Button.as_str(), "button");
+    assert_eq!(HtmlTag::Custom.as_str(), "div");
+}
+
+// ── UA stylesheet tests ─────────────────────────────────────────────────
+
+#[test]
+fn ua_button_cursor_pointer() {
+    let ua = include_str!("ua.css");
+    let sheet = StyleSheet::parse(ua);
+    let s = sheet.tag("button");
+    assert_eq!(s.cursor, Cursor::Pointer);
+}
+
+#[test]
+fn ua_anchor_cursor_pointer() {
+    let ua = include_str!("ua.css");
+    let sheet = StyleSheet::parse(ua);
+    let s = sheet.tag("a");
+    assert_eq!(s.cursor, Cursor::Pointer);
+}
+
+#[test]
+fn ua_script_display_none() {
+    let ua = include_str!("ua.css");
+    let sheet = StyleSheet::parse(ua);
+    let s = sheet.tag("script");
+    assert_eq!(s.display, Display::None);
+}
+
+#[test]
+fn ua_h1_font_size() {
+    let ua = include_str!("ua.css");
+    let sheet = StyleSheet::parse(ua);
+    let s = sheet.tag("h1");
+    assert!((s.font_size - 32.0).abs() < 0.1);
+}

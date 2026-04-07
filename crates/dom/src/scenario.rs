@@ -17,9 +17,10 @@
 //! let results = replay(&mut tree, &scenario);
 //! ```
 
-use any_compute_core::interaction::{Button, DispatchResult, InputEvent};
-use any_compute_core::layout::Point;
 use crate::tree::Tree;
+use any_compute_core::interaction::{Button, DispatchResult, InputEvent, Modifiers};
+use any_compute_core::layout::Point;
+use any_compute_core::render::{Color, PixelBuffer};
 
 // ── Action ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,25 @@ pub enum Action {
     AssertTag { pos: Point, expected: String },
     /// Mark this step for screenshot capture by the host.
     Capture,
+    /// Assert pixel color at a position in the last captured frame.
+    AssertPixel {
+        x: u32,
+        y: u32,
+        expected: Color,
+        tolerance: u8,
+    },
+    /// Assert a rectangular region is uniformly one color in the last captured frame.
+    AssertRegion {
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        tolerance: u8,
+    },
+    /// Simulate a wait (for animation tick). The host decides how to interpret dt.
+    Wait(f64),
+    /// Type text (dispatches key events for each character).
+    Type(String),
 }
 
 // ── StepResult ──────────────────────────────────────────────────────────────
@@ -51,10 +71,12 @@ pub struct StepResult {
     pub action: Action,
     /// Dispatch result for click/hover/dispatch actions; `None` for assert/capture.
     pub dispatch: Option<DispatchResult>,
-    /// For `AssertTag`: `Some(true)` if matched, `Some(false)` if not, `None` otherwise.
+    /// For `AssertTag`/`AssertPixel`/`AssertRegion`: pass/fail.
     pub assertion: Option<bool>,
     /// True when this step is a `Capture` — the host should take a screenshot now.
     pub capture: bool,
+    /// For `Wait` actions: the requested delay in seconds.
+    pub wait_dt: Option<f64>,
 }
 
 impl StepResult {
@@ -66,6 +88,7 @@ impl StepResult {
             dispatch: Some(dispatch),
             assertion: None,
             capture: false,
+            wait_dt: None,
         }
     }
 
@@ -77,6 +100,7 @@ impl StepResult {
             dispatch: None,
             assertion: None,
             capture: false,
+            wait_dt: None,
         }
     }
 
@@ -88,6 +112,7 @@ impl StepResult {
             dispatch: None,
             assertion: Some(pass),
             capture: false,
+            wait_dt: None,
         }
     }
 
@@ -99,6 +124,7 @@ impl StepResult {
             dispatch: None,
             assertion: None,
             capture: true,
+            wait_dt: None,
         }
     }
 }
@@ -150,12 +176,47 @@ impl Scenario {
     pub fn capture(self) -> Self {
         self.push(Action::Capture)
     }
+
+    pub fn assert_pixel(self, x: u32, y: u32, expected: Color, tolerance: u8) -> Self {
+        self.push(Action::AssertPixel {
+            x,
+            y,
+            expected,
+            tolerance,
+        })
+    }
+
+    pub fn assert_region(self, x: u32, y: u32, w: u32, h: u32, tolerance: u8) -> Self {
+        self.push(Action::AssertRegion {
+            x,
+            y,
+            w,
+            h,
+            tolerance,
+        })
+    }
+
+    pub fn wait(self, dt: f64) -> Self {
+        self.push(Action::Wait(dt))
+    }
+
+    pub fn type_text(self, text: impl Into<String>) -> Self {
+        self.push(Action::Type(text.into()))
+    }
 }
 
 // ── Replay ──────────────────────────────────────────────────────────────────
 
 /// Execute a single [`Action`] against a tree and return its result.
-pub fn replay_step(tree: &mut Tree, action: &Action, index: usize) -> StepResult {
+///
+/// `last_capture` is the most recent pixel buffer (from a previous Capture step).
+/// Pixel-assertion actions check against it.
+pub fn replay_step(
+    tree: &mut Tree,
+    action: &Action,
+    index: usize,
+    last_capture: Option<&PixelBuffer>,
+) -> StepResult {
     match action {
         Action::Click(pos) => {
             tree.dispatch(InputEvent::PointerDown {
@@ -173,8 +234,11 @@ pub fn replay_step(tree: &mut Tree, action: &Action, index: usize) -> StepResult
             StepResult::dispatched(index, action.clone(), d)
         }
         Action::Scroll { pos, delta } => {
-            tree.scroll(*pos, *delta);
-            StepResult::silent(index, action.clone())
+            let d = tree.dispatch(InputEvent::Scroll {
+                pos: *pos,
+                delta: *delta,
+            });
+            StepResult::dispatched(index, action.clone(), d)
         }
         Action::Dispatch(event) => {
             let d = tree.dispatch(event.clone());
@@ -185,24 +249,91 @@ pub fn replay_step(tree: &mut Tree, action: &Action, index: usize) -> StepResult
             StepResult::asserted(index, action.clone(), pass)
         }
         Action::Capture => StepResult::captured(index),
+        Action::AssertPixel {
+            x,
+            y,
+            expected,
+            tolerance,
+        } => {
+            let pass = last_capture
+                .map(|buf| {
+                    let c = buf.pixel(*x, *y);
+                    let t = *tolerance as i16;
+                    (c.r as i16 - expected.r as i16).abs() <= t
+                        && (c.g as i16 - expected.g as i16).abs() <= t
+                        && (c.b as i16 - expected.b as i16).abs() <= t
+                })
+                .unwrap_or(false);
+            StepResult::asserted(index, action.clone(), pass)
+        }
+        Action::AssertRegion {
+            x,
+            y,
+            w,
+            h,
+            tolerance,
+        } => {
+            let pass = last_capture
+                .map(|buf| buf.region_uniform(*x, *y, *w, *h, *tolerance))
+                .unwrap_or(false);
+            StepResult::asserted(index, action.clone(), pass)
+        }
+        Action::Wait(dt) => {
+            let mut r = StepResult::silent(index, action.clone());
+            r.wait_dt = Some(*dt);
+            r
+        }
+        Action::Type(text) => {
+            for ch in text.chars() {
+                tree.dispatch(InputEvent::KeyDown {
+                    key: ch.to_string(),
+                    modifiers: Modifiers::default(),
+                });
+            }
+            StepResult::silent(index, action.clone())
+        }
     }
 }
 
 /// Replay a full [`Scenario`] against a tree. Returns one [`StepResult`] per action.
+///
+/// Pixel-assertion actions (`AssertPixel`, `AssertRegion`) check against a
+/// `capture_fn` callback. When a `Capture` action is encountered, `capture_fn`
+/// is called to produce a PixelBuffer snapshot of the current tree state.
+/// If no `capture_fn` is provided, pixel assertions always fail.
 pub fn replay(tree: &mut Tree, scenario: &Scenario) -> Vec<StepResult> {
-    scenario
-        .actions
-        .iter()
-        .enumerate()
-        .map(|(i, action)| replay_step(tree, action, i))
-        .collect()
+    replay_with(tree, scenario, None::<fn(&Tree) -> PixelBuffer>)
+}
+
+/// Replay with an optional capture callback for pixel-level assertions.
+pub fn replay_with(
+    tree: &mut Tree,
+    scenario: &Scenario,
+    capture_fn: Option<impl Fn(&Tree) -> PixelBuffer>,
+) -> Vec<StepResult> {
+    let mut results = Vec::with_capacity(scenario.actions.len());
+    let mut last_capture: Option<PixelBuffer> = None;
+
+    for (i, action) in scenario.actions.iter().enumerate() {
+        let result = replay_step(tree, action, i, last_capture.as_ref());
+
+        // If this step is a capture, invoke the callback to get the pixel buffer.
+        if result.capture {
+            if let Some(ref f) = capture_fn {
+                last_capture = Some(f(tree));
+            }
+        }
+
+        results.push(result);
+    }
+    results
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use any_compute_core::layout::Size;
     use crate::style::Style;
+    use any_compute_core::layout::Size;
 
     fn test_tree() -> Tree {
         let mut tree = Tree::new(Style::default().w(400.0).h(300.0));

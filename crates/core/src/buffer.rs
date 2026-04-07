@@ -24,9 +24,9 @@ use crate::kernel::{BinaryOp, ReduceOp, UnaryOp};
 
 /// Generates reduction methods on Buffer (each delegates to `device.reduce`).
 macro_rules! buffer_reduce_ops {
-    ($($method:ident => $op:ident),* $(,)?) => {
+    ($($method:ident => $op:expr),* $(,)?) => {
         $(pub fn $method(&self) -> f64 {
-            self.device.reduce(&self.data, ReduceOp::$op)
+            self.device.reduce(&self.data, $op)
         })*
     }
 }
@@ -52,7 +52,12 @@ pub struct Buffer {
 
 impl std::fmt::Debug for Buffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Buffer(len={}, device={})", self.data.len(), self.device.name())
+        write!(
+            f,
+            "Buffer(len={}, device={})",
+            self.data.len(),
+            self.device.name()
+        )
     }
 }
 
@@ -101,22 +106,11 @@ impl Buffer {
 
     // ── Reductions (device-dispatched) ────────────────────────────────────
 
-    buffer_reduce_ops!(sum => Sum, min => Min, max => Max, mean => Mean, product => Product);
+    for_each_reduce!(buffer_reduce_ops);
 
     // ── Unary maps (device-dispatched) ────────────────────────────────────
 
-    buffer_unary_ops!(
-        neg     => UnaryOp::Neg,
-        abs     => UnaryOp::Abs,
-        sqrt    => UnaryOp::Sqrt,
-        exp     => UnaryOp::Exp,
-        log     => UnaryOp::Log,
-        sin     => UnaryOp::Sin,
-        cos     => UnaryOp::Cos,
-        tanh    => UnaryOp::Tanh,
-        relu    => UnaryOp::Relu,
-        sigmoid => UnaryOp::Sigmoid,
-    );
+    for_each_unary!(buffer_unary_ops);
 
     pub fn scale(&self, s: f64) -> Self {
         self.with_data(self.device.unary(&self.data, UnaryOp::Scale(s.into())))
@@ -145,6 +139,29 @@ impl Buffer {
 
     pub fn gemm(&self, rhs: &Self, m: usize, n: usize, k: usize) -> Self {
         self.with_data(self.device.gemm(&self.data, &rhs.data, m, n, k))
+    }
+
+    // ── Lazy bridge ──────────────────────────────────────────────────────
+
+    /// Enter lazy mode: record operations in a [`Graph`] instead of executing them.
+    ///
+    /// All the same named methods (`.sqrt()`, `.scale()`, `.sum()`, etc.)
+    /// are available on the returned [`LazyMut`] — they just record nodes
+    /// instead of computing immediately.  Call `.eval()` to materialize.
+    ///
+    /// ```
+    /// use any_compute_core::{buffer::Buffer, graph::Graph, compute::Device};
+    /// use std::collections::HashMap;
+    ///
+    /// let buf = Buffer::new(vec![1.0, 4.0, 9.0]);
+    /// let mut g = Graph::new();
+    /// let result = buf.lazy(&mut g).sqrt().scale(2.0)
+    ///     .eval(&Device::cpu(), &HashMap::new());
+    /// assert_eq!(result, vec![2.0, 4.0, 6.0]);
+    /// ```
+    pub fn lazy<'g>(&self, graph: &'g mut crate::graph::Graph) -> crate::graph::LazyMut<'g> {
+        let id = graph.from_buffer(self);
+        crate::graph::LazyMut::from_raw(graph, id)
     }
 }
 
@@ -195,6 +212,59 @@ impl From<&[f64]> for Buffer {
 // ═══════════════════════════════════════════════════════════════════════════
 // ── Tests ────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
+
+use crate::ops::{AsF64s, DeviceAware, Export, Stats, Summary, json_array, json_f64};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Ops trait impls ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl AsF64s for Buffer {
+    fn as_f64s(&self) -> &[f64] {
+        self.data()
+    }
+}
+
+impl Summary for Buffer {
+    fn summary(&self) -> String {
+        let d = self.data();
+        if d.is_empty() {
+            return format!("Buffer(empty, device={})", self.device().name());
+        }
+        let s = self.stats();
+        format!(
+            "Buffer(n={}, min={:.3}, max={:.3}, mean={:.3}, std={:.3}, device={})",
+            s.count,
+            s.min,
+            s.max,
+            s.mean,
+            s.std_dev,
+            self.device().name()
+        )
+    }
+}
+
+impl DeviceAware for Buffer {
+    fn to_device(&self, device: &crate::compute::Device) -> Self {
+        Buffer::on(device, self.data().to_vec())
+    }
+    fn device_name(&self) -> String {
+        self.device().name().to_string()
+    }
+}
+
+impl Export for Buffer {
+    fn to_json(&self) -> String {
+        json_array(self.as_f64s().iter().map(|v| json_f64(*v)))
+    }
+    fn to_csv(&self) -> String {
+        self.as_f64s()
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
 
 #[cfg(test)]
 mod tests {

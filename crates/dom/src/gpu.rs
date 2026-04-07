@@ -4,6 +4,7 @@
 //! The shader is loaded from `shaders/rect.wgsl` via `include_str!`.
 
 use crate::theme;
+use any_compute_core::layout::Point;
 use any_compute_core::render::{Color, Primitive, RenderList};
 use glyphon::{
     Attrs, Buffer as GlyphBuffer, Cache as GlyphCache, Family, FontSystem, Metrics, Resolution,
@@ -65,6 +66,7 @@ pub struct InstanceData {
     pub color: [f32; 4],
     pub params: [f32; 4],
     pub border_color: [f32; 4],
+    pub border_widths: [f32; 4],
 }
 
 #[repr(C)]
@@ -170,7 +172,7 @@ impl Gpu {
             format: fmt,
             width: w,
             height: h,
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: wgpu::PresentMode::AutoNoVsync,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -253,6 +255,7 @@ impl Gpu {
                             2 => Float32x4,
                             3 => Float32x4,
                             4 => Float32x4,
+                            5 => Float32x4,
                         ],
                     },
                 ],
@@ -428,8 +431,13 @@ impl Gpu {
                     corner_radius,
                 } => {
                     let (bw, bc) = border
-                        .map(|b| (b.width as f32, color_linear(b.color)))
-                        .unwrap_or((0.0, [0.0; 4]));
+                        .map(|b| {
+                            (
+                                [b.top as f32, b.right as f32, b.bottom as f32, b.left as f32],
+                                color_linear(b.color),
+                            )
+                        })
+                        .unwrap_or(([0.0; 4], [0.0; 4]));
                     self.rect_instances.push(InstanceData {
                         bounds: [
                             bounds.origin.x as f32,
@@ -438,8 +446,54 @@ impl Gpu {
                             bounds.size.h() as f32,
                         ],
                         color: color_linear(*fill),
-                        params: [*corner_radius as f32, bw, 0.0, 0.0],
+                        params: [*corner_radius as f32, 0.0, 0.0, 0.0],
                         border_color: bc,
+                        border_widths: bw,
+                    });
+                }
+                Primitive::Line {
+                    from,
+                    to,
+                    stroke,
+                    width,
+                } => {
+                    let dx = to.x - from.x;
+                    let dy = to.y - from.y;
+                    let length = (dx * dx + dy * dy).sqrt() as f32;
+                    let angle = (dy as f32).atan2(dx as f32);
+                    let w = *width as f32;
+                    let cx = (from.x + to.x) as f32 * 0.5;
+                    let cy = (from.y + to.y) as f32 * 0.5;
+                    self.rect_instances.push(InstanceData {
+                        bounds: [cx - length * 0.5, cy - w * 0.5, length, w],
+                        color: color_linear(*stroke),
+                        params: [w * 0.5, angle, 0.0, 0.0],
+                        border_color: [0.0; 4],
+                        border_widths: [0.0; 4],
+                    });
+                }
+                Primitive::Triangle { vertices, fill } => {
+                    let [v0, v1, v2] = vertices;
+                    let min_x = v0.x.min(v1.x).min(v2.x) as f32;
+                    let min_y = v0.y.min(v1.y).min(v2.y) as f32;
+                    let max_x = v0.x.max(v1.x).max(v2.x) as f32;
+                    let max_y = v0.y.max(v1.y).max(v2.y) as f32;
+                    let w = max_x - min_x;
+                    let h = max_y - min_y;
+                    if w < 0.5 || h < 0.5 {
+                        continue;
+                    }
+                    // Store vertices in UV space [0,1]² relative to AABB
+                    let uv = |p: &Point| ((p.x as f32 - min_x) / w, (p.y as f32 - min_y) / h);
+                    let (u0x, u0y) = uv(v0);
+                    let (u1x, u1y) = uv(v1);
+                    let (u2x, u2y) = uv(v2);
+                    self.rect_instances.push(InstanceData {
+                        bounds: [min_x, min_y, w, h],
+                        color: color_linear(*fill),
+                        params: [0.0, 0.0, 1.0, 0.0], // params.z = 1.0 → triangle mode
+                        border_color: [u0x, u0y, u1x, u1y],
+                        border_widths: [u2x, u2y, 0.0, 0.0],
                     });
                 }
                 _ => {}
@@ -722,6 +776,14 @@ impl Gpu {
         }
         drop(data);
         readback.unmap();
+        // BGRA → RGBA swap when the surface format stores blue first.
+        if self.config.format == wgpu::TextureFormat::Bgra8UnormSrgb
+            || self.config.format == wgpu::TextureFormat::Bgra8Unorm
+        {
+            for chunk in rgba.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
+            }
+        }
         self.text_atlas.trim();
         (w, h, rgba)
     }
@@ -735,14 +797,7 @@ impl Gpu {
 
     /// Capture and save directly to a PNG file.
     pub fn capture_png(&mut self, list: &RenderList, path: &std::path::Path) {
-        let (w, h, mut pixels) = self.capture(list);
-        if self.config.format == wgpu::TextureFormat::Bgra8UnormSrgb
-            || self.config.format == wgpu::TextureFormat::Bgra8Unorm
-        {
-            for chunk in pixels.chunks_exact_mut(4) {
-                chunk.swap(0, 2);
-            }
-        }
+        let (w, h, pixels) = self.capture(list);
         let file = std::fs::File::create(path).unwrap();
         let mut encoder = png::Encoder::new(file, w, h);
         encoder.set_color(png::ColorType::Rgba);

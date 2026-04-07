@@ -27,13 +27,79 @@
 //! override them for fine-grained control.
 
 pub mod animation;
+
+// ── Op-registry callback macros ───────────────────────────────────────────
+//
+// Single source of truth for each op family.  Consumer modules call
+// `for_each_X!(their_macro)` to generate all the boilerplate methods.
+// Adding a new parameterless unary op = one line here — then Buffer, Graph,
+// and LazyMut all pick it up automatically.
+
+/// All parameterless [`UnaryOp`] variants.
+macro_rules! for_each_unary {
+    ($mac:ident) => {
+        $mac!(
+            neg     => UnaryOp::Neg,
+            abs     => UnaryOp::Abs,
+            sqrt    => UnaryOp::Sqrt,
+            rsqrt   => UnaryOp::Rsqrt,
+            exp     => UnaryOp::Exp,
+            log     => UnaryOp::Log,
+            sin     => UnaryOp::Sin,
+            cos     => UnaryOp::Cos,
+            tanh    => UnaryOp::Tanh,
+            relu    => UnaryOp::Relu,
+            sigmoid => UnaryOp::Sigmoid,
+            floor   => UnaryOp::Floor,
+            ceil    => UnaryOp::Ceil,
+        );
+    };
+}
+
+/// All [`BinaryOp`] variants.
+macro_rules! for_each_binary {
+    ($mac:ident) => {
+        $mac!(
+            add     => BinaryOp::Add,
+            sub     => BinaryOp::Sub,
+            mul     => BinaryOp::Mul,
+            div     => BinaryOp::Div,
+            minimum => BinaryOp::Min,
+            maximum => BinaryOp::Max,
+            power   => BinaryOp::Pow,
+        );
+    };
+}
+
+/// All [`ReduceOp`] variants.
+macro_rules! for_each_reduce {
+    ($mac:ident) => {
+        $mac!(
+            sum     => ReduceOp::Sum,
+            min     => ReduceOp::Min,
+            max     => ReduceOp::Max,
+            product => ReduceOp::Product,
+            mean    => ReduceOp::Mean,
+        );
+    };
+}
+
 pub mod buffer;
 pub mod compute;
 pub mod data;
+pub mod flex;
 pub mod hints;
 pub mod interaction;
+pub mod propagation;
+pub mod tree;
 
 pub use compute::Device;
+
+/// NaN-safe ascending comparison for `f64` values.
+#[inline]
+pub fn f64_cmp(a: &f64, b: &f64) -> std::cmp::Ordering {
+    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+}
 
 // ── display_enum! ─────────────────────────────────────────────────────────
 //
@@ -53,11 +119,14 @@ macro_rules! display_enum {
     }
 }
 
+pub mod graph;
 pub mod kernel;
 pub mod layout;
+pub mod ops;
 pub mod render;
 pub mod scene;
 pub mod shader;
+pub mod visual;
 
 mod error;
 pub use error::Error;

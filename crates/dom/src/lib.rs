@@ -8,24 +8,23 @@
 //! - [`tree`]  — arena-based owning container with layout + paint + event traversal
 //! - [`parse`] — convert HTML-like markup into our [`Tree`]
 //! - [`css`]   — CSS parser with transitions, @keyframes, variables
+//! - [`page`]  — HTML+CSS+JS page runtime (owns Tree + Vm + StyleSheet)
 //! - [`gpu`]   — wgpu renderer (behind `gpu` feature)
-//! - [`theme`] — Catppuccin Mocha palette constants (behind `gpu` feature)
-//! - [`harness`] — headless test driver (behind `gpu` feature)
-//! - [`scenario`] — action replay + assertions (behind `gpu` feature)
+//! - [`theme`] — Catppuccin Mocha palette constants
+//! - [`harness`] — headless test driver
+//! - [`scenario`] — action replay + assertions
 
 #[macro_use]
 pub mod style;
 pub mod css;
+pub mod page;
 pub mod parse;
 pub mod tree;
 
 #[cfg(feature = "gpu")]
 pub mod gpu;
-#[cfg(feature = "gpu")]
 pub mod harness;
-#[cfg(feature = "gpu")]
 pub mod scenario;
-#[cfg(feature = "gpu")]
 pub mod theme;
 
 pub use style::*;

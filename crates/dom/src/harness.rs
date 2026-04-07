@@ -10,16 +10,16 @@
 //! assert!(capture.pixel(100, 50) != Color::TRANSPARENT);
 //! ```
 
+use crate::css::StyleSheet;
+use crate::parse::parse_with_css;
+use crate::style::{Cursor, Style};
+use crate::tree::Tree;
 use any_compute_core::interaction::{Button, InputEvent};
 use any_compute_core::layout::{Point, Size};
 use any_compute_core::render::{Color, RenderList};
-use crate::css::StyleSheet;
-use crate::parse::parse_with_css;
-use crate::style::Style;
-use crate::tree::Tree;
 
 use crate::PALETTE_CSS;
-use crate::scenario::{Scenario, StepResult, replay};
+use crate::scenario::{Scenario, StepResult, replay, replay_with};
 
 // ── Capture ─────────────────────────────────────────────────────────────────
 
@@ -113,39 +113,49 @@ pub struct TestHarness {
     pub tree: Tree,
     pub viewport: Size,
     #[cfg(feature = "gpu")]
-    gpu: crate::gpu::Gpu,
+    pub gpu: crate::gpu::Gpu,
 }
 
 impl TestHarness {
-    /// Create from raw CSS + HTML strings. Palette CSS is prepended automatically.
-    #[cfg(feature = "gpu")]
-    pub fn from_css_html(css: &str, html: &str, size: (u32, u32)) -> Self {
-        let full_css = format!("{}\n{}", PALETTE_CSS, css);
-        let sheet = StyleSheet::parse(&full_css);
-        let mut tree = parse_with_css(html, &sheet);
+    /// Common construction: layout the tree and init GPU if available.
+    fn build(mut tree: Tree, size: (u32, u32)) -> Self {
         let viewport = Size::new(size.0 as f64, size.1 as f64);
         tree.layout(viewport);
-
-        let gpu = crate::gpu::Gpu::init_headless(size.0, size.1);
-
         Self {
             tree,
             viewport,
-            gpu,
+            #[cfg(feature = "gpu")]
+            gpu: crate::gpu::Gpu::init_headless(size.0, size.1),
         }
+    }
+
+    /// Parse CSS (with palette) + HTML into a Tree.
+    fn parse_tree(css: &str, html: &str) -> Tree {
+        let full_css = format!("{}\n{}", PALETTE_CSS, css);
+        let sheet = StyleSheet::parse(&full_css);
+        parse_with_css(html, &sheet)
+    }
+
+    /// Create from a pre-built tree (CPU-only, no GPU capture).
+    pub fn from_tree_cpu(tree: Tree, size: (u32, u32)) -> Self {
+        Self::build(tree, size)
+    }
+
+    /// Create from raw CSS + HTML strings (CPU-only, no GPU capture).
+    pub fn from_css_html_cpu(css: &str, html: &str, size: (u32, u32)) -> Self {
+        Self::build(Self::parse_tree(css, html), size)
+    }
+
+    /// Create from raw CSS + HTML strings. Palette CSS is prepended automatically.
+    #[cfg(feature = "gpu")]
+    pub fn from_css_html(css: &str, html: &str, size: (u32, u32)) -> Self {
+        Self::build(Self::parse_tree(css, html), size)
     }
 
     /// Create from a pre-built tree (no CSS parsing needed).
     #[cfg(feature = "gpu")]
-    pub fn from_tree(mut tree: Tree, size: (u32, u32)) -> Self {
-        let viewport = Size::new(size.0 as f64, size.1 as f64);
-        tree.layout(viewport);
-        let gpu = crate::gpu::Gpu::init_headless(size.0, size.1);
-        Self {
-            tree,
-            viewport,
-            gpu,
-        }
+    pub fn from_tree(tree: Tree, size: (u32, u32)) -> Self {
+        Self::build(tree, size)
     }
 
     /// Re-layout the tree (e.g. after style changes).
@@ -207,6 +217,32 @@ impl TestHarness {
         results
     }
 
+    /// Replay with CPU-based pixel capture for pixel assertions.
+    ///
+    /// Each `Capture` action renders the tree to a CPU PixelBuffer.
+    /// Subsequent `AssertPixel` and `AssertRegion` actions check against it.
+    pub fn replay_visual(
+        &mut self,
+        scenario: &Scenario,
+        width: u32,
+        height: u32,
+    ) -> Vec<StepResult> {
+        use any_compute_core::render::PixelBuffer;
+        let results = replay_with(
+            &mut self.tree,
+            scenario,
+            Some(|tree: &Tree| {
+                let mut list = RenderList::default();
+                tree.paint(&mut list);
+                let mut buf = PixelBuffer::new(width, height, Color::BLACK);
+                buf.paint(&list);
+                buf
+            }),
+        );
+        self.layout();
+        results
+    }
+
     // ── Capture ─────────────────────────────────────────────────────────
 
     /// Paint the current tree to the render list.
@@ -215,6 +251,18 @@ impl TestHarness {
         self.tree.paint(&mut list);
         self.tree.post_paint();
         list
+    }
+
+    /// Capture the current tree as a CPU PixelBuffer (no GPU required).
+    pub fn capture_cpu(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> any_compute_core::render::PixelBuffer {
+        let list = self.render_list();
+        let mut buf = any_compute_core::render::PixelBuffer::new(width, height, Color::BLACK);
+        buf.paint(&list);
+        buf
     }
 
     /// Capture the current tree as an RGBA pixel buffer.
@@ -259,5 +307,10 @@ impl TestHarness {
             .hit_test(pos.into())
             .map(|nid| self.tree.slot(nid).hovered)
             .unwrap_or(false)
+    }
+
+    /// Get the cursor style at a position (e.g. `Cursor::Pointer` for clickable).
+    pub fn cursor_at(&self, pos: impl Into<Point>) -> Cursor {
+        self.tree.cursor_at(pos.into())
     }
 }

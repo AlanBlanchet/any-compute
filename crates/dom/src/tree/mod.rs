@@ -4,38 +4,37 @@
 //! cache-friendly, and trivially serialisable.  Node IDs are indices.
 
 use any_compute_core::hints::Hints;
-use any_compute_core::interaction::{DispatchResult, EventContext, InputEvent, Phase};
+use any_compute_core::interaction::{
+    DispatchResult, EventContext, InputEvent, Modifiers, Phase,
+};
 use any_compute_core::layout::{Point, Rect, Size};
 use any_compute_core::render::{Border, Color, Primitive, RenderList};
 
-use super::css::{AnimationDirection, AnimationFillMode, AnimationIterCount, Keyframe, StyleSheet};
-use super::style::*;
+use crate::css::{AnimationFillMode, StyleSheet};
+use crate::style::*;
 // Re-import specific items we use in match arms for clarity.
-use super::style::{
+use crate::style::{
     BoxSizing, Cursor, Overflow, PointerEvents, TextDecoration, TextOverflow, Visibility,
     WhiteSpace,
 };
 
 use std::sync::Arc;
+use std::time::Instant;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ── Dirty tracking ──────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════
-
-bitflags::bitflags! {
-    /// Per-node dirty flags — gate which phases need re-running.
-    ///
-    /// Layout-affecting changes (dimensions, padding, flex) set `LAYOUT`.
-    /// Visual-only changes (color, opacity, background) set `PAINT`.
-    /// `LAYOUT` implies `PAINT` (anything that moved must also be repainted).
-    /// `Z_ORDER` means the cached z-sorted child list must be rebuilt.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Dirty: u8 {
-        const LAYOUT  = 0b0001;
-        const PAINT   = 0b0010;
-        const Z_ORDER = 0b0100;
-    }
+/// True for characters that form part of a "word" (for double-click selection).
+#[inline]
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
+
+/// Selection highlight color (semi-transparent blue, browser-like).
+const SELECTION_BG: Color = Color::rgba(100, 149, 237, 100);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Dirty tracking (re-exported from core) ──────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub use any_compute_core::tree::Dirty;
 
 /// Classify a CSS transition/animation property as layout-affecting or visual-only.
 /// Kept in sync with `Style::differs_in_layout()` and `StyleOp::affects_layout()`.
@@ -105,300 +104,21 @@ fn property_affects_layout(prop: &str) -> bool {
 ///
 /// Both [`ActiveTransition`] and [`ActiveAnimation`] embed this so
 /// delay/duration/easing logic is defined exactly once.
-#[derive(Debug, Clone)]
-pub struct Timing {
-    pub elapsed: f64,
-    pub duration: f64,
-    pub delay: f64,
-    pub easing: any_compute_core::animation::Easing,
+
+mod animation;
+mod node;
+mod address_bar;
+
+pub use animation::*;
+pub use node::*;
+pub use address_bar::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextSelection {
+    pub node: NodeId,
+    pub start: usize,
+    pub end: usize,
 }
-
-impl Timing {
-    /// Seconds of active playback (after delay has passed).
-    #[inline]
-    pub fn active_time(&self) -> f64 {
-        (self.elapsed - self.delay).max(0.0)
-    }
-
-    /// Whether enough time has elapsed to be past the delay.
-    #[inline]
-    pub fn started(&self) -> bool {
-        self.elapsed >= self.delay
-    }
-
-    /// Linear progress in [0,1] — delay-aware, clamped, **no** easing.
-    pub fn raw_progress(&self) -> f64 {
-        if !self.started() {
-            return 0.0;
-        }
-        if self.duration <= 0.0 {
-            return 1.0;
-        }
-        (self.active_time() / self.duration).clamp(0.0, 1.0)
-    }
-
-    /// Progress with easing curve applied.
-    pub fn eased_progress(&self) -> f64 {
-        self.easing.apply(self.raw_progress())
-    }
-
-    /// True when the single iteration is complete.
-    pub fn finished(&self) -> bool {
-        self.elapsed >= self.delay + self.duration
-    }
-}
-
-/// Result of a [`Tree::tick`] call.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TickResult {
-    /// Any animations/transitions still running — caller should redraw.
-    pub active: bool,
-}
-
-/// Active CSS property transition — interpolates one `StyleOp` from→to.
-#[derive(Debug, Clone)]
-pub struct ActiveTransition {
-    pub property: String,
-    pub from: Style,
-    pub to: Style,
-    pub timing: Timing,
-}
-
-impl ActiveTransition {
-    /// Normalized progress \in [0,1] with easing applied.
-    pub fn progress(&self) -> f64 {
-        self.timing.eased_progress()
-    }
-
-    /// True if this transition has completed.
-    pub fn finished(&self) -> bool {
-        self.timing.finished()
-    }
-
-    /// Build from a `TransitionSpec` + before/after snapshots.
-    fn from_spec(spec: &super::css::TransitionSpec, from: Style, to: Style) -> Self {
-        Self {
-            property: spec.property.clone(),
-            from,
-            to,
-            timing: Timing {
-                elapsed: 0.0,
-                duration: spec.duration_secs,
-                delay: spec.delay_secs,
-                easing: spec.easing,
-            },
-        }
-    }
-}
-
-/// Active CSS @keyframes animation on a node.
-#[derive(Debug, Clone)]
-pub struct ActiveAnimation {
-    pub name: String,
-    pub keyframes: Vec<Keyframe>,
-    pub timing: Timing,
-    pub iteration_count: AnimationIterCount,
-    pub direction: AnimationDirection,
-    pub fill_mode: AnimationFillMode,
-    pub iterations_done: f64,
-}
-
-impl ActiveAnimation {
-    /// Current normalized progress \in [0,1] within the current iteration.
-    pub fn progress(&self) -> f64 {
-        if !self.timing.started() {
-            return match self.fill_mode {
-                AnimationFillMode::Backwards | AnimationFillMode::Both => 0.0,
-                _ => 0.0,
-            };
-        }
-        let active = self.timing.active_time();
-        if self.timing.duration <= 0.0 {
-            return 1.0;
-        }
-        let raw_iter = active / self.timing.duration;
-        let iter_frac = raw_iter.fract();
-        let iter_num = raw_iter.floor();
-
-        // Check if finished
-        match self.iteration_count {
-            AnimationIterCount::Count(n) if iter_num >= n => {
-                return match self.fill_mode {
-                    AnimationFillMode::Forwards | AnimationFillMode::Both => 1.0,
-                    _ => 0.0,
-                };
-            }
-            _ => {}
-        }
-
-        let t = match self.direction {
-            AnimationDirection::Normal => iter_frac,
-            AnimationDirection::Reverse => 1.0 - iter_frac,
-            AnimationDirection::Alternate => {
-                if (iter_num as u64) % 2 == 0 {
-                    iter_frac
-                } else {
-                    1.0 - iter_frac
-                }
-            }
-            AnimationDirection::AlternateReverse => {
-                if (iter_num as u64) % 2 == 0 {
-                    1.0 - iter_frac
-                } else {
-                    iter_frac
-                }
-            }
-        };
-        self.timing.easing.apply(t)
-    }
-
-    /// True if this animation has completed all iterations.
-    pub fn finished(&self) -> bool {
-        if !self.timing.started() {
-            return false;
-        }
-        match self.iteration_count {
-            AnimationIterCount::Infinite => false,
-            AnimationIterCount::Count(n) => self.timing.active_time() >= self.timing.duration * n,
-        }
-    }
-
-    /// Apply current keyframe interpolation to a style.
-    pub fn apply_to(&self, style: &mut Style) {
-        let t = self.progress();
-        if self.keyframes.is_empty() {
-            return;
-        }
-
-        // Single-pass keyframe bracket search: find largest stop <= t (prev)
-        // and smallest stop >= t (next).
-        let mut prev = &self.keyframes[0];
-        let mut next = self.keyframes.last().unwrap();
-        for kf in &self.keyframes {
-            if kf.stop <= t {
-                prev = kf;
-            }
-            if kf.stop >= t && kf.stop < next.stop {
-                next = kf;
-            }
-        }
-
-        if (next.stop - prev.stop).abs() < f64::EPSILON {
-            // Exact match — apply directly
-            apply_ops(style, &prev.ops);
-        } else {
-            // Interpolate between surrounding keyframes via full Style::lerp.
-            // Clone the base style, apply each keyframe's ops independently,
-            // then lerp.  Properties not touched by keyframes stay identical
-            // in both copies, so the lerp is a no-op for them.
-            let local_t = (t - prev.stop) / (next.stop - prev.stop);
-            let mut prev_style = style.clone();
-            apply_ops(&mut prev_style, &prev.ops);
-            let mut next_style = style.clone();
-            apply_ops(&mut next_style, &next.ops);
-            *style = prev_style.lerp(&next_style, local_t);
-        }
-    }
-}
-
-// ── Node identity ───────────────────────────────────────────────────────────
-
-/// Lightweight handle into the arena.  Cheap to copy, compare, hash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(pub usize);
-
-/// What kind of content a node holds.
-#[derive(Debug, Clone)]
-pub enum NodeKind {
-    /// Container (like a `<div>`) — has children, no intrinsic content.
-    Box,
-    /// Text leaf — has intrinsic size based on `content × font_size`.
-    Text(String),
-    /// Horizontal bar — intrinsic height, width comes from parent/flex.
-    /// Stores a fill fraction `[0..1]` and bar color.
-    Bar { fraction: f64, fill: Color },
-}
-
-// ── Arena slot ──────────────────────────────────────────────────────────────
-
-/// One node in the arena.
-#[derive(Debug, Clone)]
-pub struct Slot {
-    pub kind: NodeKind,
-    pub style: Style,
-    /// Style before any pseudo-class overrides — reset target for restyle.
-    pub base_style: Style,
-    pub hints: Hints,
-    pub parent: Option<NodeId>,
-    pub children: Vec<NodeId>,
-    /// Computed layout rect (filled by `Tree::layout`).
-    pub rect: Rect,
-    /// Scroll offset for `Overflow::Scroll` containers.
-    pub scroll: Point,
-    /// Optional click handler tag — matched by the host.
-    pub tag: Option<String>,
-    /// HTML `id` attribute — for CSS `#id` selector matching.
-    pub id: Option<String>,
-    /// HTML element tag name (e.g. "div", "span") — for CSS restyle.
-    pub element: String,
-    /// CSS class list — for CSS restyle on pseudo-class changes.
-    pub class_list: Vec<String>,
-    /// Current hover state — set by dispatch, used for `:hover` restyle.
-    pub hovered: bool,
-    /// Current active (pressed) state — set by dispatch, used for `:active` restyle.
-    pub active: bool,
-    /// Current focused state — set by `Tree::focus()`, used for `:focus` restyle.
-    pub focused: bool,
-    /// Accurate text width from font shaping (0.0 = not measured, use estimate).
-    pub measured_text_width: f64,
-    /// Active CSS transitions (property-level interpolation on style change).
-    pub transitions: Vec<ActiveTransition>,
-    /// Active CSS @keyframes animations.
-    pub animations: Vec<ActiveAnimation>,
-    /// Per-node dirty flags — gate layout/paint traversal.
-    pub dirty: Dirty,
-    /// Cached z-sorted children — invalidated when `Dirty::Z_ORDER` is set.
-    z_sorted: Vec<NodeId>,
-}
-
-impl Slot {
-    /// Create a new slot with sensible defaults for spatial/hint fields.
-    pub fn new(kind: NodeKind, style: Style, parent: Option<NodeId>) -> Self {
-        Self {
-            kind,
-            base_style: style.clone(),
-            style,
-            hints: Hints::default(),
-            parent,
-            children: Vec::new(),
-            rect: Rect::ZERO,
-            scroll: Point::ZERO,
-            tag: None,
-            id: None,
-            element: String::new(),
-            class_list: Vec::new(),
-            hovered: false,
-            active: false,
-            focused: false,
-            measured_text_width: 0.0,
-            transitions: Vec::new(),
-            animations: Vec::new(),
-            dirty: Dirty::LAYOUT | Dirty::PAINT | Dirty::Z_ORDER,
-            z_sorted: Vec::new(),
-        }
-    }
-
-    /// Return measured text width if available, else CSS-estimated width.
-    pub fn text_w(&self, text: &str) -> f64 {
-        if self.measured_text_width > 0.0 {
-            self.measured_text_width
-        } else {
-            self.style.text_width(text)
-        }
-    }
-}
-
-// ── Tree ────────────────────────────────────────────────────────────────────
 
 /// The DOM — a flat arena of [`Slot`]s with optional CSS for live restyle.
 pub struct Tree {
@@ -416,6 +136,12 @@ pub struct Tree {
     pub needs_layout: bool,
     /// Global flag: at least one node has `Dirty::PAINT`.
     pub needs_paint: bool,
+    /// Active text selection (double-click word select, or click-drag).
+    pub selection: Option<TextSelection>,
+    /// Last PointerDown time + target for double-click detection.
+    last_click: Option<(Instant, NodeId)>,
+    /// Anchor char index for click-drag text selection.
+    drag_anchor: Option<(NodeId, usize)>,
 }
 
 impl Tree {
@@ -441,6 +167,13 @@ impl Tree {
                 None => break,
             }
         }
+    }
+
+    /// Set a flag on ancestor path + restyle. Combines the common
+    /// `walk_ancestors(…) + restyle_path(…)` pattern.
+    fn set_state_and_restyle(&mut self, node: NodeId, f: impl FnMut(&mut Slot)) {
+        self.walk_ancestors(node, f);
+        self.restyle_path(node);
     }
 
     /// Mark a node (and ancestors) dirty, propagating upward.
@@ -487,6 +220,9 @@ impl Tree {
             focused: None,
             needs_layout: true,
             needs_paint: true,
+            selection: None,
+            last_click: None,
+            drag_anchor: None,
         }
     }
 
@@ -661,6 +397,39 @@ impl Tree {
         self.add_node(parent, NodeKind::Bar { fraction, fill }, style)
     }
 
+    /// Create an element node by tag name (e.g. `"button"`, `"div"`, `"h1"`).
+    ///
+    /// Resolves user-agent defaults for the tag so the node looks correct
+    /// without any manual styling.
+    ///
+    /// ```ignore
+    /// let btn = tree.add_element(parent, "button");
+    /// tree.add_text(btn, "Click me", Style::default());
+    /// ```
+    pub fn add_element(&mut self, parent: NodeId, tag: &str) -> NodeId {
+        self.add_element_with(parent, tag, |s| s)
+    }
+
+    /// Like [`add_element`](Self::add_element) but applies a closure to
+    /// customize the UA-default style before node creation.  The closure
+    /// acts as inline-style overrides (highest CSS specificity).
+    ///
+    /// ```ignore
+    /// let btn = tree.add_element_with(parent, "button", |s| s.bg(RED).h(36));
+    /// ```
+    pub fn add_element_with(
+        &mut self,
+        parent: NodeId,
+        tag: &str,
+        f: impl FnOnce(Style) -> Style,
+    ) -> NodeId {
+        let mut el = tag.to_dom();
+        el.style = f(el.style);
+        let id = self.add_node(parent, el.kind, el.style);
+        self.slot_mut(id).element = tag.to_string();
+        id
+    }
+
     /// Tag a node for event matching.
     pub fn tag(&mut self, id: NodeId, tag: impl Into<String>) {
         self.slot_mut(id).tag = Some(tag.into());
@@ -694,7 +463,124 @@ impl Tree {
         }
     }
 
-    fn add_node(&mut self, parent: NodeId, kind: NodeKind, style: Style) -> NodeId {
+    /// Make a node editable — sets an initial value and marks it for text input.
+    pub fn set_editable(&mut self, id: NodeId, initial: &str) {
+        self.arena[id.0].value = Some(initial.to_string());
+        self.arena[id.0].caret = initial.len();
+        self.sync_value_text(id);
+    }
+
+    /// Current value of an editable node (`None` if not editable).
+    pub fn value(&self, id: NodeId) -> Option<&str> {
+        self.arena[id.0].value.as_deref()
+    }
+
+    /// Caret byte position in the editable value.
+    pub fn caret(&self, id: NodeId) -> usize {
+        self.arena[id.0].caret
+    }
+
+    /// Sync visible text child to match the editable `value`.
+    /// Finds (or creates) the first Text child and replaces its content.
+    fn sync_value_text(&mut self, id: NodeId) {
+        let text = match &self.arena[id.0].value {
+            Some(v) => v.clone(),
+            None => return,
+        };
+        // Find existing text child.
+        let existing = self.arena[id.0]
+            .children
+            .iter()
+            .copied()
+            .find(|c| matches!(self.arena[c.0].kind, NodeKind::Text(_)));
+        if let Some(tid) = existing {
+            self.arena[tid.0].kind = NodeKind::Text(text);
+            self.arena[tid.0].dirty |= Dirty::LAYOUT | Dirty::PAINT;
+        } else {
+            // Create a text child inheriting parent style.
+            let style = self.arena[id.0].style.clone();
+            self.add_text(id, &text, style);
+        }
+    }
+
+    /// Handle editing key (Backspace, Delete, arrows, Home, End).
+    /// Returns `true` if the value was modified or caret moved.
+    fn handle_edit_key(&mut self, id: NodeId, key: &str, mods: Modifiers) -> bool {
+        let slot = &mut self.arena[id.0];
+        let val = match &mut slot.value {
+            Some(v) => v,
+            None => return false,
+        };
+        let caret = &mut slot.caret;
+        match key {
+            "Backspace" => {
+                if *caret > 0 {
+                    // Find char boundary before caret.
+                    let prev = val[..*caret]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    val.drain(prev..*caret);
+                    *caret = prev;
+                    true
+                } else {
+                    false
+                }
+            }
+            "Delete" => {
+                if *caret < val.len() {
+                    let next = val[*caret..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| *caret + i)
+                        .unwrap_or(val.len());
+                    val.drain(*caret..next);
+                    true
+                } else {
+                    false
+                }
+            }
+            "ArrowLeft" | "Left" => {
+                if *caret > 0 {
+                    *caret = val[..*caret]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                }
+                true
+            }
+            "ArrowRight" | "Right" => {
+                if *caret < val.len() {
+                    *caret = val[*caret..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| *caret + i)
+                        .unwrap_or(val.len());
+                }
+                true
+            }
+            "Home" => {
+                *caret = 0;
+                true
+            }
+            "End" => {
+                *caret = val.len();
+                true
+            }
+            // Select all
+            "a" if mods.ctrl || mods.meta => {
+                *caret = val.len();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn add_node(&mut self, parent: NodeId, kind: NodeKind, mut style: Style) -> NodeId {
+        // CSS inheritance: copy inheritable properties from parent when not explicitly set.
+        style.inherit_from(&self.arena[parent.0].style);
         let id = NodeId(self.arena.len());
         self.arena.push(Slot::new(kind, style, Some(parent)));
         self.slot_mut(parent).children.push(id);
@@ -713,7 +599,7 @@ impl Tree {
             if let NodeKind::Text(ref text) = slot.kind {
                 let mut w = f(text, slot.style.font_size);
                 if slot.style.letter_spacing != 0.0 {
-                    w += text.len() as f64 * slot.style.letter_spacing;
+                    w += text.chars().count() as f64 * slot.style.letter_spacing;
                 }
                 if slot.style.word_spacing != 0.0 {
                     let spaces = text.chars().filter(|c| *c == ' ').count() as f64;
@@ -729,7 +615,13 @@ impl Tree {
         self.viewport = viewport;
         let root = self.root;
         self.layout_node(
-            root, viewport.w(), viewport.h(), viewport.w(), viewport.h(), 0.0, 0.0,
+            root,
+            viewport.w(),
+            viewport.h(),
+            viewport.w(),
+            viewport.h(),
+            0.0,
+            0.0,
         );
         // Layout done — clear LAYOUT flags, promote to PAINT (positions may have changed).
         // Also refresh z_sorted caches for all dirty nodes.
@@ -979,37 +871,68 @@ impl Tree {
             }
 
             // Flex-shrink (only for non-wrapping — wrapped lines don't overflow main axis).
-            let overflow = line_used - main_budget;
-            if overflow > 0.0 && main_budget > 0.0 && !wraps {
-                let total_shrink: f64 = line_indices
-                    .iter()
-                    .map(|&idx| self.slot(child_sizes[idx].0).style.flex_shrink)
-                    .sum();
-                if total_shrink > 0.0 {
+            // Iterate: when an item is clamped at its min, redistribute the remaining
+            // overflow among unclamped items until fully absorbed or all items are clamped.
+            let mut remaining_overflow = line_used - main_budget;
+            if remaining_overflow > 0.0 && main_budget > 0.0 && !wraps {
+                for _ in 0..line_indices.len() {
+                    if remaining_overflow <= 0.0 {
+                        break;
+                    }
+                    let active_shrink: f64 = line_indices
+                        .iter()
+                        .filter_map(|&idx| {
+                            let cid = child_sizes[idx].0;
+                            let shrink = self.slot(cid).style.flex_shrink;
+                            let min = if is_row {
+                                self.slot(cid).style.min_width.resolve(child_avail_w)
+                            } else {
+                                self.slot(cid).style.min_height.resolve(child_avail_h)
+                            }
+                            .unwrap_or(0.0);
+                            let cur = if is_row {
+                                child_sizes[idx].1
+                            } else {
+                                child_sizes[idx].2
+                            };
+                            (shrink > 0.0 && cur > min + 0.001).then_some(shrink)
+                        })
+                        .sum();
+                    if active_shrink <= 0.0 {
+                        break;
+                    }
+                    let mut absorbed = 0.0_f64;
                     for &idx in line_indices {
                         let cid = child_sizes[idx].0;
                         let shrink = self.slot(cid).style.flex_shrink;
-                        if shrink > 0.0 {
-                            let share = overflow * shrink / total_shrink;
-                            if is_row {
-                                let min = self
-                                    .slot(cid)
-                                    .style
-                                    .min_width
-                                    .resolve(child_avail_w)
-                                    .unwrap_or(0.0);
-                                child_sizes[idx].1 = (child_sizes[idx].1 - share).max(min);
-                            } else {
-                                let min = self
-                                    .slot(cid)
-                                    .style
-                                    .min_height
-                                    .resolve(child_avail_h)
-                                    .unwrap_or(0.0);
-                                child_sizes[idx].2 = (child_sizes[idx].2 - share).max(min);
-                            }
+                        if shrink <= 0.0 {
+                            continue;
                         }
+                        let min = if is_row {
+                            self.slot(cid).style.min_width.resolve(child_avail_w)
+                        } else {
+                            self.slot(cid).style.min_height.resolve(child_avail_h)
+                        }
+                        .unwrap_or(0.0);
+                        let cur = if is_row {
+                            child_sizes[idx].1
+                        } else {
+                            child_sizes[idx].2
+                        };
+                        if cur <= min + 0.001 {
+                            continue;
+                        }
+                        let share = remaining_overflow * shrink / active_shrink;
+                        let new_val = (cur - share).max(min);
+                        let actual = cur - new_val;
+                        if is_row {
+                            child_sizes[idx].1 = new_val;
+                        } else {
+                            child_sizes[idx].2 = new_val;
+                        }
+                        absorbed += actual;
                     }
+                    remaining_overflow -= absorbed;
                 }
             }
 
@@ -1310,10 +1233,13 @@ impl Tree {
         let has_border = s.has_visible_border();
         if bg.a > 0 || has_border {
             let border = if has_border {
-                let max_bw = bw.top.max(bw.right).max(bw.bottom).max(bw.left);
+                let bc = s.apply_opacity(s.border_color);
                 Some(Border {
-                    color: s.apply_opacity(s.border_color),
-                    width: max_bw,
+                    color: bc,
+                    top: bw.top,
+                    right: bw.right,
+                    bottom: bw.bottom,
+                    left: bw.left,
                 })
             } else {
                 None
@@ -1327,22 +1253,25 @@ impl Tree {
         }
 
         // Outline (drawn outside the border box, after background).
-        if s.outline_width > 0.0 && s.outline_color.a > 0 {
+        if s.outline_width > 0.0 && s.outline_color.a > 0 && s.outline_style != BorderStyle::None {
             let ow = s.outline_width;
+            let off = s.outline_offset + ow;
             let outline_bounds = Rect::new(
-                r.origin.x - ow,
-                r.origin.y - ow,
-                r.size.w() + ow * 2.0,
-                r.size.h() + ow * 2.0,
+                r.origin.x - off,
+                r.origin.y - off,
+                r.size.w() + off * 2.0,
+                r.size.h() + off * 2.0,
             );
+            let cr = if s.corner_radius > 0.0 {
+                s.corner_radius + off
+            } else {
+                0.0
+            };
             list.push(Primitive::Rect {
                 bounds: outline_bounds,
                 fill: Color::TRANSPARENT,
-                border: Some(Border {
-                    color: s.apply_opacity(s.outline_color),
-                    width: ow,
-                }),
-                corner_radius: s.corner_radius + ow,
+                border: Some(Border::uniform(s.apply_opacity(s.outline_color), ow)),
+                corner_radius: cr,
             });
         }
 
@@ -1368,15 +1297,35 @@ impl Tree {
                 };
 
                 // text-align: compute horizontal offset
-                let align_offset = match s.text_align {
-                    TextAlign::Center => (avail_w - text_w).max(0.0) / 2.0,
-                    TextAlign::Right => (avail_w - text_w).max(0.0),
-                    TextAlign::Left => 0.0,
-                };
+                let align_offset = s.text_align_offset(text_w, avail_w);
 
                 let tx = r.origin.x + s.padding.left + s.text_indent + align_offset;
                 let ty = r.origin.y + s.padding.top + s.font_size * TEXT_BASELINE_RATIO;
                 let painted_text = final_text.into_owned();
+
+                // Selection highlight (drawn behind text)
+                if let Some(sel) = &self.selection {
+                    if sel.node == id && sel.start < sel.end {
+                        let char_count = painted_text.chars().count().max(1);
+                        let cw = text_w / char_count as f64;
+                        let sel_start_chars = painted_text[..sel.start.min(painted_text.len())]
+                            .chars()
+                            .count();
+                        let sel_end_chars = painted_text[..sel.end.min(painted_text.len())]
+                            .chars()
+                            .count();
+                        let sel_x = tx + sel_start_chars as f64 * cw;
+                        let sel_w = (sel_end_chars - sel_start_chars) as f64 * cw;
+                        let sel_y = r.origin.y + s.padding.top;
+                        let sel_h = s.font_size * s.line_height;
+                        list.push(Primitive::Rect {
+                            bounds: Rect::new(sel_x, sel_y, sel_w, sel_h),
+                            fill: SELECTION_BG,
+                            border: None,
+                            corner_radius: 2.0,
+                        });
+                    }
+                }
 
                 // text-shadow (drawn behind text)
                 if let Some(sh) = &s.text_shadow {
@@ -1406,12 +1355,7 @@ impl Tree {
                         TextDecoration::None => unreachable!(),
                     };
                     let line_end = tx + text_w.min(avail_w);
-                    list.push(Primitive::Line {
-                        from: Point::new(tx, line_y),
-                        to: Point::new(line_end, line_y),
-                        stroke: s.apply_opacity(s.color),
-                        width: 1.0,
-                    });
+                    list.push_line(tx, line_y, line_end, line_y, s.apply_opacity(s.color), 1.0);
                 }
             }
             NodeKind::Bar { fraction, fill } => {
@@ -1442,6 +1386,34 @@ impl Tree {
 
         // Paint children in z-index order.
         self.paint_children(id, list);
+
+        // Scrollbar thumb for scroll containers
+        if s.overflow == Overflow::Scroll && !slot.children.is_empty() {
+            let scroll_y = slot.scroll.y;
+            // Compute content height from children extents (relative to parent)
+            let mut content_bottom = 0.0_f64;
+            for &cid in &slot.children {
+                let cr = self.slot(cid).rect;
+                let child_bottom = cr.origin.y + cr.size.h() + scroll_y - r.origin.y;
+                content_bottom = content_bottom.max(child_bottom);
+            }
+            let visible_h = r.size.h();
+            if content_bottom > visible_h + 1.0 {
+                let bar_w = 6.0;
+                let track_h = visible_h;
+                let ratio = (visible_h / content_bottom).min(1.0);
+                let thumb_h = (track_h * ratio).max(20.0);
+                let scroll_ratio = scroll_y / (content_bottom - visible_h).max(1.0);
+                let thumb_y = r.origin.y + scroll_ratio * (track_h - thumb_h);
+                let thumb_x = r.origin.x + r.size.w() - bar_w - 2.0;
+                list.push(Primitive::Rect {
+                    bounds: Rect::new(thumb_x, thumb_y, bar_w, thumb_h),
+                    fill: Color::rgba(180, 180, 200, 80),
+                    border: None,
+                    corner_radius: bar_w / 2.0,
+                });
+            }
+        }
 
         if needs_clip {
             list.push(Primitive::PopClip);
@@ -1508,6 +1480,17 @@ impl Tree {
         }
     }
 
+    /// Walk up from `start` to find the nearest editable ancestor (has `value`).
+    fn find_editable_ancestor(&self, start: NodeId) -> Option<NodeId> {
+        let mut id = start;
+        loop {
+            if self.arena[id.0].value.is_some() {
+                return Some(id);
+            }
+            id = self.arena[id.0].parent?;
+        }
+    }
+
     /// Dispatch a click and return the tag of the clicked node (if any).
     pub fn click(&self, pos: Point) -> Option<&str> {
         self.find_tag_node(pos)
@@ -1538,6 +1521,31 @@ impl Tree {
         self.click(pos).map(str::to_string)
     }
 
+    /// Resolve cursor style at a position — walks from hit target up to root.
+    pub fn cursor_at(&self, pos: Point) -> Cursor {
+        let Some(mut id) = self.hit_test(pos) else {
+            return Cursor::Default;
+        };
+        loop {
+            let c = self.slot(id).style.cursor;
+            if c != Cursor::Default {
+                return c;
+            }
+            match self.slot(id).parent {
+                Some(p) => id = p,
+                None => return Cursor::Default,
+            }
+        }
+    }
+
+    /// Find a tagged node's laid-out rect, or `None` if no node has the tag.
+    pub fn tagged_rect(&self, tag: &str) -> Option<Rect> {
+        self.arena
+            .iter()
+            .find(|s| s.tag.as_deref() == Some(tag))
+            .map(|s| s.rect)
+    }
+
     /// Full capture → target → bubble dispatch.
     ///
     /// For pointer events, hit-tests to find the target, then automatically
@@ -1550,37 +1558,90 @@ impl Tree {
 
         // ── Update hover / active state ─────────────────────────────
         match &event {
-            InputEvent::PointerMove { .. } => {
+            InputEvent::PointerMove { pos, .. } => {
                 let prev = self.hovered;
                 let next = target;
                 if prev != next {
-                    // Un-hover previous path
                     if let Some(old) = prev {
-                        self.walk_ancestors(old, |s| s.hovered = false);
+                        self.set_state_and_restyle(old, |s| s.hovered = false);
                     }
-                    // Hover new path
                     if let Some(new) = next {
-                        self.walk_ancestors(new, |s| s.hovered = true);
+                        self.set_state_and_restyle(new, |s| s.hovered = true);
                     }
                     self.hovered = next;
-                    // Restyle affected paths
-                    if let Some(old) = prev {
-                        self.restyle_path(old);
-                    }
-                    if let Some(new) = next {
-                        self.restyle_path(new);
-                    }
                     restyled = true;
                 }
+                // Click-drag text selection: extend from anchor
+                if let Some((text_id, anchor)) = self.drag_anchor {
+                    let cur = self.char_index_at(text_id, pos.x);
+                    let (lo, hi) = if cur < anchor {
+                        (cur, anchor)
+                    } else {
+                        (anchor, cur)
+                    };
+                    if lo != hi {
+                        self.selection = Some(TextSelection {
+                            node: text_id,
+                            start: lo,
+                            end: hi,
+                        });
+                    }
+                }
             }
-            InputEvent::PointerDown { .. } => {
+            InputEvent::PointerDown { pos, .. } => {
                 if let Some(t) = target {
-                    self.walk_ancestors(t, |s| s.active = true);
-                    self.restyle_path(t);
+                    self.set_state_and_restyle(t, |s| s.active = true);
                     restyled = true;
+
+                    // Auto-focus editable nodes on click.
+                    let editable = self.find_editable_ancestor(t);
+                    if let Some(eid) = editable {
+                        self.focus(eid);
+                        // Place caret at click position.
+                        let text_child = self.arena[eid.0]
+                            .children
+                            .iter()
+                            .copied()
+                            .find(|c| matches!(self.arena[c.0].kind, NodeKind::Text(_)));
+                        if let Some(tid) = text_child {
+                            let idx = self.char_index_at(tid, pos.x);
+                            self.arena[eid.0].caret = idx;
+                        }
+                    } else if self.focused.is_some() {
+                        self.blur();
+                    }
+
+                    // Double-click detection → word selection on text nodes
+                    let now = Instant::now();
+                    let is_double = self.last_click.is_some_and(|(prev_t, prev_n)| {
+                        prev_n == t && now.duration_since(prev_t).as_millis() < 500
+                    });
+                    if is_double {
+                        self.select_word_at(t, *pos);
+                        self.last_click = None;
+                        self.drag_anchor = None;
+                    } else {
+                        self.selection = None;
+                        self.last_click = Some((now, t));
+                        // Set drag anchor for click-drag text selection
+                        let text_id = self.find_text_child(t).unwrap_or(t);
+                        if matches!(self.arena[text_id.0].kind, NodeKind::Text(_))
+                            && self.arena[text_id.0].style.user_select != UserSelect::None
+                        {
+                            let idx = self.char_index_at(text_id, pos.x);
+                            self.drag_anchor = Some((text_id, idx));
+                        } else {
+                            self.drag_anchor = None;
+                        }
+                    }
+                } else {
+                    self.selection = None;
+                    self.last_click = None;
+                    self.drag_anchor = None;
                 }
             }
             InputEvent::PointerUp { .. } => {
+                self.drag_anchor = None;
                 // Collect all nodes that were active — we need to restyle each
                 let active_ids: Vec<NodeId> = self
                     .arena
@@ -1602,6 +1663,39 @@ impl Tree {
                     restyled = true;
                 }
             }
+
+            // ── Text editing for focused editable nodes ─────────────
+            InputEvent::TextInput { text } => {
+                if let Some(fid) = self.focused {
+                    if self.arena[fid.0].value.is_some() {
+                        let slot = &mut self.arena[fid.0];
+                        let val = slot.value.as_mut().unwrap();
+                        let caret = slot.caret.min(val.len());
+                        val.insert_str(caret, text);
+                        slot.caret = caret + text.len();
+                        self.sync_value_text(fid);
+                        self.needs_layout = true;
+                        self.needs_paint = true;
+                    }
+                }
+            }
+            InputEvent::KeyDown { key, modifiers } => {
+                if let Some(fid) = self.focused {
+                    if self.arena[fid.0].value.is_some() {
+                        let handled = self.handle_edit_key(fid, key, *modifiers);
+                        if handled {
+                            self.sync_value_text(fid);
+                            self.needs_layout = true;
+                            self.needs_paint = true;
+                        }
+                    }
+                }
+            }
+
+            InputEvent::Scroll { pos, delta } => {
+                self.scroll(*pos, *delta);
+            }
+
             _ => {}
         }
 
@@ -1656,7 +1750,9 @@ impl Tree {
                     break;
                 }
                 // Text nodes default to text cursor (CSS spec).
-                if matches!(slot.kind, NodeKind::Text(_)) && slot.style.user_select != UserSelect::None {
+                if matches!(slot.kind, NodeKind::Text(_))
+                    && slot.style.user_select != UserSelect::None
+                {
                     cursor_str = "text".to_string();
                     break;
                 }
@@ -1718,6 +1814,7 @@ impl Tree {
         }
 
         if old_style == new_style {
+            self.arena[id.0].transitions.clear();
             return;
         }
 
@@ -1919,6 +2016,91 @@ impl Tree {
         true
     }
 
+    /// Compute the character index at a screen x-position within a text node.
+    /// Uses `measured_text_width` for proportional accuracy when available,
+    /// falling back to `style.char_width()` monospace estimate.
+    fn char_index_at(&self, text_id: NodeId, x: f64) -> usize {
+        let slot = &self.arena[text_id.0];
+        let NodeKind::Text(ref content) = slot.kind else {
+            return 0;
+        };
+        let s = &slot.style;
+        let display = s.transform_text(content);
+        let char_count = display.chars().count();
+        if char_count == 0 {
+            return 0;
+        }
+        let r = slot.rect;
+        let total_w = slot.text_w(&display);
+        let avail_w = r.size.w() - s.padding.left - s.padding.right;
+        let align_offset = s.text_align_offset(total_w, avail_w);
+        let text_x = r.origin.x + s.padding.left + s.text_indent + align_offset;
+        let char_w = total_w / char_count as f64;
+        let click_offset = (x - text_x).max(0.0);
+        let char_idx = (click_offset / char_w).round() as usize;
+        // Convert character index back to byte offset for consistency
+        display
+            .char_indices()
+            .nth(char_idx.min(char_count))
+            .map(|(i, _)| i)
+            .unwrap_or(display.len())
+    }
+
+    /// Double-click word selection: find the text node at `target`, compute
+    /// which character the click lands on, then select the whole word.
+    fn select_word_at(&mut self, target: NodeId, pos: Point) {
+        // Walk to find the text node (target might be a box parent of text)
+        let text_id = self.find_text_child(target).unwrap_or(target);
+        let slot = &self.arena[text_id.0];
+        if slot.style.user_select == UserSelect::None {
+            return;
+        }
+        let NodeKind::Text(ref content) = slot.kind else {
+            return;
+        };
+        let text = content.clone();
+
+        let char_idx = self
+            .char_index_at(text_id, pos.x)
+            .min(text.len().saturating_sub(1));
+
+        // Find word boundaries around char_idx
+        let bytes = text.as_bytes();
+        let mut start = char_idx;
+        let mut end = char_idx;
+        while start > 0 && is_word_char(bytes[start - 1]) {
+            start -= 1;
+        }
+        while end < bytes.len() && is_word_char(bytes[end]) {
+            end += 1;
+        }
+        // If we clicked on a non-word char, select just that char
+        if start == end && char_idx < bytes.len() {
+            end = char_idx + 1;
+        }
+
+        if start < end {
+            self.selection = Some(TextSelection {
+                node: text_id,
+                start,
+                end,
+            });
+        }
+    }
+
+    /// Find the first Text child of a node (for selection on box containers).
+    fn find_text_child(&self, id: NodeId) -> Option<NodeId> {
+        if matches!(self.arena[id.0].kind, NodeKind::Text(_)) {
+            return Some(id);
+        }
+        for &child in &self.arena[id.0].children.clone() {
+            if matches!(self.arena[child.0].kind, NodeKind::Text(_)) {
+                return Some(child);
+            }
+        }
+        None
+    }
+
     /// Apply a scroll delta to a node (or the nearest scrollable ancestor).
     pub fn scroll(&mut self, pos: Point, delta: Point) {
         let Some(mut id) = self.hit_test(pos) else {
@@ -1926,9 +2108,24 @@ impl Tree {
         };
         loop {
             if self.slot(id).style.overflow == Overflow::Scroll {
+                // Compute content extent to clamp scroll
+                let slot = self.slot(id);
+                let visible_h = slot.rect.size.h();
+                let visible_w = slot.rect.size.w();
+                let mut content_h = 0.0_f64;
+                let mut content_w = 0.0_f64;
+                for &cid in &slot.children {
+                    let cr = self.slot(cid).rect;
+                    let cy = cr.origin.y + cr.size.h() + slot.scroll.y - slot.rect.origin.y;
+                    let cx = cr.origin.x + cr.size.w() + slot.scroll.x - slot.rect.origin.x;
+                    content_h = content_h.max(cy);
+                    content_w = content_w.max(cx);
+                }
+                let max_y = (content_h - visible_h).max(0.0);
+                let max_x = (content_w - visible_w).max(0.0);
                 let s = &mut self.slot_mut(id).scroll;
-                s.x = (s.x - delta.x).max(0.0);
-                s.y = (s.y - delta.y).max(0.0);
+                s.x = (s.x - delta.x).clamp(0.0, max_x);
+                s.y = (s.y - delta.y).clamp(0.0, max_y);
                 return;
             }
             match self.slot(id).parent {
@@ -1939,6 +2136,8 @@ impl Tree {
     }
 }
 
+
+
 #[cfg(test)]
-#[path = "tree_tests.rs"]
+#[path = "../tree_tests.rs"]
 mod tests;

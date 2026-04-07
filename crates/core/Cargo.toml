@@ -7,6 +7,8 @@ license.workspace = true
 
 [features]
 default = []
+# Image encoding (PNG export for Capture/Record)
+png = ["dep:png"]
 # GPU backends
 wgpu-backend = ["dep:wgpu", "dep:glyphon"]
 # Vendor-specific compute (link to proprietary libs)
@@ -30,6 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 # Optional deps behind feature flags
+png = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 glyphon = { workspace = true, optional = true }
 naga = { workspace = true, optional = true }

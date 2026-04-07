@@ -277,7 +277,10 @@ fn visual_cmp_layout_dimensions() {
         };
         println!(
             "[{i:2}] {tag:12} {kind:20} x={:6.1} y={:6.1} w={:6.1} h={:6.1}",
-            r.origin.x, r.origin.y, r.size.w(), r.size.h(),
+            r.origin.x,
+            r.origin.y,
+            r.size.w(),
+            r.size.h(),
         );
     }
 
@@ -304,19 +307,23 @@ fn visual_cmp_layout_dimensions() {
     println!("header:  h={:.1}", header.rect.size.h());
     println!(
         "content: w={:.1} h={:.1}",
-        content.rect.size.w(), content.rect.size.h()
+        content.rect.size.w(),
+        content.rect.size.h()
     );
     println!(
         "swatch:  w={:.1} h={:.1}",
-        swatch.rect.size.w(), swatch.rect.size.h()
+        swatch.rect.size.w(),
+        swatch.rect.size.h()
     );
     println!(
         "opacity: w={:.1} h={:.1}",
-        obox.rect.size.w(), obox.rect.size.h()
+        obox.rect.size.w(),
+        obox.rect.size.h()
     );
     println!(
         "card1:   w={:.1} h={:.1}",
-        card.rect.size.w(), card.rect.size.h()
+        card.rect.size.w(),
+        card.rect.size.h()
     );
     println!(
         "bar-track w={:.1}, fills: green={:.1} ({:.1}%) blue={:.1} ({:.1}%) red={:.1} ({:.1}%)",
@@ -759,4 +766,708 @@ fn no_transition_snaps_immediately() {
         Color::rgb(0xff, 0x00, 0x00),
         "should snap to hover color"
     );
+}
+
+// ── Hover state ─────────────────────────────────────────────────────────
+
+#[test]
+fn hover_sets_and_clears_state() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let child = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+    tree.layout(Size::new(400.0, 300.0));
+
+    assert!(!tree.slot(child).hovered);
+    tree.dispatch(InputEvent::PointerMove {
+        pos: Point::new(50.0, 25.0),
+    });
+    assert!(
+        tree.slot(child).hovered,
+        "child should be hovered after PointerMove"
+    );
+
+    // Move away
+    tree.dispatch(InputEvent::PointerMove {
+        pos: Point::new(350.0, 250.0),
+    });
+    assert!(
+        !tree.slot(child).hovered,
+        "child should lose hover when pointer leaves"
+    );
+}
+
+// ── Active state ────────────────────────────────────────────────────────
+
+#[test]
+fn active_sets_on_pointer_down_clears_on_up() {
+    use any_compute_core::interaction::Button;
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let child = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+    tree.layout(Size::new(400.0, 300.0));
+
+    tree.dispatch(InputEvent::PointerDown {
+        pos: Point::new(50.0, 25.0),
+        button: Button::Primary,
+    });
+    assert!(
+        tree.slot(child).active,
+        "child should be active after PointerDown"
+    );
+
+    tree.dispatch(InputEvent::PointerUp {
+        pos: Point::new(50.0, 25.0),
+        button: Button::Primary,
+    });
+    assert!(
+        !tree.slot(child).active,
+        "child should lose active after PointerUp"
+    );
+}
+
+// ── Focus / blur ────────────────────────────────────────────────────────
+
+#[test]
+fn focus_and_blur() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let child = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+    tree.layout(Size::new(400.0, 300.0));
+
+    tree.focus(child);
+    assert!(tree.slot(child).focused);
+    assert_eq!(tree.focused, Some(child));
+
+    tree.blur();
+    assert!(!tree.slot(child).focused);
+    assert_eq!(tree.focused, None);
+}
+
+// ── Editable text input ─────────────────────────────────────────────────
+
+#[test]
+fn editable_text_insert() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let input = tree.add_box(tree.root, Style::default().w(200.0).h(30.0));
+    tree.set_editable(input, "hello");
+    tree.layout(Size::new(400.0, 300.0));
+
+    tree.focus(input);
+    tree.dispatch(InputEvent::TextInput {
+        text: " world".into(),
+    });
+    assert_eq!(tree.value(input), Some("hello world"));
+}
+
+#[test]
+fn editable_backspace() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let input = tree.add_box(tree.root, Style::default().w(200.0).h(30.0));
+    tree.set_editable(input, "abc");
+    tree.layout(Size::new(400.0, 300.0));
+
+    tree.focus(input);
+    tree.dispatch(InputEvent::KeyDown {
+        key: "Backspace".into(),
+        modifiers: Modifiers::default(),
+    });
+    assert_eq!(tree.value(input), Some("ab"));
+}
+
+// ── Scroll ──────────────────────────────────────────────────────────────
+
+#[test]
+fn scroll_overflow_container() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let container = tree.add_box(
+        tree.root,
+        Style {
+            overflow: Overflow::Scroll,
+            ..Style::default().w(200.0).h(100.0)
+        },
+    );
+    // Tall child to create scrollable content
+    tree.add_box(container, Style::default().w(200.0).h(500.0));
+    tree.layout(Size::new(400.0, 300.0));
+
+    tree.scroll(Point::new(100.0, 50.0), Point::new(0.0, -50.0));
+    assert!(
+        tree.slot(container).scroll.y > 0.0,
+        "scroll offset should be positive after scrolling down"
+    );
+}
+
+// ── Dispatch restyled flag ──────────────────────────────────────────────
+
+#[test]
+fn dispatch_hover_reports_restyled() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+    tree.layout(Size::new(400.0, 300.0));
+
+    let r = tree.dispatch(InputEvent::PointerMove {
+        pos: Point::new(50.0, 25.0),
+    });
+    assert!(r.restyled, "first hover should report restyled");
+
+    // Same position again — no state change
+    let r2 = tree.dispatch(InputEvent::PointerMove {
+        pos: Point::new(50.0, 25.0),
+    });
+    assert!(!r2.restyled, "repeated hover should not restyle");
+}
+
+// ── Graphable tests ─────────────────────────────────────────────────────
+
+#[test]
+fn graphable_arena_structure_labels_and_render() {
+    use any_compute_core::render::Renderable;
+    use any_compute_core::visual::Graphable;
+
+    // Build a tree with mixed node types
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let sidebar = tree.add_box(tree.root, Style::default().w(200.0).h(300.0));
+    tree.tag(sidebar, "sidebar");
+    tree.add_text(sidebar, "Hello", Style::default().font(14.0));
+    let nested = tree.add_box(sidebar, Style::default().w(100.0).h(100.0));
+    tree.add_box(nested, Style::default().w(50.0).h(50.0));
+    tree.add_bar(
+        tree.root,
+        0.5,
+        Color::rgb(0, 200, 0),
+        Style::default().h(10.0),
+    );
+    tree.layout(Size::new(400.0, 300.0));
+
+    let g = tree.to_graph();
+    // root's children: sidebar + bar = 2 top-level nodes
+    // sidebar's children (Hello, nested) live in its sub-graph
+    assert_eq!(g.len(), 2, "top-level graph = root children");
+    // sidebar node should have a sub-graph with 2 children
+    let sidebar_node = g.node(0);
+    assert!(sidebar_node.children().is_some(), "sidebar has sub-graph");
+    assert_eq!(sidebar_node.children().unwrap().len(), 2);
+
+    // Labels from render include tagged nodes (top-level only)
+    let mut list = RenderList::default();
+    g.render(&mut list, &());
+    let texts: Vec<String> = list
+        .iter()
+        .filter_map(|p| {
+            if let any_compute_core::render::Primitive::Text { content, .. } = p {
+                Some(content.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(texts.iter().any(|t| t.contains("sidebar")));
+    // "Hello" is in sidebar sub-graph, so verify it exists there
+    let sub = sidebar_node.children().unwrap();
+    let sub_labels: Vec<_> = (0..sub.len())
+        .map(|i| sub.node(i).label().to_string())
+        .collect();
+    assert!(sub_labels.iter().any(|l| l.contains("Hello")));
+
+    // render_graph blanket method works
+    let prims = tree.render_graph();
+    assert!(prims.len() > 20, "render_graph: {}", prims.len());
+}
+
+// ── Visual regression: text width (Unicode / emoji) ─────────────────────
+
+#[test]
+fn text_width_counts_chars_not_bytes() {
+    // Emoji characters are 4 bytes in UTF-8 but should count as 1 character.
+    let s = Style::default();
+    let ascii_w = s.text_width("A");
+    let emoji_w = s.text_width("\u{1F310}"); // 🌐 (4 bytes)
+    assert!(
+        (emoji_w - ascii_w).abs() < 0.01,
+        "emoji width ({emoji_w}) should equal single char width ({ascii_w})"
+    );
+
+    // Multi-char string: "AB" vs "🌐🎮" — both 2 chars
+    let two_ascii = s.text_width("AB");
+    let two_emoji = s.text_width("\u{1F310}\u{1F3AE}");
+    assert!(
+        (two_emoji - two_ascii).abs() < 0.01,
+        "two emoji ({two_emoji}) should equal two chars ({two_ascii})"
+    );
+}
+
+#[test]
+fn flex_center_text_pixel() {
+    // A 100x100 box with align-items:center + justify-content:center containing
+    // a text child — the text rect should be centered, not left-aligned.
+    let mut tree = Tree::new(
+        Style::default()
+            .w(100.0)
+            .h(100.0)
+            .bg(Color::rgb(30, 30, 46))
+            .align(Align::Center)
+            .justify(Justify::Center),
+    );
+    let txt = tree.add_text(
+        tree.root,
+        "X",
+        Style {
+            font_size: 14.0,
+            color: Color::WHITE,
+            ..Style::default()
+        },
+    );
+    tree.layout(Size::new(100.0, 100.0));
+    let txt_rect = tree.slot(txt).rect;
+    // Intrinsic width of "X" at font_size 14 ≈ 14 * CHAR_WIDTH_RATIO ≈ 8.4
+    // Centered in 100px → x should be ≈ (100 - 8.4) / 2 ≈ 45.8
+    assert!(
+        txt_rect.origin.x > 30.0,
+        "text x ({}) should be centered (>30), not left-aligned",
+        txt_rect.origin.x
+    );
+    assert!(
+        txt_rect.origin.x < 60.0,
+        "text x ({}) should be near center (<60)",
+        txt_rect.origin.x
+    );
+}
+
+#[test]
+fn flex_center_emoji_pixel() {
+    // Same centering test but with an emoji — the emoji should be centered,
+    // not pushed left by inflated byte-length width.
+    let mut tree = Tree::new(
+        Style::default()
+            .w(100.0)
+            .h(100.0)
+            .bg(Color::rgb(30, 30, 46))
+            .align(Align::Center)
+            .justify(Justify::Center),
+    );
+    let txt = tree.add_text(
+        tree.root,
+        "\u{1F310}", // 🌐
+        Style {
+            font_size: 14.0,
+            color: Color::WHITE,
+            ..Style::default()
+        },
+    );
+    tree.layout(Size::new(100.0, 100.0));
+    let txt_rect = tree.slot(txt).rect;
+    // Single char at font_size 14 → width ≈ 8.4, centered at ≈ 45.8
+    assert!(
+        txt_rect.origin.x > 30.0,
+        "emoji x ({}) should be centered (>30), not left-aligned at byte-width",
+        txt_rect.origin.x
+    );
+    assert!(
+        txt_rect.origin.x < 60.0,
+        "emoji x ({}) should be near center (<60)",
+        txt_rect.origin.x
+    );
+
+    // Compare with ASCII: positions should be identical
+    let mut tree2 = Tree::new(
+        Style::default()
+            .w(100.0)
+            .h(100.0)
+            .align(Align::Center)
+            .justify(Justify::Center),
+    );
+    let txt2 = tree2.add_text(
+        tree2.root,
+        "X",
+        Style {
+            font_size: 14.0,
+            ..Style::default()
+        },
+    );
+    tree2.layout(Size::new(100.0, 100.0));
+    let txt2_rect = tree2.slot(txt2).rect;
+    assert!(
+        (txt_rect.origin.x - txt2_rect.origin.x).abs() < 1.0,
+        "emoji x ({}) should match ASCII x ({})",
+        txt_rect.origin.x,
+        txt2_rect.origin.x
+    );
+}
+
+#[test]
+fn page_load_external_html_no_crash() {
+    // Loading complex HTML (from external sites) should not crash.
+    let complex_html = r#"
+        <html>
+        <head><style>
+            body { margin: 0; font-family: sans-serif; }
+            .container { display: flex; gap: 10px; }
+            .box { width: 50px; height: 50px; background: red; border-radius: 5px; }
+        </style></head>
+        <body>
+            <div class="container">
+                <div class="box">1</div>
+                <div class="box">2</div>
+                <div class="box">3</div>
+            </div>
+            <script>
+                var x = document.getElementById("nonexistent");
+            </script>
+        </body>
+        </html>
+    "#;
+    let page = crate::page::Page::load(complex_html);
+    assert!(
+        page.tree().arena.len() > 3,
+        "page should have multiple nodes"
+    );
+
+    // Layout should not crash
+    let mut page = page;
+    page.layout(Size::new(800.0, 600.0));
+
+    // Paint should not crash
+    let mut list = RenderList::default();
+    page.paint(&mut list);
+    assert!(list.len() > 0, "page should produce render primitives");
+}
+
+#[test]
+fn page_load_malformed_html_no_crash() {
+    // Malformed HTML (unclosed tags, bad attributes) should parse without panic
+    let bad_html = r#"
+        <div><span>unclosed
+        <div class=no-quotes>
+        <img src="" />
+        <div style="background: invalid;">text</div>
+        <script>var x = 1 +</script>
+        </div>
+    "#;
+    let page = crate::page::Page::load(bad_html);
+    // Just need it to not crash
+    let mut page = page;
+    page.layout(Size::new(400.0, 300.0));
+    let mut list = RenderList::default();
+    page.paint(&mut list);
+}
+
+#[test]
+fn graphable_page_tree() {
+    use any_compute_core::visual::Graphable;
+    // A loaded page's tree should produce a valid graph via the Graphable trait
+    let html = r#"
+        <div class="root">
+            <div class="header">Title</div>
+            <div class="content">
+                <div class="card">Card 1</div>
+                <div class="card">Card 2</div>
+            </div>
+        </div>
+    "#;
+    let page = crate::page::Page::load(html);
+    let graph = page.tree().to_graph();
+    // Graph should have nodes for root's children (header + content = 2)
+    assert!(
+        graph.len() >= 2,
+        "graph should have >=2 nodes, got {}",
+        graph.len()
+    );
+    // render_graph should produce primitives
+    let prims = page.tree().render_graph();
+    assert!(prims.len() > 5, "render_graph should produce primitives");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Cursor behavior tests ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn cursor_pointer_on_styled_element() {
+    let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
+    let btn = tree.add_box(
+        tree.root,
+        Style::default()
+            .w(100.0)
+            .h(40.0)
+            .bg(Color::WHITE)
+            .cursor(Cursor::Pointer),
+    );
+    tree.tag(btn, "btn");
+    tree.layout(Size::new(300.0, 200.0));
+
+    assert_eq!(tree.cursor_at(Point::new(50.0, 20.0)), Cursor::Pointer);
+    assert_eq!(tree.cursor_at(Point::new(250.0, 150.0)), Cursor::Default);
+}
+
+#[test]
+fn cursor_inherits_from_parent() {
+    let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
+    let parent = tree.add_box(
+        tree.root,
+        Style::default().w(200.0).h(100.0).cursor(Cursor::Pointer),
+    );
+    let _child = tree.add_box(
+        parent,
+        Style::default().w(80.0).h(30.0).bg(Color::rgb(255, 0, 0)),
+    );
+    tree.layout(Size::new(300.0, 200.0));
+
+    // Child has no explicit cursor → inherits Pointer from parent
+    assert_eq!(tree.cursor_at(Point::new(40.0, 15.0)), Cursor::Pointer);
+}
+
+#[test]
+fn cursor_child_overrides_parent() {
+    let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
+    let parent = tree.add_box(
+        tree.root,
+        Style::default().w(200.0).h(100.0).cursor(Cursor::Pointer),
+    );
+    let _child = tree.add_box(
+        parent,
+        Style::default().w(80.0).h(30.0).cursor(Cursor::Text),
+    );
+    tree.layout(Size::new(300.0, 200.0));
+
+    // Child's Text cursor overrides parent's Pointer
+    assert_eq!(tree.cursor_at(Point::new(40.0, 15.0)), Cursor::Text);
+}
+
+#[test]
+fn cursor_css_parsed() {
+    use crate::css::StyleSheet;
+    use crate::parse::parse_with_css;
+    let css = ".clickable { cursor: pointer; width: 100px; height: 40px; background: red; }";
+    let html = r#"<div class="clickable">Click me</div>"#;
+    let sheet = StyleSheet::parse(css);
+    let mut tree = parse_with_css(html, &sheet);
+    tree.layout(Size::new(300.0, 200.0));
+
+    assert_eq!(tree.cursor_at(Point::new(50.0, 20.0)), Cursor::Pointer);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Click routing with nested/overlapping elements ──────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn click_routes_to_topmost_child() {
+    let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
+    let outer = tree.add_box(tree.root, Style::default().w(200.0).h(100.0));
+    tree.tag(outer, "outer");
+    let inner = tree.add_box(outer, Style::default().w(80.0).h(40.0));
+    tree.tag(inner, "inner");
+    tree.layout(Size::new(300.0, 200.0));
+
+    // Click inside inner → inner tag
+    assert_eq!(tree.click(Point::new(40.0, 20.0)), Some("inner"));
+    // Click outside inner but inside outer → outer tag
+    assert_eq!(tree.click(Point::new(150.0, 70.0)), Some("outer"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Hover state tests ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn hover_sets_state_on_target() {
+    use any_compute_core::interaction::InputEvent;
+    let mut tree = Tree::new(Style::default().w(300.0).h(200.0));
+    let child = tree.add_box(tree.root, Style::default().w(100.0).h(50.0));
+    tree.layout(Size::new(300.0, 200.0));
+
+    tree.dispatch(InputEvent::PointerMove {
+        pos: Point::new(50.0, 25.0),
+    });
+    assert!(tree.slot(child).hovered);
+
+    // Move away
+    tree.dispatch(InputEvent::PointerMove {
+        pos: Point::new(250.0, 150.0),
+    });
+    assert!(!tree.slot(child).hovered);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Scroll behavior tests ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn scroll_moves_content() {
+    // Container 100x50 with overflow:scroll, child 100x200 (overflows)
+    let mut container_s = Style::default().w(100.0).h(50.0).bg(Color::BLACK);
+    container_s.overflow = Overflow::Scroll;
+    let mut tree = Tree::new(Style::default().w(200.0).h(200.0).bg(Color::WHITE));
+    let container = tree.add_box(tree.root, container_s);
+    let child = tree.add_box(container, Style::default().w(100.0).h(200.0));
+    tree.tag(child, "tall-child");
+    tree.layout(Size::new(200.0, 200.0));
+
+    // Before scroll: child top should be reachable
+    assert_eq!(
+        tree.tag_at(Point::new(50.0, 10.0)),
+        Some("tall-child".into())
+    );
+
+    // Scroll down — content shifts up, revealing lower portions
+    tree.scroll(Point::new(50.0, 25.0), Point::new(0.0, 30.0));
+    tree.layout(Size::new(200.0, 200.0));
+
+    // After scroll: hit test still works within container bounds
+    assert_eq!(
+        tree.tag_at(Point::new(50.0, 10.0)),
+        Some("tall-child".into())
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Sidebar centering test ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn sidebar_icons_centered() {
+    use crate::css::StyleSheet;
+    let css = r#"
+        .sidebar {
+            width: 44px; min-width: 44px; box-sizing: border-box;
+            background: #111; padding: 8px 4px; gap: 4px;
+            flex-shrink: 0; overflow: hidden; align-items: center;
+        }
+        .tab-btn {
+            width: 32px; height: 32px; min-width: 32px; min-height: 32px;
+            border-radius: 8px; align-items: center; justify-content: center;
+            flex-shrink: 0; cursor: pointer;
+        }
+        .brand-icon {
+            width: 24px; height: 24px; min-width: 24px; min-height: 24px;
+            background: blue; border-radius: 6px; flex-shrink: 0;
+        }
+        .row { flex-direction: row; }
+        .grow { flex-grow: 1; }
+    "#;
+    let sheet = StyleSheet::parse(css);
+    let mut t = Tree::new(sheet.class("row").w(200.0).h(200.0));
+    let sb = t.add_box(t.root, sheet.class("sidebar"));
+    let brand = t.add_box(sb, sheet.class("brand-icon"));
+    t.tag(brand, "brand");
+    for i in 0..4 {
+        let btn = t.add_box(sb, sheet.class("tab-btn"));
+        t.tag(btn, &format!("tab-{i}"));
+        // Add text child like showcase does
+        t.add_text(btn, "X", Style::default().font(14.0));
+    }
+    let _main = t.add_box(t.root, Style::default().grow(1.0));
+    t.layout(Size::new(200.0, 200.0));
+
+    // Sidebar rect
+    let sb_rect = t.slot(sb).rect;
+
+    let brand_rect = t.slot(brand).rect;
+    let brand_center = brand_rect.origin.x + brand_rect.size.w() / 2.0;
+    let sidebar_center = sb_rect.origin.x + sb_rect.size.w() / 2.0;
+    assert!(
+        (brand_center - sidebar_center).abs() < 1.0,
+        "brand NOT centered: icon_center={brand_center}, sidebar_center={sidebar_center}, \
+         brand_x={}, brand_w={}, sidebar_x={}, sidebar_w={}",
+        brand_rect.origin.x,
+        brand_rect.size.w(),
+        sb_rect.origin.x,
+        sb_rect.size.w()
+    );
+
+    for i in 0..4u32 {
+        let tag = format!("tab-{i}");
+        let r = t.tagged_rect(&tag).expect(&tag);
+        let btn_center = r.origin.x + r.size.w() / 2.0;
+        assert!(
+            (btn_center - sidebar_center).abs() < 1.0,
+            "{tag}: NOT centered: btn_center={btn_center}, sidebar_center={sidebar_center}, \
+             btn_x={}, btn_w={}, sidebar_x={}, sidebar_w={}",
+            r.origin.x,
+            r.size.w(),
+            sb_rect.origin.x,
+            sb_rect.size.w()
+        );
+    }
+}
+
+// ── ToDom / add_element tests ───────────────────────────────────────────────
+
+#[test]
+fn to_dom_button_has_ua_defaults() {
+    let el = "button".to_dom();
+    assert_eq!(el.tag, HtmlTag::Button);
+    assert!(matches!(el.kind, NodeKind::Box));
+    // UA defaults from ua.css: cursor:pointer, padding, centered
+    assert_eq!(el.style.cursor, Cursor::Pointer);
+    assert_eq!(el.style.justify, Justify::Center);
+    assert_eq!(el.style.align, Align::Center);
+    assert_eq!(el.style.direction, Direction::Row);
+    assert!(el.style.border_width > 0.0 || el.style.border_top_width > 0.0);
+}
+
+#[test]
+fn to_dom_heading_has_font_size() {
+    let h1 = "h1".to_dom();
+    assert_eq!(h1.tag, HtmlTag::H1);
+    assert!(matches!(h1.kind, NodeKind::Text(_)));
+    assert!((h1.style.font_size - 32.0).abs() < 0.1);
+    assert_eq!(h1.style.font_weight, FontWeight::BOLD);
+
+    let h2 = "h2".to_dom();
+    assert!((h2.style.font_size - 24.0).abs() < 0.1);
+}
+
+#[test]
+fn to_dom_unknown_tag_is_div() {
+    let el = "custom-widget".to_dom();
+    assert_eq!(el.tag, HtmlTag::Custom);
+    assert!(matches!(el.kind, NodeKind::Box));
+}
+
+#[test]
+fn add_element_creates_node_with_ua_style() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let root = tree.root;
+    let btn = tree.add_element(root, "button");
+    assert_eq!(tree.slot(btn).style.cursor, Cursor::Pointer);
+    assert_eq!(tree.slot(btn).element, "button");
+}
+
+#[test]
+fn add_element_with_overrides() {
+    let mut tree = Tree::new(Style::default().w(400.0).h(300.0));
+    let root = tree.root;
+    let red = Color::rgba(255, 0, 0, 255);
+    let btn = tree.add_element_with(root, "button", |s| s.h(40.0).bg(red));
+    // Override applied
+    assert_eq!(tree.slot(btn).style.height, Dimension::Px(40.0));
+    assert_eq!(tree.slot(btn).style.background, red);
+    // UA defaults still present for un-overridden fields
+    assert_eq!(tree.slot(btn).style.cursor, Cursor::Pointer);
+    assert_eq!(tree.slot(btn).style.justify, Justify::Center);
+}
+
+#[test]
+fn to_dom_via_html_tag_enum() {
+    let el = HtmlTag::Button.to_dom();
+    assert_eq!(el.style.cursor, Cursor::Pointer);
+    let el2 = HtmlTag::A.to_dom();
+    assert_eq!(el2.style.cursor, Cursor::Pointer);
+}
+
+#[test]
+fn to_dom_css_specificity_layering() {
+    // UA defaults (specificity d=element) can be overridden by class (c)
+    // and class by inline (a). Verify the cascade works.
+    let css = "button { background: rgb(0,100,200); } .primary { background: rgb(255,0,0); }";
+    let sheet = StyleSheet::parse_with_ua(css);
+
+    // Tag-only lookup: user CSS overrides UA
+    let tag_style = sheet.tag("button");
+    assert_eq!(tag_style.background, Color::rgba(0, 100, 200, 255));
+
+    // Class overrides tag (higher specificity)
+    let mut style = sheet.tag("button");
+    sheet.apply(&mut style, "primary");
+    assert_eq!(style.background, Color::rgba(255, 0, 0, 255));
+    // But non-overridden UA properties remain
+    assert_eq!(style.cursor, Cursor::Pointer);
 }

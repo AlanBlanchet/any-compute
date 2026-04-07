@@ -19,7 +19,7 @@ gpu = [
 
 [dependencies]
 any-compute-core = { workspace = true }
-bitflags = "2"
+any-compute-js = { workspace = true }
 log.workspace = true
 
 # GPU rendering (optional, behind gpu feature)
